@@ -1,0 +1,29 @@
+# Build output
+build/
+bin/
+*.o
+*.obj
+*.a
+*.lib
+*.exe
+*.dll
+*.pdb
+*.ilk
+
+# Qt Creator / qmake user files
+*.pro.user
+*.pro.user.*
+*.qmake.stash
+
+# Qt generated files (normally belong in build/)
+moc_*.cpp
+moc_*.h
+ui_*.h
+qrc_*.cpp
+
+# Qt Creator clangd cache
+.qtc_clangd/
+**/.qtc_clangd/
+
+# Logs
+*.log

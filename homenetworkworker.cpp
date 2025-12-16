@@ -1,0 +1,125 @@
+#include "homenetworkworker.h"
+
+#include <QNetworkAccessManager>
+#include <QNetworkRequest>
+#include <QNetworkReply>
+#include <QJsonDocument>
+#include <QJsonParseError>
+#include <QTimer>
+#include <QMetaObject>
+
+HomeNetworkWorker::HomeNetworkWorker(QObject *parent)
+    : QObject(parent)
+    , m_manager(new QNetworkAccessManager(this))
+    , m_timer(new QTimer(this))
+{
+    m_timer->setTimerType(Qt::PreciseTimer);
+    connect(m_timer, &QTimer::timeout, this, &HomeNetworkWorker::triggerFetch);
+}
+
+void HomeNetworkWorker::configure(const QUrl &url, const QJsonArray &requests, int intervalMs)
+{
+    m_url = url;
+    m_requests = requests;
+    m_intervalMs = intervalMs;
+    m_timer->setInterval(m_intervalMs);
+}
+
+void HomeNetworkWorker::start()
+{
+    if (m_running) {
+        return;
+    }
+
+    m_running = true;
+    m_fetchPending = false;
+
+    if (!m_timer->isActive()) {
+        m_timer->start(m_intervalMs);
+    }
+
+    triggerFetch();
+}
+
+void HomeNetworkWorker::stop()
+{
+    m_running = false;
+    m_timer->stop();
+    m_fetchPending = false;
+
+    if (m_currentReply) {
+        disconnect(m_currentReply, nullptr, this, nullptr);
+        if (m_currentReply->isRunning()) {
+            m_currentReply->abort();
+        }
+        m_currentReply->deleteLater();
+        m_currentReply = nullptr;
+    }
+}
+
+void HomeNetworkWorker::triggerFetch()
+{
+    if (!m_running) {
+        return;
+    }
+
+    if (!m_url.isValid() || m_requests.isEmpty()) {
+        return;
+    }
+
+    if (m_currentReply && m_currentReply->isRunning()) {
+        m_fetchPending = true;
+        return;
+    }
+
+    m_fetchPending = false;
+
+    QNetworkRequest request(m_url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setRawHeader("Connection", "keep-alive");
+    request.setRawHeader("User-Agent", "TencoClient/1.0");
+
+    const QByteArray payload = QJsonDocument(m_requests).toJson(QJsonDocument::Compact);
+    m_currentReply = m_manager->post(request, payload);
+    connect(m_currentReply, &QNetworkReply::finished, this, &HomeNetworkWorker::onReplyFinished);
+}
+void HomeNetworkWorker::onReplyFinished()
+{
+    QNetworkReply *reply = qobject_cast<QNetworkReply *>(sender());
+    if (!reply) {
+        return;
+    }
+
+    if (reply == m_currentReply) {
+        m_currentReply = nullptr;
+    }
+
+    handleReply(reply);
+
+    reply->deleteLater();
+
+    if (m_running && m_fetchPending) {
+        m_fetchPending = false;
+        QMetaObject::invokeMethod(this, &HomeNetworkWorker::triggerFetch, Qt::QueuedConnection);
+    }
+}
+
+void HomeNetworkWorker::handleReply(QNetworkReply *reply)
+{
+    const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    const QByteArray payload = reply->readAll();
+
+    if (reply->error() != QNetworkReply::NoError || httpStatus != 200) {
+        emit requestFailed(httpStatus, reply->error() == QNetworkReply::NoError ? QString() : reply->errorString(), payload);
+        return;
+    }
+
+    QJsonParseError parseError{};
+    const QJsonDocument doc = QJsonDocument::fromJson(payload, &parseError);
+    if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
+        emit requestFailed(httpStatus, parseError.errorString(), payload);
+        return;
+    }
+
+    emit statusReceived(doc.object());
+}

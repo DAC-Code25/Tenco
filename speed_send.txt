@@ -1,0 +1,13 @@
+{
+  "packet": {
+    "cmd": "region",
+    "region": "cmd_vel",
+    "index": 1
+  },
+  "msg": {
+    "xvel": 0,
+    "yvel": 0,
+    "thetavel": 0,
+    "isRemote": true
+  }
+}

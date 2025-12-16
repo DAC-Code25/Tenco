@@ -1,0 +1,28 @@
+<RCC>
+    <qresource prefix="/">
+        <file>image/imagesnav/shouye.png</file>
+        <file>image/imagesnav/ditu.png</file>
+        <file>image/imagesnav/weihu.png</file>
+        <file>image/imagesnav/bangzhu.png</file>
+        <file>image/imagesnav/guanyu.png</file>
+        <file>image/imagescontrol/F.png</file>
+        <file>image/imagescontrol/B.png</file>
+        <file>image/imagescontrol/L.png</file>
+        <file>image/imagescontrol/R.png</file>
+        <file>icon.ico</file>
+        <file>image/imagesnav/weizhiding.png</file>
+        <file>image/imagesnav/zhiding.png</file>
+        <file>image/imagesnav/zhiding_x.png</file>
+        <file>image/imagesnav/jianxiao.png</file>
+        <file>image/imagesnav/jianxiao_x.png</file>
+        <file>image/imagesnav/fangda.png</file>
+        <file>image/imagesnav/fangda_x.png</file>
+        <file>image/imagesnav/huifu.png</file>
+        <file>image/imagesnav/guanbi.png</file>
+        <file>image/imagesnav/guanbi_x.png</file>
+        <file>image/imageswitch/btncheckoff1.png</file>
+        <file>image/imageswitch/btncheckoff2.png</file>
+        <file>image/imageswitch/btncheckon1.png</file>
+        <file>image/imageswitch/btncheckon2.png</file>
+    </qresource>
+</RCC>
