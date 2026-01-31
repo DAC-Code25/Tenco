@@ -5,12 +5,21 @@
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QtGlobal>
 #include <QtMath>
 
 namespace {
 constexpr double kEarthRadiusMeters = 6378137.0; // WGS84 equatorial radius
 constexpr double kDefaultLatDeg = 0.0;
 constexpr double kDefaultLonDeg = 0.0;
+
+constexpr const char *kDefaultWebSocketUrl = "ws://192.168.31.7:1202";
+constexpr const char *kDefaultStatusReadUrl = "http://192.168.31.7:9999/table/reads";
+constexpr const char *kDefaultWriteInsUrl = "http://192.168.31.7:9999/table/writeIns";
+constexpr const char *kDefaultSaveFileUrl = "http://192.168.31.7:9999/saveFile";
+constexpr int kDefaultStatusPollIntervalMs = 100;
+constexpr int kMinStatusPollIntervalMs = 50;
+constexpr int kMaxStatusPollIntervalMs = 5000;
 
 QString defaultConfigPath()
 {
@@ -135,6 +144,16 @@ void ConfigManager::loadFromFile(const QString &path)
         m_video.autoStart = videoObj.value(QStringLiteral("autoStart")).toBool(m_video.autoStart);
         m_video.scaleContents = videoObj.value(QStringLiteral("scaleContents")).toBool(m_video.scaleContents);
     }
+
+    if (const QJsonObject networkObj = root.value(QStringLiteral("network")).toObject(); !networkObj.isEmpty()) {
+        m_network.websocketUrl = networkObj.value(QStringLiteral("websocketUrl")).toString(m_network.websocketUrl);
+        m_network.statusReadUrl = networkObj.value(QStringLiteral("statusReadUrl")).toString(m_network.statusReadUrl);
+        m_network.writeInsUrl = networkObj.value(QStringLiteral("writeInsUrl")).toString(m_network.writeInsUrl);
+        m_network.saveFileUrl = networkObj.value(QStringLiteral("saveFileUrl")).toString(m_network.saveFileUrl);
+        m_network.statusPollIntervalMs =
+            networkObj.value(QStringLiteral("statusPollIntervalMs")).toInt(m_network.statusPollIntervalMs);
+        m_network.statusPollIntervalMs = qBound(kMinStatusPollIntervalMs, m_network.statusPollIntervalMs, kMaxStatusPollIntervalMs);
+    }
 }
 
 void ConfigManager::loadDefaults()
@@ -144,6 +163,12 @@ void ConfigManager::loadDefaults()
     m_control = ControlConfig{};
     m_vehicle = VehicleConfig{};
     m_video = VideoConfig{};
+    m_network = NetworkConfig{};
+    m_network.websocketUrl = QString::fromUtf8(kDefaultWebSocketUrl);
+    m_network.statusReadUrl = QString::fromUtf8(kDefaultStatusReadUrl);
+    m_network.writeInsUrl = QString::fromUtf8(kDefaultWriteInsUrl);
+    m_network.saveFileUrl = QString::fromUtf8(kDefaultSaveFileUrl);
+    m_network.statusPollIntervalMs = kDefaultStatusPollIntervalMs;
 }
 
 void ConfigManager::updateCachedScales()

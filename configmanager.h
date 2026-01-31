@@ -48,6 +48,14 @@ public:
         bool scaleContents = true;
     };
 
+    struct NetworkConfig {
+        QString websocketUrl;
+        QString statusReadUrl;
+        QString writeInsUrl;
+        QString saveFileUrl;
+        int statusPollIntervalMs = 100;
+    };
+
     static ConfigManager &instance();
 
     void reload();
@@ -56,6 +64,7 @@ public:
     const ControlConfig &control() const { return m_control; }
     const VehicleConfig &vehicle() const { return m_vehicle; }
     const VideoConfig &video() const { return m_video; }
+    const NetworkConfig &network() const { return m_network; }
 
     QPointF geoToLocal(double latitudeDeg, double longitudeDeg) const;
     void localToGeo(const QPointF &localPoint, double &latitudeDeg, double &longitudeDeg) const;
@@ -74,6 +83,7 @@ private:
     ControlConfig m_control;
     VehicleConfig m_vehicle;
     VideoConfig m_video;
+    NetworkConfig m_network;
     double m_metersPerDegLat = 0.0;
     double m_metersPerDegLon = 0.0;
     QString m_configPath;

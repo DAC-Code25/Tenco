@@ -1,5 +1,8 @@
 #include "home.h"
-#include "homenetworkworker.h"
+#include "statusclient.h"
+#include "chassisclient.h"
+#include "videoclient.h"
+#include "routefollower.h"
 #include "configmanager.h"
 #include "ui_mainwindow.h"         
 #include "imageswitch.h"         
@@ -17,6 +20,7 @@
 #include <QRegularExpression>// 校验经纬度格式
 #include <QNetworkRequest>   // 配置 HTTP 请求头与目标地址
 #include <QNetworkAccessManager> // HTTP 管理器
+#include <QNetworkReply>
 #include <QPlainTextEdit>
 #include <QLabel>
 #include <QImage>
@@ -26,37 +30,30 @@
 #include <QStringList>       // 拼接位置坐标展示字符串
 #include <QTimer>            // 周期性任务与长按控制的定时器
 #include <QUrl>              // 解析 WebSocket 与 HTTP 地址
-#include <QWebSocket>        // 与底盘通信的 WebSocket 客户端
-#include <QWebSocketProtocol>// 选择 WebSocket 协议版本
-#include <QAbstractSocket>   // 检测 socket 状态与错误
 #include <QUrlQuery>
 #include <QKeyEvent>         // 处理 W/A/S/D 键盘事件
 #include <QDebug>            // 调试输出
 #include <QProgressDialog>   // 展示控制器重启的倒计时
-#include <QNetworkReply>      // 读取网络响应并判断错误状态
-#include <QThread>            // 网络工作线程
-#include <QMetaObject>
 #include <QVector>
 #include <QtMath>
 #include <algorithm>
 #include <cmath>
-namespace {  // 限定在本文件内使用的常量
-constexpr const char *kWebSocketUrl = "ws://192.168.31.7:1202";  // 底盘控制端 WebSocket 地址
-}
+
 // 构造函数：缓存 UI 指针并准备网络与定时资源
 Home::Home(Ui::MainWindow *ui, QObject *parent)
     : QObject(parent)
     , ui(ui)
     , restartCheckTimer(new QTimer(this))
-    , rebootCountdownTimer(new QTimer(this))
-    , webSocket(new QWebSocket(QString(), QWebSocketProtocol::VersionLatest, this))
     , forwardRepeatTimer(new QTimer(this))
     , backwardRepeatTimer(new QTimer(this))
     , turnLeftRepeatTimer(new QTimer(this))
     , turnRightRepeatTimer(new QTimer(this))
+    , rebootCountdownTimer(new QTimer(this))
     , rebootProgressDialog(nullptr)
-    , networkWorker(nullptr)
-    , networkThread(nullptr)
+    , m_statusClient(new StatusClient(this))
+    , m_chassisClient(new ChassisClient(this))
+    , m_videoClient(new VideoClient(this))
+    , m_routeFollower(new RouteFollower(this))
     , lastConnectionStatus(false)
     , connectionRestored(false)
     , forwardButtonHeld(false)
@@ -67,43 +64,75 @@ Home::Home(Ui::MainWindow *ui, QObject *parent)
     , turnLeftKeyHeld(false)
     , turnRightButtonHeld(false)
     , turnRightKeyHeld(false)
-    , startupMessagesSent(false)
     , rebootRemainingSeconds(0)
 {
     initialize();
-    const ConfigManager &config = ConfigManager::instance();
-    const auto &control = config.control();
-    m_maxLinearSpeed = control.maxLinearSpeed;
-    m_maxAngularSpeed = control.maxAngularSpeed;
-    m_arrivalDistanceThreshold = control.arrivalDistanceThreshold;
-    m_arrivalAngleThresholdRad = qDegreesToRadians(control.arrivalAngleThresholdDeg);
-    m_linearGain = control.linearGain;
-    m_angularGain = control.angularGain;
-    m_headingStopThresholdRad = qDegreesToRadians(control.headingStopThresholdDeg);
-    m_headingSlowdownThresholdRad = qDegreesToRadians(control.headingSlowdownThresholdDeg);
-    m_headingSlowdownFactor = control.headingSlowdownFactor;
-    m_nearTargetDistanceMultiplier = control.nearTargetDistanceMultiplier;
-    m_nearTargetSpeedMultiplier = control.nearTargetSpeedMultiplier;
-    m_linearAccelerationLimit = control.linearAccelerationLimit;
-    m_linearDecelerationLimit = control.linearDecelerationLimit;
-    m_angularAccelerationLimit = control.angularAccelerationLimit;
-    m_angularDecelerationLimit = control.angularDecelerationLimit;
-    m_finalAdjustLinearSpeed = control.finalAdjustLinearSpeed;
-    m_finalAdjustAngularSpeed = control.finalAdjustAngularSpeed;
-    m_vehicleWheelBase = config.vehicle().wheelBaseMeters;
-    m_vehicleWheelDiameter = config.vehicle().wheelDiameterMeters;
-    m_vehicleGearReduction = config.vehicle().gearReduction;
-    m_routeFollowerTimer = new QTimer(this);
-    m_routeFollowerTimer->setTimerType(Qt::PreciseTimer);
-    m_routeFollowerTimer->setInterval(100);
-    connect(m_routeFollowerTimer, &QTimer::timeout, this, &Home::processRouteFollowerTick);
-    m_routeFollowerDt = static_cast<double>(m_routeFollowerTimer->interval()) / 1000.0;
     initializeMotionTimers();
-    initializeNetworkWorker();
-    connect(webSocket, &QWebSocket::connected, this, &Home::onWebSocketConnected);
-    connect(webSocket, &QWebSocket::disconnected, this, &Home::onWebSocketDisconnected);
-    connect(webSocket, &QWebSocket::errorOccurred, this, &Home::onWebSocketError);
-    connectWebSocket();
+    const ConfigManager &config = ConfigManager::instance();
+
+    // Route follower configuration (from config.json).
+    if (m_routeFollower) {
+        const auto &ctrl = config.control();
+        RouteFollower::ControlParams params;
+        params.maxLinearSpeed = ctrl.maxLinearSpeed;
+        params.maxAngularSpeed = ctrl.maxAngularSpeed;
+        params.arrivalDistanceThreshold = ctrl.arrivalDistanceThreshold;
+        params.arrivalAngleThresholdRad = qDegreesToRadians(ctrl.arrivalAngleThresholdDeg);
+        params.linearGain = ctrl.linearGain;
+        params.angularGain = ctrl.angularGain;
+        params.headingStopThresholdRad = qDegreesToRadians(ctrl.headingStopThresholdDeg);
+        params.headingSlowdownThresholdRad = qDegreesToRadians(ctrl.headingSlowdownThresholdDeg);
+        params.headingSlowdownFactor = ctrl.headingSlowdownFactor;
+        params.nearTargetDistanceMultiplier = ctrl.nearTargetDistanceMultiplier;
+        params.nearTargetSpeedMultiplier = ctrl.nearTargetSpeedMultiplier;
+        params.linearAccelerationLimit = ctrl.linearAccelerationLimit;
+        params.linearDecelerationLimit = ctrl.linearDecelerationLimit;
+        params.angularAccelerationLimit = ctrl.angularAccelerationLimit;
+        params.angularDecelerationLimit = ctrl.angularDecelerationLimit;
+        params.finalAdjustLinearSpeed = ctrl.finalAdjustLinearSpeed;
+        params.finalAdjustAngularSpeed = ctrl.finalAdjustAngularSpeed;
+        m_routeFollower->setControlParams(params);
+        m_routeFollower->setUpdateIntervalMs(100);
+        connect(m_routeFollower, &RouteFollower::velocityCommand, this, &Home::sendVelocityCommand);
+        connect(m_routeFollower, &RouteFollower::segmentCompleted, this, &Home::routeSegmentCompleted);
+    }
+
+    // Status polling (HTTP, worker thread).
+    if (m_statusClient) {
+        QJsonArray requests = {
+            QJsonObject{{"address", "3f"}, {"type", "uint8"}, {"len", 1}},
+            QJsonObject{{"address", "38"}, {"type", "float"}, {"len", 4}},
+            QJsonObject{{"address", "3c"}, {"type", "uint8"}, {"len", 1}},
+            QJsonObject{{"address", "100"}, {"type", "float"}, {"len", 12}},
+            QJsonObject{{"address", "320"}, {"type", "string"}, {"len", 32}},
+            QJsonObject{{"address", "20"}, {"type", "float"}, {"len", 4}},
+            QJsonObject{{"address", "13"}, {"type", "uint8"}, {"len", 1}},
+            QJsonObject{{"address", "14"}, {"type", "uint8"}, {"len", 1}},
+            QJsonObject{{"address", "15"}, {"type", "uint8"}, {"len", 3}}
+        };
+
+        const auto &netCfg = config.network();
+        const QUrl statusUrl(netCfg.statusReadUrl);
+        if (!statusUrl.isValid()) {
+            logMessage(tr("状态轮询地址无效：%1").arg(netCfg.statusReadUrl));
+        }
+
+        connect(m_statusClient, &StatusClient::statusReceived, this, &Home::handleStatusPacket);
+        connect(m_statusClient, &StatusClient::requestFailed, this, &Home::handleNetworkFailure);
+        m_statusClient->configure(statusUrl, requests, netCfg.statusPollIntervalMs);
+        m_statusClient->start();
+    }
+
+    // Chassis WebSocket client.
+    if (m_chassisClient) {
+        const QUrl wsUrl(config.network().websocketUrl.trimmed());
+        m_chassisClient->setUrl(wsUrl);
+        connect(m_chassisClient, &ChassisClient::connected, this, &Home::handleChassisConnected);
+        connect(m_chassisClient, &ChassisClient::disconnected, this, &Home::handleChassisDisconnected);
+        connect(m_chassisClient, &ChassisClient::errorOccurred, this, &Home::handleChassisError);
+        m_chassisClient->connectToHost();
+    }
+
     rebootCountdownTimer->setInterval(1000);
     rebootCountdownTimer->setSingleShot(false);
     connect(rebootCountdownTimer, &QTimer::timeout, this, &Home::updateRebootProgress);
@@ -111,16 +140,9 @@ Home::Home(Ui::MainWindow *ui, QObject *parent)
 Home::~Home()
 {
     cancelRouteExecution();
-    stopVideoStream();
-    if (m_videoReconnectTimer) {
-        m_videoReconnectTimer->stop();
-    }
-    if (networkWorker) {
-        QMetaObject::invokeMethod(networkWorker, "stop", Qt::QueuedConnection);
-    }
-    if (networkThread) {
-        networkThread->quit();
-        networkThread->wait();
+    if (m_videoClient) {
+        m_videoClient->stop();
+        m_videoClient->stopRecording();
     }
 }
 void Home::initialize()
@@ -178,30 +200,6 @@ void Home::initializeMotionTimers()
     turnRightRepeatTimer->setSingleShot(false);  // 右转同样持续触发
     connect(turnRightRepeatTimer, &QTimer::timeout, this, &Home::sendTurnRightCommand);  // 定时重发右转角速度
 }
-// 确保 WebSocket 只在需要时发起连接
-void Home::initializeNetworkWorker()
-{
-    QJsonArray requests = {
-        QJsonObject{{"address", "3f"}, {"type", "uint8"}, {"len", 1}},
-        QJsonObject{{"address", "38"}, {"type", "float"}, {"len", 4}},
-        QJsonObject{{"address", "3c"}, {"type", "uint8"}, {"len", 1}},
-        QJsonObject{{"address", "100"}, {"type", "float"}, {"len", 12}},
-        QJsonObject{{"address", "320"}, {"type", "string"}, {"len", 32}},
-        QJsonObject{{"address", "20"}, {"type", "float"}, {"len", 4}},
-        QJsonObject{{"address", "13"}, {"type", "uint8"}, {"len", 1}},
-        QJsonObject{{"address", "14"}, {"type", "uint8"}, {"len", 1}},
-        QJsonObject{{"address", "15"}, {"type", "uint8"}, {"len", 3}}
-    };
-    networkWorker = new HomeNetworkWorker;
-    networkWorker->configure(QUrl(QStringLiteral("http://192.168.31.7:9999/table/reads")), requests, 100);
-    networkThread = new QThread(this);
-    networkWorker->moveToThread(networkThread);
-    connect(networkThread, &QThread::finished, networkWorker, &QObject::deleteLater);
-    connect(networkWorker, &HomeNetworkWorker::statusReceived, this, &Home::handleStatusPacket);
-    connect(networkWorker, &HomeNetworkWorker::requestFailed, this, &Home::handleNetworkFailure);
-    networkThread->start();
-    QMetaObject::invokeMethod(networkWorker, "start", Qt::QueuedConnection);
-}
 
 void Home::initializeVideoDisplay()
 {
@@ -210,33 +208,47 @@ void Home::initializeVideoDisplay()
     }
     QLabel *videoLabel = ui->videoDisplay;
     videoLabel->setAlignment(Qt::AlignCenter);
+
     const auto &videoCfg = ConfigManager::instance().video();
-    m_videoStreamTemplate = videoCfg.streamUrl.trimmed();
-    m_videoUrl.clear();
-    m_activeVideoTopic.clear();
-    m_videoReconnectIntervalMs = qMax(200, videoCfg.reconnectIntervalMs);
-    m_videoAutoStart = videoCfg.autoStart;
     m_videoScaleContents = videoCfg.scaleContents;
     videoLabel->setScaledContents(m_videoScaleContents);
+
+    if (!m_videoClient) {
+        updateVideoPlaceholder(tr("视频模块未初始化"));
+        return;
+    }
+
+    m_videoClient->setStreamUrlTemplate(videoCfg.streamUrl);
+    m_videoClient->setReconnectIntervalMs(videoCfg.reconnectIntervalMs);
+    m_videoClient->setAutoReconnect(true);
+
+    connect(m_videoClient, &VideoClient::frameReceived, this, &Home::handleVideoFrameReceived);
+    connect(m_videoClient, &VideoClient::stateChanged, this, [this](VideoClient::State state, const QString &message) {
+        if (!message.isEmpty()) {
+            logMessage(message);
+            if (state != VideoClient::State::Streaming) {
+                updateVideoPlaceholder(message);
+            }
+        }
+    });
+
+    m_activeVideoTopic.clear();
     QComboBox *topicCombo = ui->video_topic_name;
     if (topicCombo) {
         topicCombo->setCurrentIndex(0);
 #if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
-        connect(topicCombo, qOverload<int>(&QComboBox::currentIndexChanged),
-                this, &Home::handleVideoTopicChanged);
+        connect(topicCombo, qOverload<int>(&QComboBox::currentIndexChanged), this, &Home::handleVideoTopicChanged);
 #else
-        connect(topicCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-                this, &Home::handleVideoTopicChanged);
+        connect(topicCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &Home::handleVideoTopicChanged);
 #endif
-        updateVideoPlaceholder(m_videoStreamTemplate.isEmpty()
-                                   ? tr("未配置视频流 URL")
-                                   : tr("请选择视频话题以开启视频流"));
+        updateVideoPlaceholder(videoCfg.streamUrl.trimmed().isEmpty() ? tr("未配置视频流 URL")
+                                                                     : tr("请选择视频话题以开启视频流"));
     } else {
-        m_videoUrl = m_videoStreamTemplate;
-        updateVideoPlaceholder(m_videoUrl.isEmpty() ? tr("未配置视频流 URL")
-                                                    : tr("等待视频流..."));
-        if (m_videoAutoStart && !m_videoUrl.isEmpty()) {
-            startVideoStream();
+        const QUrl url(videoCfg.streamUrl.trimmed());
+        m_videoClient->setStreamUrl(url);
+        updateVideoPlaceholder(url.isValid() ? tr("等待视频流...") : tr("未配置视频流 URL"));
+        if (videoCfg.autoStart && url.isValid()) {
+            m_videoClient->start();
         }
     }
 }
@@ -244,150 +256,6 @@ void Home::initializeVideoDisplay()
 bool Home::isVideoDisplayReady() const
 {
     return ui && ui->videoDisplay;
-}
-
-bool Home::isVideoStreamActive() const
-{
-    return m_videoReply && m_videoReply->isRunning();
-}
-
-void Home::startVideoStream()
-{
-    if (m_videoUrl.isEmpty()) {
-        updateVideoPlaceholder(tr("未配置视频流 URL"));
-        return;
-    }
-    if (!m_videoManager) {
-        m_videoManager = new QNetworkAccessManager(this);
-    }
-    if (m_videoReply) {
-        return;
-    }
-    m_videoBuffer.clear();
-    QNetworkRequest req{QUrl(m_videoUrl)};
-    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("TencoVideoClient/1.0"));
-    req.setRawHeader("Accept", "multipart/x-mixed-replace");
-    req.setRawHeader("Connection", "keep-alive");
-#if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
-    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
-#endif
-    m_videoReply = m_videoManager->get(req);
-    connect(m_videoReply, &QNetworkReply::readyRead, this, &Home::handleVideoReadyRead);
-    connect(m_videoReply, &QNetworkReply::finished, this, &Home::handleVideoStreamFinished);
-#if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
-    connect(m_videoReply, &QNetworkReply::errorOccurred, this, &Home::handleVideoError);
-#else
-    connect(m_videoReply, QOverload<QNetworkReply::NetworkError>::of(&QNetworkReply::error),
-            this, &Home::handleVideoError);
-#endif
-    updateVideoPlaceholder(tr("正在连接视频流..."));
-    logMessage(tr("正在连接视频流…"));
-}
-
-void Home::stopVideoStream()
-{
-    if (m_videoReconnectTimer && m_videoReconnectTimer->isActive()) {
-        m_videoReconnectTimer->stop();
-    }
-    if (m_videoReply) {
-        disconnect(m_videoReply, nullptr, this, nullptr);
-        if (m_videoReply->isRunning()) {
-            m_videoReply->abort();
-        }
-        m_videoReply->deleteLater();
-        m_videoReply = nullptr;
-    }
-    m_videoBuffer.clear();
-}
-
-void Home::handleVideoReadyRead()
-{
-    if (!m_videoReply) {
-        return;
-    }
-    m_videoBuffer.append(m_videoReply->readAll());
-    if (m_videoBuffer.size() > kMaxVideoBufferSize) {
-        m_videoBuffer = m_videoBuffer.right(kMaxVideoBufferSize / 2);
-    }
-    static const QByteArray kJpegStart("\xFF\xD8", 2);
-    static const QByteArray kJpegEnd("\xFF\xD9", 2);
-    while (true) {
-        int startIndex = m_videoBuffer.indexOf(kJpegStart);
-        if (startIndex < 0) {
-            m_videoBuffer = m_videoBuffer.right(kMaxVideoBufferSize / 2);
-            return;
-        }
-        if (startIndex > 0) {
-            m_videoBuffer.remove(0, startIndex);
-            startIndex = 0;
-        }
-        const int endIndex = m_videoBuffer.indexOf(kJpegEnd, startIndex + kJpegStart.size());
-        if (endIndex < 0) {
-            if (m_videoBuffer.size() > kMaxVideoBufferSize) {
-                m_videoBuffer = m_videoBuffer.right(kMaxVideoBufferSize / 2);
-            }
-            return;
-        }
-        const int frameSize = endIndex - startIndex + kJpegEnd.size();
-        QByteArray frameData = m_videoBuffer.mid(startIndex, frameSize);
-        m_videoBuffer.remove(0, startIndex + frameSize);
-        QImage image;
-        if (image.loadFromData(frameData, "JPG")) {
-            displayVideoFrame(image);
-            if (m_isRecording) {
-                if (m_recordFile && m_recordFile->isOpen()) {
-                    m_recordFile->write(frameData);
-                } else {
-                    m_recordBuffer.append(frameData);
-                }
-            }
-        }
-    }
-}
-
-void Home::handleVideoStreamFinished()
-{
-    stopVideoStream();
-    updateVideoPlaceholder(tr("视频流已结束，等待重连..."));
-    scheduleVideoReconnect();
-    logMessage(tr("视频流结束，等待重连"));
-}
-
-void Home::handleVideoError(QNetworkReply::NetworkError error)
-{
-    Q_UNUSED(error);
-    const QString errorText = m_videoReply ? m_videoReply->errorString() : QStringLiteral("unknown");
-    qWarning() << "Video stream error:" << errorText;
-    stopVideoStream();
-    updateVideoPlaceholder(tr("视频流异常: %1").arg(errorText));
-    scheduleVideoReconnect();
-    logMessage(tr("视频流异常：%1").arg(errorText));
-}
-
-void Home::scheduleVideoReconnect()
-{
-    if (!m_videoAutoStart || m_videoUrl.isEmpty()) {
-        return;
-    }
-    if (!m_videoReconnectTimer) {
-        m_videoReconnectTimer = new QTimer(this);
-        m_videoReconnectTimer->setSingleShot(true);
-        connect(m_videoReconnectTimer, &QTimer::timeout, this, &Home::restartVideoStream);
-    }
-    if (!m_videoReconnectTimer->isActive()) {
-        m_videoReconnectTimer->start(m_videoReconnectIntervalMs);
-    }
-}
-
-void Home::restartVideoStream()
-{
-    if (!m_videoAutoStart || m_videoUrl.isEmpty()) {
-        return;
-    }
-    if (m_videoReply) {
-        return;
-    }
-    startVideoStream();
 }
 
 void Home::updateVideoPlaceholder(const QString &message)
@@ -434,16 +302,42 @@ void Home::logMessage(const QString &text)
     ui->plainTextEdit->appendPlainText(line);
 }
 
+void Home::handleChassisConnected()
+{
+    logMessage(tr("WebSocket 已连接"));
+}
+
+void Home::handleChassisDisconnected()
+{
+    logMessage(tr("WebSocket 已断开，正在尝试重连..."));
+}
+
+void Home::handleChassisError(const QString &errorString)
+{
+    if (errorString.isEmpty()) {
+        logMessage(tr("WebSocket 发生错误"));
+        return;
+    }
+    logMessage(tr("WebSocket 错误：%1").arg(errorString));
+}
+
+void Home::handleVideoFrameReceived(const QImage &frame)
+{
+    displayVideoFrame(frame);
+}
+
 void Home::handleVideoTopicChanged(int index)
 {
     if (!ui || !ui->video_topic_name) {
         return;
     }
+    if (!m_videoClient) {
+        return;
+    }
 
     if (index <= 0) {
         m_activeVideoTopic.clear();
-        m_videoUrl.clear();
-        stopVideoStream();
+        m_videoClient->stop();
         updateVideoPlaceholder(tr("视频流已关闭"));
         return;
     }
@@ -453,58 +347,28 @@ void Home::handleVideoTopicChanged(int index)
         return;
     }
 
-    const QString nextUrl = buildVideoUrlForTopic(topic);
-    if (nextUrl.isEmpty()) {
-        stopVideoStream();
+    const QString nextUrlStr = m_videoClient->buildUrlForTopic(topic);
+    if (nextUrlStr.isEmpty()) {
+        m_videoClient->stop();
         updateVideoPlaceholder(tr("视频流 URL 配置无效"));
         return;
     }
 
     m_activeVideoTopic = topic;
-    if (m_videoUrl == nextUrl && m_videoReply) {
+    const QUrl nextUrl(nextUrlStr);
+    if (!nextUrl.isValid()) {
+        m_videoClient->stop();
+        updateVideoPlaceholder(tr("视频流 URL 配置无效"));
         return;
     }
 
-    m_videoUrl = nextUrl;
-    stopVideoStream();
-    startVideoStream();
-}
-
-QString Home::buildVideoUrlForTopic(const QString &topic) const
-{
-    if (m_videoStreamTemplate.isEmpty()) {
-        return QString();
+    if (m_videoClient->streamUrl() == nextUrl && m_videoClient->isActive()) {
+        return;
     }
 
-    QUrl url(m_videoStreamTemplate);
-    if (!url.isValid()) {
-        return QString();
-    }
-
-#if QT_VERSION >= QT_VERSION_CHECK(5, 0, 0)
-    QUrlQuery query(url);
-    if (query.hasQueryItem(QStringLiteral("topic"))) {
-        query.removeAllQueryItems(QStringLiteral("topic"));
-    }
-    if (!topic.isEmpty()) {
-        query.addQueryItem(QStringLiteral("topic"), topic);
-    }
-    url.setQuery(query);
-#else
-    Q_UNUSED(topic);
-#endif
-    return url.toString(QUrl::FullyEncoded);
-}
-void Home::connectWebSocket()
-{
-    if (!webSocket) {  // 指针应始终存在，但依旧防御性检查
-        return;  // 缺少客户端时直接退出
-    }
-    if (webSocket->state() == QAbstractSocket::ConnectedState ||  // 已连接或正在连接时无需重复 open
-        webSocket->state() == QAbstractSocket::ConnectingState) {  // 保持当前连接流程
-        return;  // 避免重复调用 open()
-    }
-    webSocket->open(QUrl(QString::fromUtf8(kWebSocketUrl)));  // 按既定地址发起 WebSocket 连接
+    m_videoClient->stop();
+    m_videoClient->setStreamUrl(nextUrl);
+    m_videoClient->start();
 }
 // 判断按钮手动控制是否被授权
 bool Home::isManualControlEnabledForButtons() const
@@ -587,16 +451,10 @@ bool Home::shouldSendTurnRight() const
 // 通过 WebSocket 向底盘发送速度指令 JSON
 void Home::sendVelocityCommand(double xVel, double thetaVel)
 {
-    if (!webSocket || webSocket->state() != QAbstractSocket::ConnectedState) {  // 仅在连接成功后才发送数据
-        if (webSocket && webSocket->state() == QAbstractSocket::UnconnectedState) {  // 如果断开则尝试重新连接
-            connectWebSocket();  // 触发重连流程
-        }
-        return;  // 当前无法发送任何指令
+    if (!m_chassisClient) {
+        return;
     }
-    QJsonObject packetObj{{"cmd", "region"}, {"region", "cmd_vel"}, {"index", 1}};  // packet：标识控制区域及命令类型
-    QJsonObject msgObj{{"xvel", xVel}, {"yvel", 0.0}, {"thetavel", thetaVel}, {"isRemote", true}};  // msg：实际速度向量与远程控制标记
-    QJsonDocument doc(QJsonObject{{"packet", packetObj}, {"msg", msgObj}});  // 封装成单个 JSON 文档
-    webSocket->sendTextMessage(QString::fromUtf8(doc.toJson(QJsonDocument::Compact)));  // 以紧凑格式发送文本消息
+    m_chassisClient->sendVelocityCommand(xVel, thetaVel);
 }
 // 发送前进线速度，来源于 UI 数值框
 void Home::sendForwardCommand()
@@ -639,95 +497,45 @@ void Home::sendTurnRightCommand()
 void Home::startRecording()
 {
     QWidget *parentWidget = ui ? ui->centralwidget : nullptr;
-    m_isRecording = true;
-    m_recordBuffer.clear();
-    m_recordFilePath.clear();
+    if (!m_videoClient) {
+        return;
+    }
 
     if (m_saveDirectory.isEmpty()) {
-        // 未选择保存目录时先缓存到内存，停止时再提示保存
-        QMessageBox::information(parentWidget, tr("提示"), tr("尚未选择保存路径，录像数据将暂存，停止后请选定保存位置。"));
-    } else {
-        QDir dir(m_saveDirectory);
-        if (!dir.exists()) {
-            dir.mkpath(".");
-        }
-        const QString fileName = QStringLiteral("video_%1.mjpeg").arg(QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss"));
-        m_recordFilePath = dir.filePath(fileName);
-        m_recordFile = new QFile(m_recordFilePath, this);
-        if (!m_recordFile->open(QIODevice::WriteOnly)) {
-            QMessageBox::warning(parentWidget, tr("提示"), tr("无法打开文件写入，录像将暂存内存。"));
-            m_recordFile->deleteLater();
-            m_recordFile = nullptr;
-            m_recordFilePath.clear();
+        if (!ensureSaveDirectorySelected(parentWidget)) {
+            logMessage(tr("已取消选择保存目录，未开始录像。"));
+            return;
         }
     }
 
+    QString path;
+    if (!m_videoClient->startRecording(m_saveDirectory, &path)) {
+        QMessageBox::warning(parentWidget, tr("提示"), tr("无法开始录像：无法写入文件。"));
+        return;
+    }
+
+    m_recordFilePath = path;
     if (ui && ui->recordButton) {
         ui->recordButton->setText(tr("停止录像"));
     }
-    logMessage(tr("开始录像"));
+    logMessage(tr("开始录像：%1").arg(m_recordFilePath));
 }
 
 // 停止录像并保存文件
 void Home::stopRecordingAndSave()
 {
     QWidget *parentWidget = ui ? ui->centralwidget : nullptr;
-    m_isRecording = false;
-
-    // 关闭已打开的文件
-    if (m_recordFile) {
-        m_recordFile->close();
-        m_recordFile->deleteLater();
-        m_recordFile = nullptr;
+    if (!m_videoClient) {
+        return;
     }
 
-    // 如未选择路径，在停止时弹出选择
-    if (m_saveDirectory.isEmpty()) {
-        if (!ensureSaveDirectorySelected(parentWidget)) {
-            QMessageBox::warning(parentWidget, tr("提示"), tr("未保存录像，因未选择保存路径。"));
-            m_recordBuffer.clear();
-            m_recordFilePath.clear();
-            if (ui && ui->recordButton) {
-                ui->recordButton->setText(tr("开始录像"));
-            }
-            return;
-        }
-    }
-
-    // 若此前未直接写盘，则将缓冲帧写入文件
-    if (m_recordBuffer.size() > 0 || m_recordFilePath.isEmpty()) {
-        QDir dir(m_saveDirectory);
-        if (!dir.exists()) {
-            dir.mkpath(".");
-        }
-        if (m_recordFilePath.isEmpty()) {
-            const QString fileName = QStringLiteral("video_%1.mjpeg").arg(QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss"));
-            m_recordFilePath = dir.filePath(fileName);
-        }
-        QFile file(m_recordFilePath);
-        if (file.open(QIODevice::WriteOnly)) {
-            if (!m_recordBuffer.isEmpty()) {
-                file.write(m_recordBuffer);
-            }
-            file.close();
-        } else {
-            QMessageBox::warning(parentWidget, tr("提示"), tr("保存录像失败：无法写入文件"));
-            m_recordBuffer.clear();
-            m_recordFilePath.clear();
-            if (ui && ui->recordButton) {
-                ui->recordButton->setText(tr("开始录像"));
-            }
-            return;
-        }
-    }
-
-    m_recordBuffer.clear();
+    const QString savedPath = m_videoClient->stopRecording();
     if (ui && ui->recordButton) {
         ui->recordButton->setText(tr("开始录像"));
     }
-    if (!m_recordFilePath.isEmpty()) {
-        QMessageBox::information(parentWidget, tr("成功"), tr("录像已保存到:\n%1").arg(m_recordFilePath));
-        logMessage(tr("录像已保存到 %1").arg(m_recordFilePath));
+    if (!savedPath.isEmpty()) {
+        QMessageBox::information(parentWidget, tr("成功"), tr("录像已保存到:\n%1").arg(savedPath));
+        logMessage(tr("录像已保存到 %1").arg(savedPath));
     }
     m_recordFilePath.clear();
 }
@@ -744,44 +552,6 @@ bool Home::ensureSaveDirectorySelected(QWidget *parentForDialog)
     }
     m_saveDirectory = dir;
     return true;
-}
-// 发送控制器重启命令
-void Home::sendRebootCommand()
-{
-    if (!webSocket || webSocket->state() != QAbstractSocket::ConnectedState) {  // 只有在 WebSocket 已连接时才允许下发
-        if (webSocket && webSocket->state() == QAbstractSocket::UnconnectedState) {  // 若已断开则先尝试重连
-            connectWebSocket();  // 触发重连机制
-        }
-        return;
-    }
-    QJsonObject packetObj{{"cmd", "reboot"}};  // 构造重启指令的数据包
-    QJsonDocument doc(QJsonObject{{"packet", packetObj}, {"msg", QJsonObject{}}});  // 消息体为空，仅下发命令
-    webSocket->sendTextMessage(QString::fromUtf8(doc.toJson(QJsonDocument::Compact)));  // 推送重启指令到控制端
-}
-// 打印触发该信号的开关，便于调试
-void Home::onWebSocketConnected()
-{
-    // 记录一次急停事件，方便排查
-    // 当前仅输出一条调试信息
-    // 预留给实际截图流程
-    // 仅输出日志，等待后续补齐业务
-    // 预留刷新逻辑
-    // 记录一次人工重启操作，便于日志分析
-    // 打印恢复日志，帮助分析断线时长
-    qDebug() << "WebSocket connected";
-    if (!startupMessagesSent) {
-        sendStartupWebSocketMessages();
-    }
-}
-void Home::onWebSocketDisconnected()
-{
-    qDebug() << "WebSocket disconnected";
-    QTimer::singleShot(1000, this, &Home::connectWebSocket);
-}
-void Home::onWebSocketError(QAbstractSocket::SocketError error)
-{
-    Q_UNUSED(error);
-    qDebug() << "WebSocket error:" << webSocket->errorString();
 }
 // 更新重启倒计时弹窗的显示内容
 void Home::updateRebootProgress()
@@ -803,48 +573,6 @@ void Home::updateRebootProgress()
         rebootProgressDialog->setValue(53);  // 将进度条补齐到 53 秒
         rebootProgressDialog->hide();  // 隐藏进度对话框
     }
-}
-//发送退出定位指令
-void Home::sendStopLocation()
-{
-    if (!webSocket || webSocket->state() != QAbstractSocket::ConnectedState) {
-        if (webSocket && webSocket->state() == QAbstractSocket::UnconnectedState) {
-            connectWebSocket();
-        }
-        return;
-    }
-    const QJsonObject packetObj{{"cmd", "region"}, {"region", "slam"}, {"index", 1}};
-    const QJsonObject msgObj{{"talk", "stopLocation"}};
-    const QJsonDocument doc(QJsonObject{{"packet", packetObj}, {"msg", msgObj}});
-    webSocket->sendTextMessage(QString::fromUtf8(doc.toJson(QJsonDocument::Compact)));  // 以紧凑格式发送文本消息
-}
-void Home::resetRouteCommandState(){
-    m_lastRouteLinearCommand = 0.0;
-    m_lastRouteAngularCommand = 0.0;
-}
-double Home::applySlewRate(double target, double lastValue, double accelLimit, double decelLimit, double dt) const{
-    if (dt <= 0.0) {
-        return target;
-    }
-    const double delta = target - lastValue;
-    if (qFuzzyIsNull(delta)) {
-        return target;
-    }
-    const double limit = (delta >= 0.0 ? accelLimit : decelLimit) * dt;
-    if (limit <= 0.0) {
-        return target;
-    }
-    if (std::abs(delta) <= limit) {
-        return target;
-    }
-    return lastValue + std::copysign(limit, delta);
-}
-void Home::sendRouteVelocity(double linear, double angular){
-    const double limitedLinear = applySlewRate(linear, m_lastRouteLinearCommand, m_linearAccelerationLimit, m_linearDecelerationLimit, m_routeFollowerDt);
-    const double limitedAngular = applySlewRate(angular, m_lastRouteAngularCommand, m_angularAccelerationLimit, m_angularDecelerationLimit, m_routeFollowerDt);
-    m_lastRouteLinearCommand = limitedLinear;
-    m_lastRouteAngularCommand = limitedAngular;
-    sendVelocityCommand(limitedLinear, limitedAngular);
 }
 // 向 HTTP 接口请求最新的运行数据
 void Home::handleStatusPacket(const QJsonObject &resp)
@@ -877,11 +605,13 @@ void Home::handleStatusPacket(const QJsonObject &resp)
             ui->lineEdit_mode->setText(QStringLiteral("当前模式:   ") + modeMap.value(val.toInt(), QStringLiteral("未知模式")));
         } else if (addr == "100") {
             if (values.size() >= 3) {
-                m_currentPoseX = values.at(0).toDouble();
-                m_currentPoseY = values.at(1).toDouble();
-                m_currentPoseTheta = values.at(2).toDouble();
-                m_poseValid = true;
-                emit vehiclePoseUpdated(m_currentPoseX, m_currentPoseY, m_currentPoseTheta);
+                const double x = values.at(0).toDouble();
+                const double y = values.at(1).toDouble();
+                const double theta = values.at(2).toDouble();
+                if (m_routeFollower) {
+                    m_routeFollower->updatePose(x, y, theta);
+                }
+                emit vehiclePoseUpdated(x, y, theta);
                 QStringList parts;
                 for (const QJsonValue &v : values) {
                     parts << QString::number(v.toDouble(), 'f', 5);
@@ -889,7 +619,9 @@ void Home::handleStatusPacket(const QJsonObject &resp)
                 ui->lineEdit_Position->setText(parts.join(", "));
 
             } else {
-                m_poseValid = false;
+                if (m_routeFollower) {
+                    m_routeFollower->setPoseValid(false);
+                }
             }
         } else if (addr == "320") {
             ui->lineEdit_mapname->setText(QStringLiteral("当前地图:   ") + val.toString());
@@ -921,17 +653,32 @@ void Home::handleStatusPacket(const QJsonObject &resp)
 }
 void Home::handleNetworkFailure(int httpStatus, const QString &errorString, const QByteArray &responseBody)
 {
-    Q_UNUSED(httpStatus);
-    Q_UNUSED(errorString);
-    Q_UNUSED(responseBody);
     const bool wasConnected = lastConnectionStatus;
     ui->pushButton_10->setText(tr("通信故障"));
     ui->pushButton_10->setStyleSheet("background-color: #ff0000; min-width: 80px; min-height: 50px; border: 1px solid white; border-radius: 10px; font-size: 18px; font-family: 微软雅黑;");
     lastConnectionStatus = false;
     connectionRestored = false;
-    logMessage(tr("通信故障，正在尝试重连"));
+
+    QString detail = tr("通信故障，正在尝试重连");
+    if (httpStatus > 0) {
+        detail += tr(" (HTTP %1)").arg(httpStatus);
+    }
+    if (!errorString.isEmpty()) {
+        detail += tr("：%1").arg(errorString);
+    }
+    logMessage(detail);
+    if (!responseBody.isEmpty()) {
+        const QString bodyPreview = QString::fromUtf8(responseBody.left(200)).trimmed();
+        if (!bodyPreview.isEmpty()) {
+            logMessage(tr("响应: %1").arg(bodyPreview));
+        }
+    }
     if (wasConnected) {
         restartCheckTimer->start();
+    }
+
+    if (m_routeFollower) {
+        m_routeFollower->setPoseValid(false);
     }
 }
 void Home::modesubmmit()
@@ -939,10 +686,20 @@ void Home::modesubmmit()
     if (!ui) {
         return;
     }
+
+    const QString writeUrlStr = ConfigManager::instance().network().writeInsUrl.trimmed();
+    const QUrl writeUrl(writeUrlStr);
+    if (!writeUrl.isValid()) {
+        logMessage(tr("写寄存器接口地址无效：%1").arg(writeUrlStr));
+        return;
+    }
+
     QWidget *targetWidget = ui->comboBox_Mode;
     QString address = "3c", type = "int8";
     int len = 1;
-    sendStopLocation();
+    if (m_chassisClient) {
+        m_chassisClient->sendStopLocation();
+    }
     QJsonArray writeReq;
     QJsonObject dataObj;
     dataObj["address"] = address;
@@ -951,7 +708,7 @@ void Home::modesubmmit()
     auto combo = qobject_cast<QComboBox *>(targetWidget);
     dataObj["data"] = QJsonArray{combo->currentIndex()};
     writeReq.append(dataObj);
-    QNetworkRequest req(QUrl("http://192.168.31.7:9999/table/writeIns"));
+    QNetworkRequest req(writeUrl);
     req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
     auto manager = new QNetworkAccessManager(this);
     QNetworkReply *reply = manager->post(req, QJsonDocument(writeReq).toJson());
@@ -1155,16 +912,21 @@ bool Home::handleKeyRelease(int key, bool isAutoRepeat)
 // 录像按钮占位实现：后续可接入实际录像逻辑
 void Home::record()
 {
-    // 确保视频流已打开，否则提示后尝试自动开启
-    if (!isVideoStreamActive()) {
-        startVideoStream();
-        if (!isVideoStreamActive()) {
-            QMessageBox::warning(ui ? ui->centralwidget : nullptr, tr("提示"), tr("请先开启视频流后再录像。"));
-            return;
-        }
+    if (!m_videoClient) {
+        return;
     }
 
-    if (!m_isRecording) {
+    // If the stream is not configured (e.g. topic not selected), stop early.
+    if (m_videoClient->streamUrl().isEmpty() || !m_videoClient->streamUrl().isValid()) {
+        QMessageBox::warning(ui ? ui->centralwidget : nullptr, tr("提示"), tr("请先选择/配置视频流后再录像。"));
+        return;
+    }
+
+    if (!m_videoClient->isActive()) {
+        m_videoClient->start();
+    }
+
+    if (!m_videoClient->isRecording()) {
         startRecording();
     } else {
         stopRecordingAndSave();
@@ -1173,7 +935,10 @@ void Home::record()
 // 截图按钮占位实现
 void Home::photo()
 {
-    if (!isVideoStreamActive() && m_lastVideoFrame.isNull()) {
+    if (!m_videoClient) {
+        return;
+    }
+    if (m_videoClient->lastFrame().isNull()) {
         QMessageBox::warning(ui ? ui->centralwidget : nullptr, tr("提示"), tr("请先开启视频流后再拍照。"));
         return;
     }
@@ -1185,19 +950,15 @@ void Home::photo()
         }
     }
 
-    QDir dir(m_saveDirectory);
-    if (!dir.exists()) {
-        dir.mkpath(".");
+    QString savedPath;
+    if (m_videoClient->saveSnapshot(m_saveDirectory, &savedPath)) {
+        QMessageBox::information(parentWidget, tr("成功"), tr("已保存到:\n%1").arg(savedPath));
+        logMessage(tr("已拍照并保存到 %1").arg(savedPath));
+        return;
     }
-    const QString fileName = QStringLiteral("photo_%1.jpg").arg(QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss"));
-    const QString fullPath = dir.filePath(fileName);
-    if (m_lastVideoFrame.save(fullPath, "JPG", 90)) {
-        QMessageBox::information(parentWidget, tr("成功"), tr("已保存到:\n%1").arg(fullPath));
-        logMessage(tr("已拍照并保存到 %1").arg(fullPath));
-    } else {
-        QMessageBox::warning(parentWidget, tr("失败"), tr("保存图片失败"));
-        logMessage(tr("拍照保存失败"));
-    }
+
+    QMessageBox::warning(parentWidget, tr("失败"), tr("保存图片失败"));
+    logMessage(tr("拍照保存失败"));
 }
 // 发送控制器重启命令，并弹出 53 秒倒计时
 void Home::restartControl()
@@ -1213,7 +974,9 @@ void Home::restartControl()
     }
     logMessage(tr("正在下发控制器重启指令"));
     qDebug() << "重启控制命令";
-    sendRebootCommand();
+    if (m_chassisClient) {
+        m_chassisClient->sendRebootCommand();
+    }
     connectionRestored = false;
     restartCheckTimer->start();
     if (!rebootProgressDialog) {
@@ -1239,6 +1002,14 @@ void Home::orignsubmmit()
         return;
     }
     QWidget *messageParent = ui->centralwidget;
+
+    const QString saveUrlStr = ConfigManager::instance().network().saveFileUrl.trimmed();
+    const QUrl saveUrl(saveUrlStr);
+    if (!saveUrl.isValid()) {
+        QMessageBox::critical(messageParent, tr("错误"), tr("保存文件接口地址无效：%1").arg(saveUrlStr));
+        return;
+    }
+
     const QString latStr = ui->lineEdit->text().trimmed();   // 基站纬度输入
     const QString lonStr = ui->lineEdit_8->text().trimmed(); // 基站经度输入
     static const QRegularExpression coordReg(QStringLiteral("^-?\\d+(?:\\.\\d+)?$"));
@@ -1297,7 +1068,7 @@ void Home::orignsubmmit()
     postBody.append("&body=");
     postBody.append(jsonBody.toUtf8());
     QNetworkRequest request;
-    request.setUrl(QUrl(QStringLiteral("http://192.168.31.7:9999/saveFile")));
+    request.setUrl(saveUrl);
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/x-www-form-urlencoded");
     request.setRawHeader("Connection", "keep-alive");
     request.setRawHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36");
@@ -1333,17 +1104,8 @@ void Home::followRouteSegment(int fromPointId, int toPointId, const QList<QPoint
 {
     Q_UNUSED(fromPointId);
     Q_UNUSED(toPointId);
-    RouteSegmentExecution segment;
-    segment.polyline = polyline;
-    if (segment.polyline.isEmpty()) {
-        segment.polyline.append(QPointF(m_currentPoseX, m_currentPoseY));
-    }
-    segment.startTheta = startTheta;
-    segment.endTheta = endTheta;
-    segment.targetIndex = 0;
-    m_pendingRouteSegments.enqueue(segment);
-    if (!m_routeFollowerActive) {
-        startNextSegment();
+    if (m_routeFollower) {
+        m_routeFollower->enqueueSegment(polyline, startTheta, endTheta);
     }
 }
 void Home::handleRouteQueueCompleted()
@@ -1352,158 +1114,9 @@ void Home::handleRouteQueueCompleted()
 }
 void Home::cancelRouteExecution()
 {
-    m_pendingRouteSegments.clear();
-    m_routeFollowerActive = false;
-    if (m_routeFollowerTimer && m_routeFollowerTimer->isActive()) {
-        m_routeFollowerTimer->stop();
-    }
-    resetRouteCommandState();
-    sendVelocityCommand(0.0, 0.0);
-}
-void Home::processRouteFollowerTick()
-{
-    if (!m_routeFollowerActive) {
-        if (!m_pendingRouteSegments.isEmpty()) {
-            startNextSegment();
-        }
-        return;
-    }
-    if (!m_poseValid) {
-        sendRouteVelocity(0.0, 0.0);
-        return;
-    }
-    RouteSegmentExecution &segment = m_activeRouteSegment;
-    if (segment.polyline.isEmpty()) {
-        finalizeCurrentSegment(true);
-        return;
-    }
-    if (segment.targetIndex >= segment.polyline.size()) {
-        finalizeCurrentSegment(true);
-        return;
-    }
-    if (segment.targetIndex == 0) {
-        const double startHeadingError = normalizeAngle(segment.startTheta - m_currentPoseTheta);
-        if (std::abs(startHeadingError) > m_arrivalAngleThresholdRad) {
-            const double angularTarget = std::clamp(m_angularGain * startHeadingError, -m_maxAngularSpeed, m_maxAngularSpeed);
-            const double angularCommand = std::clamp(angularTarget, -m_finalAdjustAngularSpeed, m_finalAdjustAngularSpeed);
-            sendRouteVelocity(0.0, angularCommand);
-            return;
-        }
-        if (segment.polyline.size() > 1) {
-            segment.targetIndex = 1;
-        }
-    }
-    const QPointF current(m_currentPoseX, m_currentPoseY);
-    const QPointF target = segment.polyline.at(segment.targetIndex);
-    const double distance = QLineF(current, target).length();
-    if (segment.targetIndex == segment.polyline.size() - 1) {
-        if (distance <= m_arrivalDistanceThreshold) {
-            const double headingError = normalizeAngle(segment.endTheta - m_currentPoseTheta);
-            if (std::abs(headingError) <= m_arrivalAngleThresholdRad) {
-                finalizeCurrentSegment(true);
-                return;
-            }
-            const double angularTarget = std::clamp(m_angularGain * headingError, -m_maxAngularSpeed, m_maxAngularSpeed);
-            const double angularCommand = std::clamp(angularTarget, -m_finalAdjustAngularSpeed, m_finalAdjustAngularSpeed);
-            sendRouteVelocity(0.0, angularCommand);
-            return;
-        }
+    if (m_routeFollower) {
+        m_routeFollower->cancel();
     } else {
-        if (distance <= m_arrivalDistanceThreshold) {
-            ++segment.targetIndex;
-            return;
-        }
+        sendVelocityCommand(0.0, 0.0);
     }
-    const double angleToTarget = std::atan2(target.y() - current.y(), target.x() - current.x());
-    const double headingError = normalizeAngle(angleToTarget - m_currentPoseTheta);
-    double linear = m_linearGain * distance;
-    linear = std::min(linear, m_maxLinearSpeed);
-    if (std::abs(headingError) > m_headingStopThresholdRad) {
-        linear = 0.0;
-    } else if (std::abs(headingError) > m_headingSlowdownThresholdRad) {
-        linear *= m_headingSlowdownFactor;
-    }
-    if (distance < m_arrivalDistanceThreshold * m_nearTargetDistanceMultiplier) {
-        linear = std::min(linear, m_maxLinearSpeed * m_nearTargetSpeedMultiplier);
-        linear = std::min(linear, m_finalAdjustLinearSpeed);
-    }
-    const double angular = std::clamp(m_angularGain * headingError, -m_maxAngularSpeed, m_maxAngularSpeed);
-    sendRouteVelocity(linear, angular);
-}
-void Home::startNextSegment()
-{
-    if (m_pendingRouteSegments.isEmpty()) {
-        m_routeFollowerActive = false;
-        if (m_routeFollowerTimer && m_routeFollowerTimer->isActive()) {
-            m_routeFollowerTimer->stop();
-        }
-        resetRouteCommandState();
-        sendRouteVelocity(0.0, 0.0);
-        return;
-    }
-    m_activeRouteSegment = m_pendingRouteSegments.dequeue();
-    if (m_activeRouteSegment.polyline.isEmpty()) {
-        m_activeRouteSegment.polyline.append(QPointF(m_currentPoseX, m_currentPoseY));
-    }
-    m_activeRouteSegment.targetIndex = 0;
-    resetRouteCommandState();
-    m_routeFollowerActive = true;
-    if (m_routeFollowerTimer && !m_routeFollowerTimer->isActive()) {
-        m_routeFollowerTimer->start();
-    }
-    processRouteFollowerTick();
-}
-void Home::finalizeCurrentSegment(bool success)
-{
-    if (m_routeFollowerTimer && m_routeFollowerTimer->isActive()) {
-        m_routeFollowerTimer->stop();
-    }
-    m_routeFollowerActive = false;
-    m_pendingRouteSegments.clear();
-    resetRouteCommandState();
-    sendVelocityCommand(0.0, 0.0);
-    emit routeSegmentCompleted(success);
-}
-double Home::normalizeAngle(double angle) const
-{
-    while (angle > M_PI) {
-        angle -= 2.0 * M_PI;
-    }
-    while (angle < -M_PI) {
-        angle += 2.0 * M_PI;
-    }
-    return angle;
-}
-
-void Home::sendStartupWebSocketMessages()
-{
-    if (startupMessagesSent) {
-        return;
-    }
-    if (!webSocket || webSocket->state() != QAbstractSocket::ConnectedState) {
-        return;
-    }
-
-    const QJsonObject stopPacket{{"cmd", "region"}, {"region", "slam"}, {"index", 1}};
-    const QJsonObject stopMsg{{"talk", "stopLocation"}};
-    const QString stopPayload =
-        QString::fromUtf8(QJsonDocument(QJsonObject{{"packet", stopPacket}, {"msg", stopMsg}})
-                              .toJson(QJsonDocument::Compact));
-
-    const QJsonObject scriptPacket{{"cmd", "region"}, {"region", "ScriptDeal"}, {"index", 1}};
-    const QJsonObject scriptMsg{{"talk", "printScript"},
-                                {"name", QStringLiteral(u"script/motor/步科电机-差速轮/recmotor.lua")}};
-    const QString scriptPayload =
-        QString::fromUtf8(QJsonDocument(QJsonObject{{"packet", scriptPacket}, {"msg", scriptMsg}})
-                              .toJson(QJsonDocument::Compact));
-
-    for (int i = 0; i < 3; ++i) {
-        webSocket->sendTextMessage(stopPayload);
-    }
-    for (int i = 0; i < 3; ++i) {
-        webSocket->sendTextMessage(scriptPayload);
-    }
-
-    startupMessagesSent = true;
-    qDebug() << "Startup WebSocket messages dispatched";
 }

@@ -6,7 +6,7 @@ TEMPLATE = app
 TARGET = Tenco
 INCLUDEPATH += .
 DESTDIR     = $$PWD/../bin
-CONFIG      += warn_off
+CONFIG      += warn_on
 greaterThan(QT_MAJOR_VERSION, 5): QT += core5compat
 # Qt modules
 QT += core gui widgets
@@ -35,6 +35,10 @@ HEADERS += mainwindow.h \
            about.h \
            homenetworkworker.h \
            mapgraphicsview.h \
+           statusclient.h \
+           chassisclient.h \
+           videoclient.h \
+           routefollower.h \
            configmanager.h
 
 FORMS += mainwindow.ui
@@ -51,6 +55,10 @@ SOURCES += main.cpp \
            about.cpp \
            homenetworkworker.cpp \
            mapgraphicsview.cpp \
+           statusclient.cpp \
+           chassisclient.cpp \
+           videoclient.cpp \
+           routefollower.cpp \
            configmanager.cpp
 
 RESOURCES += resources.qrc

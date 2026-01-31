@@ -52,12 +52,13 @@ mingw32-make -j
 
 ## 网络与协议（需要按你的设备调整）
 
-当前项目内仍有部分接口地址为硬编码（见 `home.cpp`）：
+接口地址可通过 `config.json` 的 `network.*` 配置（默认值见仓库自带 `config.json`）：
 
-- **WebSocket（底盘控制）**：`ws://192.168.31.7:1202`
-- **HTTP（状态轮询）**：`http://192.168.31.7:9999/table/reads`
-- **HTTP（写寄存器/模式等）**：`http://192.168.31.7:9999/table/writeIns`
-- **HTTP（保存远端文件，如 GPS 配置）**：`http://192.168.31.7:9999/saveFile`
+- `network.websocketUrl`：WebSocket（底盘控制）
+- `network.statusReadUrl`：HTTP（状态轮询）
+- `network.writeInsUrl`：HTTP（写寄存器/模式等）
+- `network.saveFileUrl`：HTTP（保存远端文件，如 GPS 配置）
+- `network.statusPollIntervalMs`：状态轮询间隔（ms）
 
 ### 状态字段（轮询返回 address → UI 映射）
 
