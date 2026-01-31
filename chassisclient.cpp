@@ -152,7 +152,7 @@ void ChassisClient::sendStartupMessagesIfNeeded()
 
     const QJsonObject scriptPacket{{"cmd", "region"}, {"region", "ScriptDeal"}, {"index", 1}};
     const QJsonObject scriptMsg{{"talk", "printScript"},
-                                {"name", QStringLiteral(u"script/motor/步科电机-差速轮/recmotor.lua")}};
+                                {"name", QStringLiteral("script/motor/\u6b65\u79d1\u7535\u673a-\u5dee\u901f\u8f6e/recmotor.lua")}};
     const QString scriptPayload =
         QString::fromUtf8(QJsonDocument(QJsonObject{{"packet", scriptPacket}, {"msg", scriptMsg}}).toJson(QJsonDocument::Compact));
 

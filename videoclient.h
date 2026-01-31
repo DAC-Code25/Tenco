@@ -6,6 +6,7 @@
 #include <QByteArray>
 #include <QImage>
 #include <QNetworkReply>
+#include <QString>
 #include <QUrl>
 
 class QFile;

@@ -2,8 +2,10 @@
 #define STATUSCLIENT_H
 
 #include <QObject>
+#include <QByteArray>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QString>
 #include <QUrl>
 
 class QThread;
@@ -42,4 +44,3 @@ private:
 };
 
 #endif // STATUSCLIENT_H
-
