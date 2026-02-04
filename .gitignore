@@ -14,7 +14,7 @@ bin/
 *.pro.user
 *.pro.user.*
 *.qmake.stash
-
+CMakeLists.txt.user*
 # Qt generated files (normally belong in build/)
 moc_*.cpp
 moc_*.h
@@ -24,6 +24,14 @@ qrc_*.cpp
 # Qt Creator clangd cache
 .qtc_clangd/
 **/.qtc_clangd/
+
+# CMake (if build dir is created inside the repo)
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+cmake-build*/
+build-cmake*/
 
 # Logs
 *.log

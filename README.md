@@ -82,11 +82,18 @@ mingw32-make -j
 
 - `MainWindow`：承载导航栏与页面容器（`QStackedWidget`），并处理无边框拖动/置顶等。
 - `Home`：
-  - `HomeNetworkWorker` 在独立线程周期性 HTTP 拉取状态 → 更新 UI
-  - 通过 WebSocket 发送速度指令 `cmd_vel`
-  - 视频流解析 JPEG 帧 → 显示/录像/截图
+  - `StatusClient`（内部使用 `HomeNetworkWorker + QThread`）：周期性 HTTP 拉取状态 → 更新 UI
+  - `ChassisClient`（`QWebSocket`）：发送速度指令 `cmd_vel` / 重启 / 停止定位等
+  - `VideoClient`（HTTP MJPEG）：解析 JPEG 帧 → 显示/录像/截图 + 断线重连
+  - `RouteFollower`：路线段跟随算法（输出速度命令，由 `Home` 转发给 `ChassisClient`）
 - `Map`：地图编辑器（`QGraphicsScene/View`），支持点/路径/路线队列；路线按段下发。
 - `ConfigManager`：单例配置加载与坐标换算。
+
+## 开发文档（更详细）
+
+仓库内已提供更完整的“企业化”开发文档（构建/配置/架构/协议/流程/测试/CI/发布等）：
+
+- `docs/README.md`
 
 ### 路线执行链路
 
