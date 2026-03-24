@@ -67,11 +67,12 @@ MainWindow::MainWindow(QWidget *parent) // 主窗口构造函数
     aboutPage = new About(ui, this); // 初始化关于页控制对象
 
     if (homePage && mapPage) {
-        connect(homePage, &Home::vehiclePoseUpdated, mapPage, &Map::updateVehiclePose);
-        connect(mapPage, &Map::routeSegmentDispatched, homePage, &Home::followRouteSegment);
-        connect(mapPage, &Map::routeQueueCompletedOnce, homePage, &Home::handleRouteQueueCompleted);
-        connect(mapPage, &Map::routeExecutionCancelled, homePage, &Home::cancelRouteExecution);
-        connect(homePage, &Home::routeSegmentCompleted, mapPage, &Map::handleRouteSegmentCompleted);
+        //建立信号槽连接（发送者，绑定符号，接收者，绑定符号）
+        connect(homePage, &Home::vehiclePoseUpdated, mapPage, &Map::updateVehiclePose); //位姿推送
+        connect(mapPage, &Map::routeSegmentDispatched, homePage, &Home::followRouteSegment); //任务队列推送
+        connect(mapPage, &Map::routeQueueCompletedOnce, homePage, &Home::handleRouteQueueCompleted); //队列完成推送
+        connect(mapPage, &Map::routeExecutionCancelled, homePage, &Home::cancelRouteExecution); //路线取消推送
+        connect(homePage, &Home::routeSegmentCompleted, mapPage, &Map::handleRouteSegmentCompleted); //跟随结果推送
     }
 
     //四个界面控制按钮
@@ -188,7 +189,7 @@ void MainWindow::on_guanbi_clicked()
     close();
 }
 
-void MainWindow::applyTopMost(bool enabled)
+void MainWindow::applyTopMost(bool enabled) //单独封装置顶
 {
 #ifdef Q_OS_WIN
     HWND hwnd = reinterpret_cast<HWND>(winId());
@@ -203,7 +204,7 @@ void MainWindow::applyTopMost(bool enabled)
 #endif
 }
 
-bool MainWindow::isInNavBarDragArea(const QPoint &globalPos) const
+bool MainWindow::isInNavBarDragArea(const QPoint &globalPos) const //判断拖拽区域是否在导航栏
 {
     if (!ui || !ui->navBar || !ui->navBar->isVisible()) {
         return false;
@@ -213,7 +214,7 @@ bool MainWindow::isInNavBarDragArea(const QPoint &globalPos) const
     return navRect.contains(globalPos);
 }
 
-void MainWindow::changeEvent(QEvent *event)
+void MainWindow::changeEvent(QEvent *event) //监听窗口状态变化 同步改变四个按钮图标 目的是避免快捷键操作导致图标不变化
 {
     QMainWindow::changeEvent(event);
     if (!ui) {
@@ -238,7 +239,7 @@ void MainWindow::changeEvent(QEvent *event)
     }
 }
 
-void MainWindow::mousePressEvent(QMouseEvent *event)
+void MainWindow::mousePressEvent(QMouseEvent *event) //鼠标点击事件
 {
     if (event->button() == Qt::LeftButton) {
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
@@ -257,7 +258,7 @@ void MainWindow::mousePressEvent(QMouseEvent *event)
     QMainWindow::mousePressEvent(event);
 }
 
-void MainWindow::mouseMoveEvent(QMouseEvent *event)
+void MainWindow::mouseMoveEvent(QMouseEvent *event) //鼠标移动事件
 {
     if (draggingWindow && (event->buttons() & Qt::LeftButton)) {
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
@@ -271,7 +272,7 @@ void MainWindow::mouseMoveEvent(QMouseEvent *event)
     QMainWindow::mouseMoveEvent(event);
 }
 
-void MainWindow::mouseReleaseEvent(QMouseEvent *event)
+void MainWindow::mouseReleaseEvent(QMouseEvent *event) //鼠标释放事件
 {
     if (event->button() == Qt::LeftButton && draggingWindow) {
         draggingWindow = false;
@@ -281,7 +282,7 @@ void MainWindow::mouseReleaseEvent(QMouseEvent *event)
     QMainWindow::mouseReleaseEvent(event);
 }
 
-void MainWindow::keyPressEvent(QKeyEvent *event)
+void MainWindow::keyPressEvent(QKeyEvent *event) //键盘按下事件
 {
     if (homePage && homePage->handleKeyPress(event->key(), event->isAutoRepeat())) {
         event->accept();
@@ -291,7 +292,7 @@ void MainWindow::keyPressEvent(QKeyEvent *event)
     QMainWindow::keyPressEvent(event);
 }
 
-void MainWindow::keyReleaseEvent(QKeyEvent *event)
+void MainWindow::keyReleaseEvent(QKeyEvent *event) //键盘松开事件
 {
     if (homePage && homePage->handleKeyRelease(event->key(), event->isAutoRepeat())) {
         event->accept();

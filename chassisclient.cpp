@@ -2,14 +2,17 @@
 
 #include <QAbstractSocket>
 #include <QJsonDocument>
+#include <QNetworkRequest>
 #include <QNetworkProxy>
 #include <QTimer>
 #include <QWebSocket>
 #include <QWebSocketProtocol>
+#include <QLoggingCategory>
 #include <QtGlobal>
 
 namespace {
 constexpr int kStartupMessageRepeat = 3;
+Q_LOGGING_CATEGORY(lcChassisClient, "tenco.net.chassis")
 }
 
 ChassisClient::ChassisClient(QObject *parent)
@@ -49,7 +52,14 @@ ChassisClient::~ChassisClient()
 void ChassisClient::setUrl(const QUrl &url)
 {
     m_url = url;
+    m_manualDisconnect = false;
+    m_reconnectAttempt = 0;
     m_startupMessagesSent = false;
+}
+
+void ChassisClient::setAuthorizationToken(const QString &token)
+{
+    m_authToken = token.trimmed();
 }
 
 void ChassisClient::setAutoReconnect(bool enabled)
@@ -63,15 +73,19 @@ void ChassisClient::setAutoReconnect(bool enabled)
 void ChassisClient::setReconnectIntervalMs(int intervalMs)
 {
     m_reconnectIntervalMs = qMax(200, intervalMs);
+    m_reconnectAttempt = 0;
 }
 
 void ChassisClient::connectToHost()
 {
+    m_manualDisconnect = false;
     openIfPossible();
 }
 
 void ChassisClient::disconnectFromHost()
 {
+    m_manualDisconnect = true;
+    m_reconnectAttempt = 0;
     if (m_reconnectTimer) {
         m_reconnectTimer->stop();
     }
@@ -90,7 +104,11 @@ void ChassisClient::openIfPossible()
     if (!m_socket) {
         return;
     }
+    if (m_manualDisconnect) {
+        return;
+    }
     if (!m_url.isValid()) {
+        qCWarning(lcChassisClient) << "Invalid WebSocket URL:" << m_url;
         emit errorOccurred(tr("WebSocket 地址无效"));
         return;
     }
@@ -100,9 +118,13 @@ void ChassisClient::openIfPossible()
         return;
     }
 
-    // Avoid system proxy issues.
     m_socket->setProxy(QNetworkProxy::NoProxy);
-    m_socket->open(m_url);
+    qCInfo(lcChassisClient) << "Opening WebSocket to" << m_url << ", attempt" << m_reconnectAttempt;
+    QNetworkRequest request(m_url);
+    if (!m_authToken.isEmpty()) {
+        request.setRawHeader("Authorization", QByteArray("Bearer ") + m_authToken.toUtf8());
+    }
+    m_socket->open(request);
 }
 
 void ChassisClient::sendJson(const QJsonObject &packetObj, const QJsonObject &msgObj)
@@ -168,16 +190,25 @@ void ChassisClient::sendStartupMessagesIfNeeded()
 
 void ChassisClient::handleConnected()
 {
+    m_manualDisconnect = false;
+    m_reconnectAttempt = 0;
+    if (m_reconnectTimer && m_reconnectTimer->isActive()) {
+        m_reconnectTimer->stop();
+    }
+    qCInfo(lcChassisClient) << "WebSocket connected";
     sendStartupMessagesIfNeeded();
     emit connected();
 }
 
 void ChassisClient::handleDisconnected()
 {
+    qCWarning(lcChassisClient) << "WebSocket disconnected, manual?" << m_manualDisconnect;
     emit disconnected();
-    if (m_autoReconnect && m_reconnectTimer && m_url.isValid()) {
+    if (!m_manualDisconnect && m_autoReconnect && m_reconnectTimer && m_url.isValid()) {
         if (!m_reconnectTimer->isActive()) {
-            m_reconnectTimer->start(m_reconnectIntervalMs);
+            const int delayMs = currentReconnectDelayMs();
+            qCInfo(lcChassisClient) << "Scheduling reconnect in" << delayMs << "ms";
+            m_reconnectTimer->start(delayMs);
         }
     }
 }
@@ -186,6 +217,7 @@ void ChassisClient::handleError(int error)
 {
     Q_UNUSED(error);
     const QString errStr = m_socket ? m_socket->errorString() : QStringLiteral("unknown");
+    qCWarning(lcChassisClient) << "WebSocket error:" << errStr;
     emit errorOccurred(errStr);
 }
 
@@ -194,5 +226,18 @@ void ChassisClient::attemptReconnect()
     if (!m_autoReconnect) {
         return;
     }
+    if (m_manualDisconnect) {
+        return;
+    }
+    ++m_reconnectAttempt;
     openIfPossible();
+}
+
+int ChassisClient::currentReconnectDelayMs() const
+{
+    const int boundedAttempt = qBound(0, m_reconnectAttempt, 6);
+    const int base = m_reconnectIntervalMs;
+    const int factor = 1 << boundedAttempt;
+    const qint64 candidate = static_cast<qint64>(base) * factor;
+    return static_cast<int>(qMin(candidate, static_cast<qint64>(m_reconnectMaxIntervalMs)));
 }

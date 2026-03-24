@@ -18,4 +18,6 @@
 10. `09_Release_and_Deployment.md`：版本/打包/发布
 11. `10_Troubleshooting.md`：常见问题排查
 12. `11_Roadmap.md`：工程化改进路线图（可选）
+13. `12_AI_Project_Learnings.md`：工程经验总结（带证据链）
+14. `13_Optimization_Audit_2026-03-12.md`：全面审查与后续优化清单
 

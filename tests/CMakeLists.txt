@@ -1,0 +1,103 @@
+find_package(Qt6 REQUIRED COMPONENTS Core Test)
+
+qt_add_executable(tenco_test_routefollower
+    test_routefollower.cpp
+    ../routefollower.h
+    ../routefollower.cpp
+)
+target_include_directories(tenco_test_routefollower PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+)
+target_link_libraries(tenco_test_routefollower PRIVATE
+    Qt6::Core
+    Qt6::Test
+)
+add_test(NAME tenco_test_routefollower COMMAND tenco_test_routefollower)
+
+qt_add_executable(tenco_test_routepathfinder
+    test_routepathfinder.cpp
+    ../routepathfinder.h
+    ../routepathfinder.cpp
+)
+target_include_directories(tenco_test_routepathfinder PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+)
+target_link_libraries(tenco_test_routepathfinder PRIVATE
+    Qt6::Core
+    Qt6::Test
+)
+add_test(NAME tenco_test_routepathfinder COMMAND tenco_test_routepathfinder)
+
+qt_add_executable(tenco_test_mapdocument
+    test_mapdocument.cpp
+    ../mapdocument.h
+    ../mapdocument.cpp
+)
+target_include_directories(tenco_test_mapdocument PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+)
+target_link_libraries(tenco_test_mapdocument PRIVATE
+    Qt6::Core
+    Qt6::Test
+)
+add_test(NAME tenco_test_mapdocument COMMAND tenco_test_mapdocument)
+
+qt_add_executable(tenco_test_configmanager
+    test_configmanager.cpp
+    ../configmanager.h
+    ../configmanager.cpp
+)
+target_include_directories(tenco_test_configmanager PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+)
+target_link_libraries(tenco_test_configmanager PRIVATE
+    Qt6::Core
+    Qt6::Test
+)
+add_test(NAME tenco_test_configmanager COMMAND tenco_test_configmanager)
+
+qt_add_executable(tenco_test_statusprotocol
+    test_statusprotocol.cpp
+    ../statusprotocol.h
+    ../statusprotocol.cpp
+)
+target_include_directories(tenco_test_statusprotocol PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+)
+target_link_libraries(tenco_test_statusprotocol PRIVATE
+    Qt6::Core
+    Qt6::Test
+)
+add_test(NAME tenco_test_statusprotocol COMMAND tenco_test_statusprotocol)
+
+qt_add_executable(tenco_test_map_route_integration
+    test_map_route_integration.cpp
+    ../map.h
+    ../map.cpp
+    ../mapgraphicsview.h
+    ../mapgraphicsview.cpp
+    ../mapdocument.h
+    ../mapdocument.cpp
+    ../routepathfinder.h
+    ../routepathfinder.cpp
+    ../configmanager.h
+    ../configmanager.cpp
+    ../battery.h
+    ../battery.cpp
+    ../imageswitch.h
+    ../imageswitch.cpp
+    ../mainwindow.ui
+)
+set_property(TARGET tenco_test_map_route_integration PROPERTY
+    AUTOUIC_SEARCH_PATHS "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+target_include_directories(tenco_test_map_route_integration PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+)
+target_link_libraries(tenco_test_map_route_integration PRIVATE
+    Qt6::Core
+    Qt6::Gui
+    Qt6::Widgets
+    Qt6::Test
+)
+add_test(NAME tenco_test_map_route_integration COMMAND tenco_test_map_route_integration)

@@ -30,7 +30,7 @@
 
 ## 3. 运行环境与外部依赖
 
-- Qt：建议 Qt 6.5+（本项目当前使用 qmake，且 `Tenco.pro` 启用了 `core5compat` 兼容模块）
+- Qt：建议 Qt 6.5+（本项目统一使用 CMake，启用 `Core5Compat` 兼容模块）
 - 模块依赖：`core/gui/widgets/network/websockets`
 - 设备侧依赖（必须按你的设备修改 `config.json`）：
   - `network.statusReadUrl`：状态轮询 HTTP 接口
@@ -44,4 +44,3 @@
 1. `config.json` 里每个 URL 指向哪个服务、返回什么（见 `docs/06_Network_and_Protocol.md`）
 2. 首页闭环链路：状态轮询更新 UI；手动控制下发 `cmd_vel`；视频拉流显示（见 `docs/04_Architecture.md`）
 3. 地图路线闭环链路：Map → Home → RouteFollower → ChassisClient → Map（见 `docs/04_Architecture.md`）
-

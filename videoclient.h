@@ -72,6 +72,7 @@ private:
     void setState(State state, const QString &message = QString());
     void scheduleReconnect();
     void cleanupReply();
+    int currentReconnectDelayMs() const;
 
     QNetworkAccessManager *m_manager = nullptr;
     QNetworkReply *m_reply = nullptr;
@@ -82,6 +83,8 @@ private:
     QUrl m_url;
 
     int m_reconnectIntervalMs = 2000;
+    int m_reconnectMaxIntervalMs = 30000;
+    int m_reconnectAttempt = 0;
     bool m_autoReconnect = true;
     State m_state = State::Stopped;
     bool m_seenFirstFrame = false;

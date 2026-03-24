@@ -6,6 +6,7 @@
 #include <QJsonObject>
 #include <QUrl>
 #include <QByteArray>
+#include <QString>
 
 class QTimer;
 class QNetworkReply;
@@ -17,7 +18,7 @@ class HomeNetworkWorker : public QObject
 public:
     explicit HomeNetworkWorker(QObject *parent = nullptr);
 
-    void configure(const QUrl &url, const QJsonArray &requests, int intervalMs);
+    void configure(const QUrl &url, const QJsonArray &requests, int intervalMs, const QString &authToken = QString());
 
 public slots:
     void start();
@@ -31,6 +32,7 @@ signals:
 private:
     void handleReply(QNetworkReply *reply);
     void onReplyFinished();
+    void applyPollingIntervalByHealth(bool success);
 
     QNetworkAccessManager *m_manager;
     QTimer *m_timer;
@@ -40,6 +42,10 @@ private:
     bool m_fetchPending = false;
     bool m_running = false;
     int m_intervalMs = 100;
+    QString m_authToken;
+    int m_failureCount = 0;
+    int m_requestTimeoutMs = 3000;
+    int m_maxBackoffMs = 5000;
 };
 
 #endif // HOMENETWORKWORKER_H

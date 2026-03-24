@@ -1,8 +1,9 @@
 cmake_minimum_required(VERSION 3.16)
 
 project(Tenco LANGUAGES CXX)
+include(CTest)
 
-# Keep parity with Tenco.pro (CONFIG += c++17)
+# Project-wide C++ standard
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -13,6 +14,9 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 
+option(TENCO_ENABLE_WARNINGS "Enable stricter compiler warnings" ON)
+option(TENCO_BUILD_TESTS "Build unit tests" ON)
+
 # Qt 6 is the primary supported build for this repository.
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network WebSockets Core5Compat)
 
@@ -20,6 +24,8 @@ qt_standard_project_setup()
 
 qt_add_executable(Tenco
     main.cpp
+    loggingmanager.h
+    loggingmanager.cpp
     UI_Design.cpp
 
     mainwindow.h
@@ -35,8 +41,14 @@ qt_add_executable(Tenco
     home.h
     home.cpp
 
+    home_status_presenter.h
+    home_status_presenter.cpp
+
     map.h
     map.cpp
+
+    mapdocument.h
+    mapdocument.cpp
 
     mapgraphicsview.h
     mapgraphicsview.cpp
@@ -56,8 +68,14 @@ qt_add_executable(Tenco
     routefollower.h
     routefollower.cpp
 
+    routepathfinder.h
+    routepathfinder.cpp
+
     configmanager.h
     configmanager.cpp
+
+    statusprotocol.h
+    statusprotocol.cpp
 
     maintenance.h
     maintenance.cpp
@@ -72,7 +90,7 @@ qt_add_executable(Tenco
 )
 
 if(WIN32)
-    # App icon (same as RC_FILE += app_icon.rc in qmake).
+    # App icon resource for Windows builds.
     target_sources(Tenco PRIVATE app_icon.rc)
     set_target_properties(Tenco PROPERTIES WIN32_EXECUTABLE TRUE)
 endif()
@@ -88,8 +106,16 @@ target_link_libraries(Tenco PRIVATE
 
 target_include_directories(Tenco PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
-# Keep the runtime output directory consistent with qmake:
-# DESTDIR = $$PWD/../bin  ->  <repo>/../bin
+if(TENCO_ENABLE_WARNINGS)
+    if(MSVC)
+        target_compile_options(Tenco PRIVATE /W4 /permissive- /wd4100 /wd4244 /wd4267)
+    else()
+        target_compile_options(Tenco PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+endif()
+
+# Keep a stable runtime output directory for local runs and deployment scripts.
+# Output path: <repo>/../bin
 set(_tenco_bin_dir "${CMAKE_CURRENT_SOURCE_DIR}/../bin")
 set_target_properties(Tenco PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${_tenco_bin_dir}"
@@ -109,4 +135,21 @@ add_custom_command(TARGET Tenco POST_BUILD
     COMMENT "Copy config.json next to the executable"
 )
 
-qt_finalize_executable(Tenco)
+include(GNUInstallDirs)
+install(TARGETS Tenco
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+install(FILES
+    "${CMAKE_CURRENT_SOURCE_DIR}/config.json"
+    DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+
+set(CPACK_PACKAGE_NAME "Tenco")
+set(CPACK_PACKAGE_VENDOR "Tenco")
+set(CPACK_PACKAGE_VERSION "1.0.0")
+set(CPACK_GENERATOR "ZIP")
+include(CPack)
+
+if(BUILD_TESTING AND TENCO_BUILD_TESTS)
+    add_subdirectory(tests)
+endif()

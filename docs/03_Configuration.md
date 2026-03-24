@@ -81,6 +81,7 @@
 - `network.statusReadUrl`：状态轮询接口
 - `network.writeInsUrl`：写寄存器/写模式接口
 - `network.saveFileUrl`：保存远端文件接口（例如 GPS 配置）
+- `network.authToken`：可选认证令牌，若非空会自动附加 `Authorization: Bearer <token>`
 - `network.statusPollIntervalMs`：轮询周期（ms）
 
 对应代码：
@@ -98,4 +99,3 @@
 - 最大：5000ms
 
 这类“边界”属于企业项目里很重要的稳定性手段（避免误配导致 UI 卡死或网络压死）。
-

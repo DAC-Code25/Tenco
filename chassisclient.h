@@ -20,6 +20,8 @@ public:
 
     void setUrl(const QUrl &url);
     QUrl url() const { return m_url; }
+    void setAuthorizationToken(const QString &token);
+    QString authorizationToken() const { return m_authToken; }
 
     void setAutoReconnect(bool enabled);
     bool autoReconnect() const { return m_autoReconnect; }
@@ -50,13 +52,18 @@ private:
     void openIfPossible();
     void sendJson(const QJsonObject &packetObj, const QJsonObject &msgObj);
     void sendStartupMessagesIfNeeded();
+    int currentReconnectDelayMs() const;
 
     QUrl m_url;
     QWebSocket *m_socket = nullptr;
     QTimer *m_reconnectTimer = nullptr;
     bool m_autoReconnect = true;
     int m_reconnectIntervalMs = 1000;
+    int m_reconnectMaxIntervalMs = 15000;
+    int m_reconnectAttempt = 0;
+    bool m_manualDisconnect = false;
     bool m_startupMessagesSent = false;
+    QString m_authToken;
 };
 
 #endif // CHASSISCLIENT_H

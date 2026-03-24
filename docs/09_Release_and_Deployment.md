@@ -38,3 +38,25 @@ Tenco/
 - [ ] 版本号更新（如果你采用版本号策略）
 - [ ] 打包产物能在“无 Qt 环境”的机器运行（用干净 VM 最好）
 
+---
+
+## 4. 当前仓库可直接执行的发布命令
+
+```powershell
+cmake --preset release
+cmake --build --preset release
+ctest --preset release
+```
+
+生成 ZIP 包（基于 CPack）：
+
+```powershell
+cd build\preset-release
+cpack -G ZIP
+```
+
+也可以直接运行脚本（根目录）：
+
+```powershell
+.\scripts\package_windows.ps1
+```

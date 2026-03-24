@@ -154,16 +154,6 @@ static QString VIDEO_STYLE() {
         "}"
         );
 }
-//底部输入框
-static QString LINEEDIT_STYLE() {
-    return    QStringLiteral(
-        "QLineEdit {"
-        "border: 1px solid  #cecece;"
-        " font-size: 12px;"
-        "}"
-        );
-}
-
 //首页信息框
 static QString LINEEDIT_STYLE1() {
     return    QStringLiteral(
@@ -206,28 +196,6 @@ static QString BUTTON_STYLE6(){
         "}"
         "QPushButton:pressed {"
         "   background-color: #c519ff;"
-        "}"
-        );
-}
-//刷新按钮
-static QString BUTTON_STYLE7(){
-    return    QStringLiteral(
-        "QPushButton {"
-        "background-color: #a9e2f3;"
-        "color: #550000;"
-        "border-radius: 5px;"
-        "border: 1px solid white;"
-        "font-size: 14px;"
-        "min-width: 70px;"
-        "min-height: 20px;"
-        "}"
-        "QPushButton:hover {"
-        "  background-color: #81daf5;"
-        "  border: 2px solid #ffffff;"
-        "}"
-        "QPushButton:pressed {"
-        " background-color: #00bfff;"
-        "border: 3px solid #ffffff;"
         "}"
         );
 }

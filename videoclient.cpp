@@ -9,9 +9,12 @@
 #include <QNetworkRequest>
 #include <QTimer>
 #include <QUrlQuery>
+#include <QLoggingCategory>
 
 #include <algorithm>
 #include <cmath>
+
+Q_LOGGING_CATEGORY(lcVideoClient, "tenco.net.video")
 
 VideoClient::VideoClient(QObject *parent)
     : QObject(parent)
@@ -55,6 +58,7 @@ QString VideoClient::buildUrlForTopic(const QString &topic) const
 void VideoClient::setStreamUrl(const QUrl &url)
 {
     m_url = url;
+    m_reconnectAttempt = 0;
 }
 
 void VideoClient::setAutoReconnect(bool enabled)
@@ -68,6 +72,7 @@ void VideoClient::setAutoReconnect(bool enabled)
 void VideoClient::setReconnectIntervalMs(int intervalMs)
 {
     m_reconnectIntervalMs = std::max(200, intervalMs);
+    m_reconnectAttempt = 0;
 }
 
 bool VideoClient::isActive() const
@@ -91,6 +96,9 @@ void VideoClient::start()
 
     m_buffer.clear();
     m_seenFirstFrame = false;
+    if (m_reconnectTimer && m_reconnectTimer->isActive()) {
+        m_reconnectTimer->stop();
+    }
 
     QNetworkRequest req{m_url};
     req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("TencoVideoClient/1.0"));
@@ -101,6 +109,7 @@ void VideoClient::start()
 #endif
 
     m_reply = m_manager->get(req);
+    qCInfo(lcVideoClient) << "Opening stream" << m_url << ", reconnect attempt" << m_reconnectAttempt;
     connect(m_reply, &QNetworkReply::readyRead, this, &VideoClient::handleReadyRead);
     connect(m_reply, &QNetworkReply::finished, this, &VideoClient::handleStreamFinished);
 #if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
@@ -184,6 +193,7 @@ void VideoClient::handleReadyRead()
 
         if (!m_seenFirstFrame) {
             m_seenFirstFrame = true;
+            m_reconnectAttempt = 0;
             setState(State::Streaming, tr("视频流已连接"));
         }
 
@@ -204,6 +214,7 @@ void VideoClient::handleReadyRead()
 
 void VideoClient::handleStreamFinished()
 {
+    qCWarning(lcVideoClient) << "Stream finished";
     cleanupReply();
     setState(State::Stopped, tr("视频流已结束，等待重连..."));
     scheduleReconnect();
@@ -213,6 +224,7 @@ void VideoClient::handleStreamError(QNetworkReply::NetworkError error)
 {
     Q_UNUSED(error);
     const QString errStr = m_reply ? m_reply->errorString() : QStringLiteral("unknown");
+    qCWarning(lcVideoClient) << "Stream error:" << errStr;
     cleanupReply();
     setState(State::Error, tr("视频流异常：%1").arg(errStr));
     scheduleReconnect();
@@ -231,7 +243,10 @@ void VideoClient::scheduleReconnect()
     }
 
     if (!m_reconnectTimer->isActive()) {
-        m_reconnectTimer->start(m_reconnectIntervalMs);
+        const int delayMs = currentReconnectDelayMs();
+        qCInfo(lcVideoClient) << "Scheduling reconnect in" << delayMs << "ms";
+        m_reconnectTimer->start(delayMs);
+        ++m_reconnectAttempt;
     }
 }
 
@@ -241,6 +256,14 @@ void VideoClient::restartStream()
         return;
     }
     start();
+}
+
+int VideoClient::currentReconnectDelayMs() const
+{
+    const int boundedAttempt = std::clamp(m_reconnectAttempt, 0, 6);
+    const int factor = 1 << boundedAttempt;
+    const qint64 candidate = static_cast<qint64>(m_reconnectIntervalMs) * factor;
+    return static_cast<int>(std::min(candidate, static_cast<qint64>(m_reconnectMaxIntervalMs)));
 }
 
 void VideoClient::setState(State state, const QString &message)
@@ -333,4 +356,3 @@ bool VideoClient::saveSnapshot(const QString &directory, QString *outPath) const
     }
     return true;
 }
-

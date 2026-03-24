@@ -5,8 +5,11 @@
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLoggingCategory>
 #include <QtGlobal>
 #include <QtMath>
+
+Q_LOGGING_CATEGORY(lcConfigManager, "tenco.config")
 
 namespace {
 constexpr double kEarthRadiusMeters = 6378137.0; // WGS84 equatorial radius
@@ -61,6 +64,12 @@ void ConfigManager::reload()
     load();
 }
 
+void ConfigManager::setConfigFilePath(const QString &path)
+{
+    m_configPathOverride = path.trimmed();
+    reload();
+}
+
 ConfigManager::ConfigManager(QObject *parent)
     : QObject(parent)
 {
@@ -76,14 +85,20 @@ void ConfigManager::ensureLoaded()
 
 void ConfigManager::load()
 {
-    const QString path = defaultConfigPath();
+    const QString path = m_configPathOverride.isEmpty() ? defaultConfigPath() : m_configPathOverride;
     m_configPath = path;
+    m_loadedFromFile = false;
     loadDefaults();
     if (QFile::exists(path)) {
         loadFromFile(path);
+        m_loadedFromFile = true;
+    } else {
+        qCWarning(lcConfigManager) << "Config file not found, fallback to defaults:" << path;
     }
+    sanitizeConfig();
     m_loaded = true;
     updateCachedScales();
+    qCInfo(lcConfigManager) << "Config loaded from" << m_configPath << ", from file?" << m_loadedFromFile;
 }
 
 void ConfigManager::loadFromFile(const QString &path)
@@ -99,6 +114,7 @@ void ConfigManager::loadFromFile(const QString &path)
 
     const QJsonDocument doc = QJsonDocument::fromJson(raw);
     if (!doc.isObject()) {
+        qCWarning(lcConfigManager) << "Invalid JSON object in config:" << path;
         return;
     }
 
@@ -150,6 +166,7 @@ void ConfigManager::loadFromFile(const QString &path)
         m_network.statusReadUrl = networkObj.value(QStringLiteral("statusReadUrl")).toString(m_network.statusReadUrl);
         m_network.writeInsUrl = networkObj.value(QStringLiteral("writeInsUrl")).toString(m_network.writeInsUrl);
         m_network.saveFileUrl = networkObj.value(QStringLiteral("saveFileUrl")).toString(m_network.saveFileUrl);
+        m_network.authToken = networkObj.value(QStringLiteral("authToken")).toString(m_network.authToken).trimmed();
         m_network.statusPollIntervalMs =
             networkObj.value(QStringLiteral("statusPollIntervalMs")).toInt(m_network.statusPollIntervalMs);
         m_network.statusPollIntervalMs = qBound(kMinStatusPollIntervalMs, m_network.statusPollIntervalMs, kMaxStatusPollIntervalMs);
@@ -169,6 +186,34 @@ void ConfigManager::loadDefaults()
     m_network.writeInsUrl = QString::fromUtf8(kDefaultWriteInsUrl);
     m_network.saveFileUrl = QString::fromUtf8(kDefaultSaveFileUrl);
     m_network.statusPollIntervalMs = kDefaultStatusPollIntervalMs;
+}
+
+void ConfigManager::sanitizeConfig()
+{
+    m_control.arrivalDistanceThreshold = qMax(0.01, m_control.arrivalDistanceThreshold);
+    m_control.arrivalAngleThresholdDeg = qBound(0.0, m_control.arrivalAngleThresholdDeg, 180.0);
+    m_control.maxLinearSpeed = qMax(0.0, m_control.maxLinearSpeed);
+    m_control.maxAngularSpeed = qMax(0.0, m_control.maxAngularSpeed);
+    m_control.linearGain = qMax(0.0, m_control.linearGain);
+    m_control.angularGain = qMax(0.0, m_control.angularGain);
+    m_control.headingStopThresholdDeg = qBound(0.0, m_control.headingStopThresholdDeg, 180.0);
+    m_control.headingSlowdownThresholdDeg = qBound(0.0, m_control.headingSlowdownThresholdDeg, 180.0);
+    m_control.headingSlowdownFactor = qBound(0.0, m_control.headingSlowdownFactor, 1.0);
+    m_control.nearTargetDistanceMultiplier = qMax(1.0, m_control.nearTargetDistanceMultiplier);
+    m_control.nearTargetSpeedMultiplier = qBound(0.0, m_control.nearTargetSpeedMultiplier, 1.0);
+    m_control.linearAccelerationLimit = qMax(0.0, m_control.linearAccelerationLimit);
+    m_control.linearDecelerationLimit = qMax(0.0, m_control.linearDecelerationLimit);
+    m_control.angularAccelerationLimit = qMax(0.0, m_control.angularAccelerationLimit);
+    m_control.angularDecelerationLimit = qMax(0.0, m_control.angularDecelerationLimit);
+    m_control.finalAdjustLinearSpeed = qMax(0.0, m_control.finalAdjustLinearSpeed);
+    m_control.finalAdjustAngularSpeed = qMax(0.0, m_control.finalAdjustAngularSpeed);
+
+    m_vehicle.wheelBaseMeters = qMax(0.01, m_vehicle.wheelBaseMeters);
+    m_vehicle.wheelDiameterMeters = qMax(0.01, m_vehicle.wheelDiameterMeters);
+    m_vehicle.gearReduction = qMax(0.01, m_vehicle.gearReduction);
+
+    m_video.reconnectIntervalMs = qMax(200, m_video.reconnectIntervalMs);
+    m_network.statusPollIntervalMs = qBound(kMinStatusPollIntervalMs, m_network.statusPollIntervalMs, kMaxStatusPollIntervalMs);
 }
 
 void ConfigManager::updateCachedScales()

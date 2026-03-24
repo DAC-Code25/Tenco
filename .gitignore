@@ -35,3 +35,6 @@ build-cmake*/
 
 # Logs
 *.log
+*.err
+*.out
+__tiny.cpp

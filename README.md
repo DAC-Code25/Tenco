@@ -14,25 +14,47 @@
 
 ### 环境依赖
 
-- **Qt 5/6**（建议 Qt 6.5+）：需要模块 `core`, `gui`, `widgets`, `network`, `websockets`  
-  - `Tenco.pro` 中包含 `greaterThan(QT_MAJOR_VERSION, 5): QT += core5compat`
+- **Qt 6**（建议 Qt 6.5+）：需要模块 `Core`, `Gui`, `Widgets`, `Network`, `WebSockets`, `Core5Compat`
 - Windows 下可用 **MinGW** 或 **MSVC** 编译器；Qt Creator 推荐。
 
 ### 使用 Qt Creator 编译运行
 
-1. 用 Qt Creator 打开 `Tenco.pro`
+1. 用 Qt Creator 打开项目根目录中的 `CMakeLists.txt`
 2. 选择/配置 Kit（如 Desktop Qt 6.x MinGW 64-bit）
 3. Build → Run
 
-> `Tenco.pro` 将输出目录设为 `DESTDIR = $$PWD/../bin`，构建产物通常出现在项目上级目录的 `bin/` 中。
+> CMake 已将运行产物统一输出到项目上级目录 `bin/`（`../bin`）。
 
 ### 命令行（可选）
 
-确保 Qt 的 `bin` 已加入 `PATH`，然后在项目根目录执行（以 MinGW 为例）：
+确保 CMake、编译器和 Qt 工具链可用，然后在项目根目录执行：
 
 ```bash
-qmake Tenco.pro
-mingw32-make -j
+cmake -S . -B build/cmake -G Ninja -DTENCO_BUILD_TESTS=ON
+cmake --build build/cmake -j
+ctest --test-dir build/cmake --output-on-failure
+```
+
+可选开关：
+
+- `-DTENCO_ENABLE_WARNINGS=ON`：启用更严格编译告警
+- `-DTENCO_BUILD_TESTS=ON`：构建单元测试目标
+
+也可以直接使用预设：
+
+```bash
+cmake --preset default
+cmake --build --preset default
+ctest --preset default
+```
+
+发布构建与打包：
+
+```powershell
+cmake --preset release
+cmake --build --preset release
+ctest --preset release
+.\scripts\package_windows.ps1
 ```
 
 ## 配置说明（config.json）
@@ -42,6 +64,12 @@ mingw32-make -j
 - 优先查找：可执行文件同级 `config.json`
 - 其次：当前工作目录 `config.json`
 - 再次：可执行文件上级目录 `../config.json` / `../../config.json`
+
+也可通过启动参数显式指定配置文件：
+
+```bash
+./Tenco --config /path/to/config.json
+```
 
 `config.json` 结构示例（仓库已提供一份）：
 
@@ -58,11 +86,12 @@ mingw32-make -j
 - `network.statusReadUrl`：HTTP（状态轮询）
 - `network.writeInsUrl`：HTTP（写寄存器/模式等）
 - `network.saveFileUrl`：HTTP（保存远端文件，如 GPS 配置）
+- `network.authToken`：可选，若配置则自动以 `Authorization: Bearer <token>` 访问 HTTP/WebSocket
 - `network.statusPollIntervalMs`：状态轮询间隔（ms）
 
 ### 状态字段（轮询返回 address → UI 映射）
 
-`home.cpp` 中对部分 `address` 的含义做了映射（以下为当前实现）：
+`statusprotocol.cpp` 与 `home.cpp` 中对部分 `address` 的含义做了映射（以下为当前实现）：
 
 | address | 含义（UI 显示） |
 |---|---|
@@ -94,6 +123,14 @@ mingw32-make -j
 仓库内已提供更完整的“企业化”开发文档（构建/配置/架构/协议/流程/测试/CI/发布等）：
 
 - `docs/README.md`
+
+## 工程化增强（已落地）
+
+- 增加应用级日志落盘（`loggingmanager.*`，滚动日志）
+- 状态轮询增加失败退避与请求超时保护
+- WebSocket/MJPEG 重连改为指数退避，降低抖动场景重连风暴
+- CMake 增加 `tests/` 与 `ctest` 单测入口
+- 增加 GitHub Actions 工作流：Windows 编译 + 测试
 
 ### 路线执行链路
 

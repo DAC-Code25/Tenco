@@ -24,11 +24,11 @@
 **现状**
 
 - 已有：项目功能概览、构建说明、`config.json` 说明（`README.md`）
-- 缺失：明确的“验收清单/冒烟用例”
+- 已有：`docs/02_Build_and_Run.md` 冒烟 checklist（可重复执行）
 
 **建议落地（优先级高）**
 
-- 在 `docs/02_Build_and_Run.md` 增加“冒烟测试清单”（无需自动化也要可重复）
+- 持续维护冒烟 checklist，并把新增功能的验收步骤同步写入
 
 ---
 
@@ -60,25 +60,25 @@
 
 **企业做法**
 
-- 明确构建系统（qmake/CMake）与依赖版本（Qt 版本、编译器）
+- 明确构建系统（统一 CMake）与依赖版本（Qt 版本、编译器）
 - 工程可重复构建：一台新机器按文档能编译
 - 最小化“机器差异”（环境变量、PATH、Kit）
 
 **在 Tenco 中对应**
 
-- 工程文件：`Tenco.pro`
-- Qt 模块依赖：`QT += network websockets widgets ...`
+- 工程文件：`CMakeLists.txt` + `CMakePresets.json`
+- Qt 模块依赖：`find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network WebSockets Core5Compat)`
 - 资源：`resources.qrc` / `mainwindow.ui` / `app_icon.rc`
 - 忽略规则：`.gitignore`
 
 **现状**
 
-- qmake 工程清晰（`Tenco.pro`）
-- 已开启编译告警：`CONFIG += warn_on`（比 `warn_off` 更企业化）
+- 已统一为 CMake 构建，支持预设、单测开关与告警开关
+- 已固定运行产物目录到 `../bin`，便于联调与部署脚本复用
 
 **建议落地（中优先级）**
 
-- 长期：迁移到 CMake（Qt 6 官方更推荐），但不是必须；先把 CI 跑起来更重要
+- 增加多平台/多编译器构建矩阵（MSVC + MinGW）并在 CI 中并行验证
 
 ---
 
@@ -142,11 +142,14 @@
 
 **在 Tenco 中对应（当前）**
 
-- 当前：几乎没有自动化测试
-- 最适合先写 UT 的点：
-  - `ConfigManager`：配置解析、默认值、轮询间隔边界（`configmanager.*`）
-  - `RouteFollower`：角度归一化、到达判定、速度限幅（`routefollower.*`）
-  - `Map` 序列化：`serializeMap()/deserializeMap()`（`map.cpp`）
+- 已有 UT：
+  - `ConfigManager`：配置解析、默认值、轮询间隔边界（`tests/test_configmanager.cpp`）
+  - `RouteFollower`：关键轨迹跟随逻辑（`tests/test_routefollower.cpp`）
+  - `RoutePathFinder`：路径搜索代价与连通性（`tests/test_routepathfinder.cpp`）
+  - `StatusProtocol`：状态地址映射与请求构造（`tests/test_statusprotocol.cpp`）
+  - `MapDocument`：地图 JSON 编解码与校验（`tests/test_mapdocument.cpp`）
+- 下一步优先补齐：
+  - `Map` UI 端到端回归（文件读写 + 场景恢复 + 交互链路）
 
 落地建议见：`docs/08_Testing_and_CI.md`
 
@@ -160,8 +163,8 @@
 
 **在 Tenco 中对应（建议目录）**
 
-- GitHub Actions：`.github/workflows/ci.yml`（当前未配置）
-- 测试工程：`tests/`（当前未配置）
+- GitHub Actions：`.github/workflows/ci.yml`（已配置，Windows + CMake + CTest）
+- 测试工程：`tests/`（已配置）
 
 落地建议见：`docs/08_Testing_and_CI.md`
 
@@ -191,9 +194,9 @@
 
 **在 Tenco 中对应（现状）**
 
-- 当前日志主要输出到 UI：`Home::logMessage()`（`home.cpp`）
+- 已有 UI 日志输出：`Home::logMessage()`（`home.cpp`）
+- 已有文件日志：`loggingmanager.*`（按天滚动、按大小轮转）
 
 **建议落地（后续）**
 
-- 增加 `QLoggingCategory` + 文件日志（可选）并在 CI/发布版设置等级
-
+- 在 CI/发布版加入日志等级策略和敏感字段脱敏规则

@@ -1,0 +1,36 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [Debug, Release]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.3"
+          host: "windows"
+          target: "desktop"
+          arch: "win64_mingw"
+          cache: true
+
+      - name: Configure (CMake)
+        run: cmake -S . -B build/ci-${{ matrix.build_type }} -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DTENCO_BUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build build/ci-${{ matrix.build_type }} --parallel
+
+      - name: Test
+        run: ctest --test-dir build/ci-${{ matrix.build_type }} --output-on-failure

@@ -38,6 +38,7 @@
     "statusReadUrl": "http://192.168.31.7:9999/table/reads",
     "writeInsUrl": "http://192.168.31.7:9999/table/writeIns",
     "saveFileUrl": "http://192.168.31.7:9999/saveFile",
+    "authToken": "",
     "statusPollIntervalMs": 100
   }
 }

@@ -7,6 +7,8 @@
 #include <QPointF>
 #include <QSet>
 #include <QString>
+#include <QByteArray>
+#include <QElapsedTimer>
 #include <optional>
 
 #include <QMouseEvent>
@@ -94,6 +96,7 @@ private slots:
     void handleEditModeToggled(bool checked);
     void handleZoomIn();
     void handleZoomOut();
+    void handleNewMap();
     void handleLoadMap();
     void handleSaveMap();
     void handleQuickSave();
@@ -169,6 +172,9 @@ private:
     double angleFromMapVector(double dx, double dy) const;
     QList<int> buildPointSequenceFromPaths(const QList<int> &pathIds, int startId) const;
     bool rebuildRouteStep(RouteStep &step);
+    bool rebuildRemainingRouteFrom(int startIndex, int startPointId, QString *errorMessage = nullptr);
+    std::optional<int> resolveDynamicReplanStartPoint() const;
+    bool tryDynamicReplanAfterFailure(QString *errorMessage = nullptr);
 
     void refreshPointUi();
     void refreshPathUi();
@@ -197,6 +203,11 @@ private:
     void dispatchNextEdge();
     bool isRouteQueueContinuous() const;
     void scheduleNextCycle();
+    void resetToBlankMap();
+    bool saveCurrentMapInteractive(bool forceChooseFile);
+    QByteArray buildComparableMapState() const;
+    void syncCommittedMapState();
+    bool hasUnsavedMapChanges() const;
 
     void clearMapData();
     bool saveMapToFile(const QString &filePath) const;
@@ -240,6 +251,11 @@ private:
     double m_vehiclePoseX = 0.0;
     double m_vehiclePoseY = 0.0;
     double m_vehiclePoseTheta = 0.0;
+    bool m_hasRenderedVehiclePose = false;
+    double m_lastRenderedVehiclePoseX = 0.0;
+    double m_lastRenderedVehiclePoseY = 0.0;
+    double m_lastRenderedVehiclePoseTheta = 0.0;
+    QElapsedTimer m_vehiclePoseRefreshClock;
     bool m_editModeEnabled = false;
     int m_draggedPointId = -1;
     bool m_draggedPointMoved = false;
@@ -317,7 +333,10 @@ private:
     QString m_currentMapFilePath;
     QString m_lastLoadDirectory;
     QString m_lastSaveDirectory;
+    QByteArray m_committedMapState;
     static QString s_lastMapFilePath;
+
+    QPushButton *m_newMapButton = nullptr;
 };
 
 #endif // MAP_H

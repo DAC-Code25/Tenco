@@ -20,15 +20,21 @@
 - `home.h/.cpp`
   - 绑定首页 UI 控件（按钮/开关/视频区域/日志框）
   - 负责把模块“串起来”，但不再把所有网络细节都堆在一个类里
+  - 通过 `HomeStatusPresenter` 承接状态包解析与状态区 UI 映射
   - 关键职责：
     - StatusClient：状态轮询
     - ChassisClient：速度下发/重启/停止定位
     - VideoClient：视频显示/录像/截图
     - RouteFollower：路线段跟随（从 Map 来的 polyline）
 
+- `home_status_presenter.h/.cpp`
+  - 处理状态轮询包解析、通信状态灯更新、状态字段到 UI 的映射
+  - 通过回调把位姿变化和日志回传给 `Home`
+
 常见入口：
 
 - `Home::handleStatusPacket()`：解析状态轮询响应并更新 UI/位姿
+- `Home::applyStatusField()`：按协议字段枚举更新对应 UI
 - `Home::handleKeyPress/handleKeyRelease()`：键盘遥控
 - `Home::followRouteSegment()/cancelRouteExecution()`：路线执行编排
 
@@ -42,6 +48,8 @@
 - `homenetworkworker.h/.cpp`
   - 真正执行 HTTP POST 的 worker（在工作线程）
   - 维护定时器、避免重入（上一次请求未结束则延后）
+- `statusprotocol.h/.cpp`
+  - 状态读取地址与字段枚举映射（减少 Home 中硬编码）
 
 ---
 
@@ -76,18 +84,29 @@
 
 ---
 
-## 7. 地图编辑与路线队列
+## 7. 路径规划（UI 无关）
+
+- `routepathfinder.h/.cpp`
+  - 路径图最短路搜索（加权 Dijkstra）
+  - 代价包含距离与路径类型惩罚（如弧线惩罚）
+
+---
+
+## 8. 地图编辑与路线队列
 
 - `map.h/.cpp`
   - QGraphicsScene 地图编辑器：点、路径（直线/圆弧）、路线队列
-  - 地图文件：JSON 序列化/反序列化（`serializeMap()/deserializeMap()`）
+  - 地图文件：JSON 序列化/反序列化（内部调用 `mapdocument.*`）
   - 路线分段派发：通过信号 `routeSegmentDispatched(...)` 交给 Home 执行
 - `mapgraphicsview.h/.cpp`
   - 视图交互：缩放、平移、鼠标点击映射到场景坐标
 
+- `mapdocument.h/.cpp`
+  - 地图文档模型与 JSON 编解码（可独立单测）
+
 ---
 
-## 8. 配置与坐标换算
+## 9. 配置与坐标换算
 
 - `configmanager.h/.cpp`
   - 读取 `config.json`（带默认值与边界限制）
@@ -95,11 +114,10 @@
 
 ---
 
-## 9. 自定义控件与样式
+## 10. 自定义控件与样式
 
 - `battery.h/.cpp`：自定义电池控件（`Q_PROPERTY` 可在 Designer 配置）
 - `imageswitch.h/.cpp`：图片开关控件
 - `UI_Design.cpp`：集中设置控件样式（QSS 字符串）
 
 企业项目里更常见的做法：把样式抽到 `.qss` 文件或资源中统一管理（见 `docs/11_Roadmap.md`）。
-

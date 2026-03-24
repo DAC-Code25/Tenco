@@ -1,17 +1,21 @@
 #include "map.h"
 
 #include "mapgraphicsview.h"
+#include "mapdocument.h"
+#include "routepathfinder.h"
 #include "ui_mainwindow.h"
 #include "configmanager.h"
 
 #include <QAbstractItemView>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDateTime>
 #include <QDir>
 #include <QDoubleSpinBox>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QSaveFile>
 #include <QFormLayout>
 #include <QGraphicsEllipseItem>
 #include <QGraphicsItemGroup>
@@ -34,7 +38,6 @@
 #include <QCursor>
 #include <QPen>
 #include <QPushButton>
-#include <QQueue>
 #include <QSplitter>
 #include <QMenu>
 #include <QSignalBlocker>
@@ -48,6 +51,7 @@
 #include <QVector2D>
 #include <QSlider>
 #include <QSizePolicy>
+#include <QLoggingCategory>
 
 #include <algorithm>
 #include <cmath>
@@ -57,6 +61,8 @@
 #include <QtMath>
 
 namespace {
+Q_LOGGING_CATEGORY(lcMapModule, "tenco.map")
+
 constexpr int kDefaultGridWidth = 50;
 constexpr int kDefaultGridHeight = 50;
 constexpr int kMaxGridSize = 500;
@@ -67,11 +73,16 @@ constexpr double kPointArrowWidthPx = 6.0;
 constexpr double kVehicleLengthMeters = 0.9;
 constexpr double kVehicleWidthMeters = 0.45;
 constexpr double kVehicleSnapThresholdMeters = 0.35;
+constexpr double kRouteReplanSnapThresholdMeters = 1.0;
 constexpr double kPointSelectionThresholdMeters = 0.5;
 constexpr int kDefaultRouteLoopIntervalSeconds = 3;
 constexpr double kArcSagittaEpsilon = 1e-3;
 constexpr double kGeometryEpsilon = 1e-6;
 constexpr int kMinArcSegments = 24;
+constexpr int kMapSchemaVersion = 2;
+constexpr int kVehiclePoseRefreshMinIntervalMs = 120;
+constexpr double kVehiclePoseMinDistanceDeltaMeters = 0.02;
+constexpr double kVehiclePoseMinAngleDeltaRad = 1.5 * M_PI / 180.0;
 
 inline double normalizeAngle(double angle)
 {
@@ -159,6 +170,7 @@ Map::Map(Ui::MainWindow *ui, QObject *parent)
     initializeUi();
     ensureScene();
     ensureVehicleItem();
+    m_vehiclePoseRefreshClock.start();
     handleModuleActivated();
 }
 
@@ -186,11 +198,13 @@ void Map::handleModuleActivated()
         }
 
         m_hasVehiclePose = false;
+        m_hasRenderedVehiclePose = false;
         applyPresentationUpdates(true);
 
         m_currentMapFilePath.clear();
         updateMapNameDisplay();
         updateVehiclePointBinding();
+        syncCommittedMapState();
 
         m_initialized = true;
         setRouteStatusText(tr("Grid reset to %1x%2 (rotation %3°, base lat %4, lon %5)")
@@ -206,12 +220,34 @@ void Map::handleModuleActivated()
 
 void Map::updateVehiclePose(double x, double y, double theta)
 {
+    const double normalizedTheta = normalizeAngle(theta);
+    const bool hasPreviousRender = m_hasRenderedVehiclePose;
+    const double deltaDistance = std::hypot(x - m_lastRenderedVehiclePoseX, y - m_lastRenderedVehiclePoseY);
+    const double deltaTheta = std::abs(normalizeAngle(normalizedTheta - m_lastRenderedVehiclePoseTheta));
+    const bool reachedRefreshInterval =
+        !m_vehiclePoseRefreshClock.isValid() || m_vehiclePoseRefreshClock.elapsed() >= kVehiclePoseRefreshMinIntervalMs;
+    const bool shouldRefreshNow = !hasPreviousRender
+                                  || deltaDistance >= kVehiclePoseMinDistanceDeltaMeters
+                                  || deltaTheta >= kVehiclePoseMinAngleDeltaRad
+                                  || reachedRefreshInterval;
+
     m_vehiclePoseX = x;
     m_vehiclePoseY = y;
-    m_vehiclePoseTheta = normalizeAngle(theta);
+    m_vehiclePoseTheta = normalizedTheta;
     m_hasVehiclePose = true;
-    refreshVehicleGraphics();
-    updateVehiclePointBinding();
+    if (shouldRefreshNow) {
+        refreshVehicleGraphics();
+        updateVehiclePointBinding();
+        m_lastRenderedVehiclePoseX = m_vehiclePoseX;
+        m_lastRenderedVehiclePoseY = m_vehiclePoseY;
+        m_lastRenderedVehiclePoseTheta = m_vehiclePoseTheta;
+        m_hasRenderedVehiclePose = true;
+        if (m_vehiclePoseRefreshClock.isValid()) {
+            m_vehiclePoseRefreshClock.restart();
+        } else {
+            m_vehiclePoseRefreshClock.start();
+        }
+    }
 }
 
 void Map::applyVehiclePoseFromUi()
@@ -276,7 +312,31 @@ void Map::handleRouteSegmentCompleted(bool success)
     m_waitingForSegmentCompletion = false;
 
     if (!success) {
-        setRouteStatusText(tr("路线执行失败，已停止"), true);
+        QString replanError;
+        if (tryDynamicReplanAfterFailure(&replanError)) {
+            if (m_activeRouteIndex >= m_routeQueue.size()) {
+                m_activeRouteIndex = -1;
+                updateRouteControlState();
+                emit routeQueueCompletedOnce();
+                if (m_routeLoopCheck && m_routeLoopCheck->isChecked()) {
+                    scheduleNextCycle();
+                }
+                return;
+            }
+
+            const int replanFromId = m_routeQueue.at(m_activeRouteIndex).fromId;
+            setRouteStatusText(tr("当前段执行失败，已从点%1动态重规划").arg(replanFromId), true);
+            updateRouteControlState();
+            if (!m_pauseRequested) {
+                dispatchNextEdge();
+            }
+            return;
+        }
+
+        const QString statusText = replanError.isEmpty()
+                                       ? tr("路线执行失败，且无法重规划，已停止")
+                                       : tr("路线执行失败，且无法重规划：%1").arg(replanError);
+        setRouteStatusText(statusText, true);
         m_activeRouteIndex = -1;
         m_pauseRequested = false;
         updateRouteControlState();
@@ -292,6 +352,16 @@ void Map::handleRouteSegmentCompleted(bool success)
             m_vehiclePoseY = point->mapPosition.y();
             m_vehiclePoseTheta = point->theta;
             refreshVehicleGraphics();
+            updateVehiclePointBinding();
+            m_lastRenderedVehiclePoseX = m_vehiclePoseX;
+            m_lastRenderedVehiclePoseY = m_vehiclePoseY;
+            m_lastRenderedVehiclePoseTheta = m_vehiclePoseTheta;
+            m_hasRenderedVehiclePose = true;
+            if (m_vehiclePoseRefreshClock.isValid()) {
+                m_vehiclePoseRefreshClock.restart();
+            } else {
+                m_vehiclePoseRefreshClock.start();
+            }
         }
     }
 
@@ -1210,40 +1280,61 @@ void Map::handleLoadMap()
     }
 }
 
-void Map::handleSaveMap()
+void Map::handleNewMap()
 {
-    const QString startDir = !m_lastSaveDirectory.isEmpty() ? m_lastSaveDirectory
-                              : (!m_currentMapFilePath.isEmpty() ? QFileInfo(m_currentMapFilePath).absolutePath()
-                                 : (!s_lastMapFilePath.isEmpty() ? QFileInfo(s_lastMapFilePath).absolutePath()
-                                                                 : QDir::currentPath()));
+    if (m_currentMapFilePath.isEmpty()) {
+        if (!hasUnsavedMapChanges()) {
+            QMessageBox::information(m_mapPage, tr("新建地图"), tr("当前已是空地图"));
+            return;
+        }
 
-    const QString filePath = QFileDialog::getSaveFileName(m_mapPage, tr("保存地图"), startDir,
-                                                          tr("地图文件 (*.json);;所有文件 (*.*)"));
-    if (filePath.isEmpty()) {
+        QMessageBox dialog(m_mapPage);
+        dialog.setIcon(QMessageBox::Question);
+        dialog.setWindowTitle(tr("新建地图"));
+        dialog.setText(tr("是否保存当前新建地图"));
+        QPushButton *saveButton = dialog.addButton(tr("保存"), QMessageBox::AcceptRole);
+        QPushButton *discardButton = dialog.addButton(tr("不保存"), QMessageBox::DestructiveRole);
+        dialog.exec();
+
+        if (dialog.clickedButton() == saveButton) {
+            if (!saveCurrentMapInteractive(true)) {
+                return;
+            }
+        } else if (dialog.clickedButton() != discardButton) {
+            return;
+        }
+
+        resetToBlankMap();
         return;
     }
 
-    if (saveMapToFile(filePath)) {
-        m_currentMapFilePath = filePath;
-        s_lastMapFilePath = filePath;
-        m_lastSaveDirectory = QFileInfo(filePath).absolutePath();
-        updateMapNameDisplay();
+    QMessageBox dialog(m_mapPage);
+    dialog.setIcon(QMessageBox::Question);
+    dialog.setWindowTitle(tr("新建地图"));
+    dialog.setText(tr("是否保存当前对地图的修改"));
+    QPushButton *saveButton = dialog.addButton(tr("保存"), QMessageBox::AcceptRole);
+    QPushButton *discardButton = dialog.addButton(tr("不保存"), QMessageBox::DestructiveRole);
+    dialog.exec();
+
+    if (dialog.clickedButton() == saveButton) {
+        if (!saveCurrentMapInteractive(false)) {
+            return;
+        }
+    } else if (dialog.clickedButton() != discardButton) {
+        return;
     }
+
+    resetToBlankMap();
+}
+
+void Map::handleSaveMap()
+{
+    saveCurrentMapInteractive(true);
 }
 
 void Map::handleQuickSave()
 {
-    QString filePath = m_currentMapFilePath;
-    if (filePath.isEmpty()) {
-        handleSaveMap();
-        return;
-    }
-
-    if (saveMapToFile(filePath)) {
-        s_lastMapFilePath = filePath;
-        m_lastSaveDirectory = QFileInfo(filePath).absolutePath();
-        updateMapNameDisplay();
-    }
+    saveCurrentMapInteractive(m_currentMapFilePath.isEmpty());
 }
 
 void Map::initializeUi()
@@ -1279,10 +1370,12 @@ void Map::initializeUi()
     rootLayout->setSpacing(8);
 
     auto mainSplitter = new QSplitter(Qt::Horizontal, m_mapPage);
+    mainSplitter->setObjectName(QStringLiteral("mapMainSplitter"));
     mainSplitter->setChildrenCollapsible(false);
     rootLayout->addWidget(mainSplitter);
 
     auto leftPanel = new QFrame(m_mapPage);
+    leftPanel->setObjectName(QStringLiteral("mapLeftPanel"));
     leftPanel->setFrameShape(QFrame::StyledPanel);
     leftPanel->setMinimumWidth(260);
     auto leftLayout = new QVBoxLayout(leftPanel);
@@ -1292,22 +1385,26 @@ void Map::initializeUi()
     mainSplitter->addWidget(leftPanel);
 
     auto gridBox = new QGroupBox(tr("地图尺寸"), leftPanel);
+    gridBox->setObjectName(QStringLiteral("mapGridBox"));
     gridBox->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     auto gridForm = new QFormLayout(gridBox);
     gridForm->setContentsMargins(8, 8, 8, 8);
     gridForm->setSpacing(6);
 
     m_gridWidthSpin = new QSpinBox(gridBox);
+    m_gridWidthSpin->setObjectName(QStringLiteral("mapGridWidthSpin"));
     m_gridWidthSpin->setRange(1, kMaxGridSize);
     m_gridWidthSpin->setValue(kDefaultGridWidth);
     gridForm->addRow(tr("宽度(格)"), m_gridWidthSpin);
 
     m_gridHeightSpin = new QSpinBox(gridBox);
+    m_gridHeightSpin->setObjectName(QStringLiteral("mapGridHeightSpin"));
     m_gridHeightSpin->setRange(1, kMaxGridSize);
     m_gridHeightSpin->setValue(kDefaultGridHeight);
     gridForm->addRow(tr("高度(格)"), m_gridHeightSpin);
 
     m_gridRotationSpin = new QDoubleSpinBox(gridBox);
+    m_gridRotationSpin->setObjectName(QStringLiteral("mapGridRotationSpin"));
     m_gridRotationSpin->setRange(-360.0, 360.0);
     m_gridRotationSpin->setDecimals(1);
     m_gridRotationSpin->setSingleStep(1.0);
@@ -1316,11 +1413,13 @@ void Map::initializeUi()
     gridForm->addRow(tr("旋转(°)"), m_gridRotationSpin);
 
     m_buildGridButton = new QPushButton(tr("Update Size"), gridBox);
+    m_buildGridButton->setObjectName(QStringLiteral("mapBuildGridButton"));
     gridForm->addRow(QString(), m_buildGridButton);
 
     leftLayout->addWidget(gridBox);
 
     auto pointBox = new QGroupBox(tr("点管理"), leftPanel);
+    pointBox->setObjectName(QStringLiteral("mapPointBox"));
     pointBox->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     auto pointLayout = new QVBoxLayout(pointBox);
     pointLayout->setContentsMargins(8, 8, 8, 8);
@@ -1331,18 +1430,21 @@ void Map::initializeUi()
     pointForm->setSpacing(4);
 
     m_pointXSpin = new QDoubleSpinBox(pointBox);
+    m_pointXSpin->setObjectName(QStringLiteral("mapPointXSpin"));
     m_pointXSpin->setRange(-10000.0, 10000.0);
     m_pointXSpin->setDecimals(3);
     m_pointXSpin->setSingleStep(0.1);
     pointForm->addRow(tr("X (m)"), m_pointXSpin);
 
     m_pointYSpin = new QDoubleSpinBox(pointBox);
+    m_pointYSpin->setObjectName(QStringLiteral("mapPointYSpin"));
     m_pointYSpin->setRange(-10000.0, 10000.0);
     m_pointYSpin->setDecimals(3);
     m_pointYSpin->setSingleStep(0.1);
     pointForm->addRow(tr("Y (m)"), m_pointYSpin);
 
     m_pointThetaSpin = new QDoubleSpinBox(pointBox);
+    m_pointThetaSpin->setObjectName(QStringLiteral("mapPointThetaSpin"));
     m_pointThetaSpin->setRange(-M_PI, M_PI);
     m_pointThetaSpin->setDecimals(4);
     m_pointThetaSpin->setSingleStep(0.1);
@@ -1354,21 +1456,26 @@ void Map::initializeUi()
     pointButtonLayout->setSpacing(4);
 
     m_addPointFromInputButton = new QPushButton(tr("添加"), pointBox);
+    m_addPointFromInputButton->setObjectName(QStringLiteral("mapAddPointButton"));
     pointButtonLayout->addWidget(m_addPointFromInputButton);
 
     m_addPointFromClickButton = new QPushButton(tr("点击添加"), pointBox);
+    m_addPointFromClickButton->setObjectName(QStringLiteral("mapAddPointFromClickButton"));
     m_addPointFromClickButton->setCheckable(true);
     pointButtonLayout->addWidget(m_addPointFromClickButton);
 
     m_updatePointButton = new QPushButton(tr("更新"), pointBox);
+    m_updatePointButton->setObjectName(QStringLiteral("mapUpdatePointButton"));
     pointButtonLayout->addWidget(m_updatePointButton);
 
     m_removePointButton = new QPushButton(tr("删除"), pointBox);
+    m_removePointButton->setObjectName(QStringLiteral("mapRemovePointButton"));
     pointButtonLayout->addWidget(m_removePointButton);
 
     pointLayout->addLayout(pointButtonLayout);
 
     m_pointTable = new QTableWidget(pointBox);
+    m_pointTable->setObjectName(QStringLiteral("mapPointTable"));
     m_pointTable->setColumnCount(4);
     m_pointTable->setHorizontalHeaderLabels({tr("编号"), tr("X"), tr("Y"), tr("角度")});
     m_pointTable->horizontalHeader()->setDefaultAlignment(Qt::AlignCenter);
@@ -1396,6 +1503,7 @@ void Map::initializeUi()
     leftLayout->addWidget(pointBox, 2);
 
     auto batchBox = new QGroupBox(tr("批量生成点"), leftPanel);
+    batchBox->setObjectName(QStringLiteral("mapBatchBox"));
     batchBox->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     auto batchLayout = new QFormLayout(batchBox);
     batchLayout->setContentsMargins(8, 8, 8, 8);
@@ -1430,11 +1538,13 @@ void Map::initializeUi()
     batchLayout->addRow(tr("方向角 (rad)"), m_batchThetaSpin);
 
     m_batchGenerateButton = new QPushButton(tr("生成"), batchBox);
+    m_batchGenerateButton->setObjectName(QStringLiteral("mapBatchGenerateButton"));
     batchLayout->addRow(QString(), m_batchGenerateButton);
 
     leftLayout->addWidget(batchBox);
 
     auto pathBox = new QGroupBox(tr("路径管理"), leftPanel);
+    pathBox->setObjectName(QStringLiteral("mapPathBox"));
     pathBox->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     auto pathLayout = new QVBoxLayout(pathBox);
     pathLayout->setContentsMargins(8, 8, 8, 8);
@@ -1445,17 +1555,21 @@ void Map::initializeUi()
     pathForm->setSpacing(4);
 
     m_startPointCombo = new QComboBox(pathBox);
+    m_startPointCombo->setObjectName(QStringLiteral("mapPathStartCombo"));
     pathForm->addRow(tr("起点"), m_startPointCombo);
 
     m_endPointCombo = new QComboBox(pathBox);
+    m_endPointCombo->setObjectName(QStringLiteral("mapPathEndCombo"));
     pathForm->addRow(tr("终点"), m_endPointCombo);
 
     m_pathTypeCombo = new QComboBox(pathBox);
+    m_pathTypeCombo->setObjectName(QStringLiteral("mapPathTypeCombo"));
     m_pathTypeCombo->addItem(tr("直线"));
     m_pathTypeCombo->addItem(tr("圆弧"));
     pathForm->addRow(tr("类型"), m_pathTypeCombo);
 
     m_arcSagittaSpin = new QDoubleSpinBox(pathBox);
+    m_arcSagittaSpin->setObjectName(QStringLiteral("mapArcSagittaSpin"));
     m_arcSagittaSpin->setRange(-1000.0, 1000.0);
     m_arcSagittaSpin->setDecimals(3);
     m_arcSagittaSpin->setSingleStep(0.1);
@@ -1468,14 +1582,17 @@ void Map::initializeUi()
     pathButtonLayout->setSpacing(4);
 
     m_addPathButton = new QPushButton(tr("添加"), pathBox);
+    m_addPathButton->setObjectName(QStringLiteral("mapAddPathButton"));
     pathButtonLayout->addWidget(m_addPathButton);
 
     m_removePathButton = new QPushButton(tr("删除"), pathBox);
+    m_removePathButton->setObjectName(QStringLiteral("mapRemovePathButton"));
     pathButtonLayout->addWidget(m_removePathButton);
 
     pathLayout->addLayout(pathButtonLayout);
 
     m_pathTable = new QTableWidget(pathBox);
+    m_pathTable->setObjectName(QStringLiteral("mapPathTable"));
     m_pathTable->setColumnCount(6);
     m_pathTable->setHorizontalHeaderLabels({tr("编号"), tr("起点"), tr("终点"), tr("类型"), tr("弓高"), tr("长度")});
     m_pathTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
@@ -1506,6 +1623,7 @@ void Map::initializeUi()
     mainSplitter->addWidget(leftPanel);
 
     auto centerPanel = new QFrame(m_mapPage);
+    centerPanel->setObjectName(QStringLiteral("mapCenterPanel"));
     centerPanel->setFrameShape(QFrame::StyledPanel);
     auto centerLayout = new QVBoxLayout(centerPanel);
     centerLayout->setContentsMargins(8, 8, 8, 8);
@@ -1515,42 +1633,55 @@ void Map::initializeUi()
     topBar->setSpacing(6);
 
     m_mapNameLabel = new QLabel(tr("未保存地图"), centerPanel);
+    m_mapNameLabel->setObjectName(QStringLiteral("mapNameLabel"));
     m_mapNameLabel->setMinimumWidth(160);
     topBar->addWidget(m_mapNameLabel);
 
     m_mousePositionLabel = new QLabel(tr("X: 0.000  Y: 0.000"), centerPanel);
+    m_mousePositionLabel->setObjectName(QStringLiteral("mapMousePositionLabel"));
     m_mousePositionLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     m_mousePositionLabel->setMinimumWidth(120);
     topBar->addWidget(m_mousePositionLabel, 1);
 
+    m_newMapButton = new QPushButton(tr("新建"), centerPanel);
+    m_newMapButton->setObjectName(QStringLiteral("mapNewButton"));
+    topBar->addWidget(m_newMapButton);
+
     m_loadMapButton = new QPushButton(tr("加载…"), centerPanel);
+    m_loadMapButton->setObjectName(QStringLiteral("mapLoadButton"));
     topBar->addWidget(m_loadMapButton);
 
     m_saveMapButton = new QPushButton(tr("另存为…"), centerPanel);
+    m_saveMapButton->setObjectName(QStringLiteral("mapSaveAsButton"));
     topBar->addWidget(m_saveMapButton);
 
     m_quickSaveButton = new QPushButton(tr("保存"), centerPanel);
+    m_quickSaveButton->setObjectName(QStringLiteral("mapQuickSaveButton"));
     topBar->addWidget(m_quickSaveButton);
 
     topBar->addStretch();
 
     m_editModeButton = new QPushButton(tr("编辑模式"), centerPanel);
+    m_editModeButton->setObjectName(QStringLiteral("mapEditModeButton"));
     m_editModeButton->setCheckable(true);
     m_editModeButton->setChecked(true);
     topBar->addWidget(m_editModeButton);
 
     m_locateButton = new QPushButton(tr("定位"), centerPanel);
+    m_locateButton->setObjectName(QStringLiteral("mapLocateButton"));
     topBar->addWidget(m_locateButton);
 
     centerLayout->addLayout(topBar);
 
     m_view = new MapGraphicsView(centerPanel);
+    m_view->setObjectName(QStringLiteral("mapGraphicsView"));
     m_view->setMinimumSize(640, 480);
     m_view->viewport()->setCursor(Qt::CrossCursor);
     m_view->viewport()->installEventFilter(this);
     centerLayout->addWidget(m_view, 1);
 
     m_rotationSlider = new QSlider(Qt::Horizontal, centerPanel);
+    m_rotationSlider->setObjectName(QStringLiteral("mapRotationSlider"));
     m_rotationSlider->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     m_rotationSlider->setRange(-1800, 1800);
     m_rotationSlider->setSingleStep(5);
@@ -1562,6 +1693,7 @@ void Map::initializeUi()
     mainSplitter->addWidget(centerPanel);
 
     auto rightPanel = new QFrame(m_mapPage);
+    rightPanel->setObjectName(QStringLiteral("mapRightPanel"));
     rightPanel->setFrameShape(QFrame::StyledPanel);
     rightPanel->setMinimumWidth(260);
     auto rightLayout = new QVBoxLayout(rightPanel);
@@ -1569,6 +1701,7 @@ void Map::initializeUi()
     rightLayout->setSpacing(8);
 
     auto routeBox = new QGroupBox(tr("路线发送"), rightPanel);
+    routeBox->setObjectName(QStringLiteral("mapRouteBox"));
     auto routeLayout = new QVBoxLayout(routeBox);
     routeLayout->setContentsMargins(8, 8, 8, 8);
     routeLayout->setSpacing(6);
@@ -1578,17 +1711,21 @@ void Map::initializeUi()
     routeForm->setSpacing(4);
 
     m_routeStartCombo = new QComboBox(routeBox);
+    m_routeStartCombo->setObjectName(QStringLiteral("mapRouteStartCombo"));
     routeForm->addRow(tr("起点"), m_routeStartCombo);
 
     m_routeEndCombo = new QComboBox(routeBox);
+    m_routeEndCombo->setObjectName(QStringLiteral("mapRouteEndCombo"));
     routeForm->addRow(tr("终点"), m_routeEndCombo);
 
     routeLayout->addLayout(routeForm);
 
     m_routeAddButton = new QPushButton(tr("添加路线"), routeBox);
+    m_routeAddButton->setObjectName(QStringLiteral("mapRouteAddButton"));
     routeLayout->addWidget(m_routeAddButton);
 
     m_routeQueueList = new QListWidget(routeBox);
+    m_routeQueueList->setObjectName(QStringLiteral("mapRouteQueueList"));
     m_routeQueueList->setSelectionMode(QAbstractItemView::SingleSelection);
     m_routeQueueList->setAlternatingRowColors(true);
     routeLayout->addWidget(m_routeQueueList, 1);
@@ -1596,8 +1733,10 @@ void Map::initializeUi()
     auto queueButtons = new QHBoxLayout();
     queueButtons->setSpacing(4);
     m_routeRemoveButton = new QPushButton(tr("移除"), routeBox);
+    m_routeRemoveButton->setObjectName(QStringLiteral("mapRouteRemoveButton"));
     queueButtons->addWidget(m_routeRemoveButton);
     m_routeClearButton = new QPushButton(tr("清空"), routeBox);
+    m_routeClearButton->setObjectName(QStringLiteral("mapRouteClearButton"));
     queueButtons->addWidget(m_routeClearButton);
     queueButtons->addStretch();
     routeLayout->addLayout(queueButtons);
@@ -1605,20 +1744,26 @@ void Map::initializeUi()
     auto controlButtons = new QHBoxLayout();
     controlButtons->setSpacing(4);
     m_routeStartButton = new QPushButton(tr("开始"), routeBox);
+    m_routeStartButton->setObjectName(QStringLiteral("mapRouteStartButton"));
     controlButtons->addWidget(m_routeStartButton);
     m_routePauseButton = new QPushButton(tr("暂停"), routeBox);
+    m_routePauseButton->setObjectName(QStringLiteral("mapRoutePauseButton"));
     controlButtons->addWidget(m_routePauseButton);
     m_routeResumeButton = new QPushButton(tr("恢复"), routeBox);
+    m_routeResumeButton->setObjectName(QStringLiteral("mapRouteResumeButton"));
     controlButtons->addWidget(m_routeResumeButton);
     m_routeStopButton = new QPushButton(tr("停止"), routeBox);
+    m_routeStopButton->setObjectName(QStringLiteral("mapRouteStopButton"));
     controlButtons->addWidget(m_routeStopButton);
     routeLayout->addLayout(controlButtons);
 
     auto loopLayout = new QHBoxLayout();
     loopLayout->setSpacing(4);
     m_routeLoopCheck = new QCheckBox(tr("循环发送"), routeBox);
+    m_routeLoopCheck->setObjectName(QStringLiteral("mapRouteLoopCheck"));
     loopLayout->addWidget(m_routeLoopCheck);
     m_routeLoopIntervalSpin = new QSpinBox(routeBox);
+    m_routeLoopIntervalSpin->setObjectName(QStringLiteral("mapRouteLoopIntervalSpin"));
     m_routeLoopIntervalSpin->setRange(0, 3600);
     m_routeLoopIntervalSpin->setSuffix(tr(" 秒"));
     m_routeLoopIntervalSpin->setValue(kDefaultRouteLoopIntervalSeconds);
@@ -1628,6 +1773,7 @@ void Map::initializeUi()
     routeLayout->addLayout(loopLayout);
 
     m_routeStatusLabel = new QLabel(tr("待命"), routeBox);
+    m_routeStatusLabel->setObjectName(QStringLiteral("mapRouteStatusLabel"));
     m_routeStatusLabel->setWordWrap(true);
     m_routeStatusLabel->setMinimumHeight(40);
     QPalette statusPalette = m_routeStatusLabel->palette();
@@ -1673,6 +1819,7 @@ void Map::initializeUi()
     });
     connect(m_locateButton, &QPushButton::clicked, this, &Map::handleLocateCurrentPosition);
     connect(m_editModeButton, &QPushButton::toggled, this, &Map::handleEditModeToggled);
+    connect(m_newMapButton, &QPushButton::clicked, this, &Map::handleNewMap);
     connect(m_view, &MapGraphicsView::scenePointClicked, this, &Map::handleSceneClick);
     connect(m_view, &MapGraphicsView::mouseMovedOnScene, this, &Map::handleSceneMouseMoved);
     connect(m_loadMapButton, &QPushButton::clicked, this, &Map::handleLoadMap);
@@ -2350,52 +2497,24 @@ QList<int> Map::findRoutePathIds(int startId, int endId) const
         return result;
     }
 
-    QQueue<int> queue;
-    QSet<int> visited;
-    QHash<int, int> cameFromPath;
-
-    queue.enqueue(startId);
-    visited.insert(startId);
-
-    while (!queue.isEmpty()) {
-        const int current = queue.dequeue();
-        if (current == endId) {
-            break;
+    QList<RouteGraphEdge> edges;
+    edges.reserve(m_paths.size());
+    for (auto it = m_paths.cbegin(); it != m_paths.cend(); ++it) {
+        const MapPath &path = it.value();
+        if (path.startId < 0 || path.endId < 0) {
+            continue;
         }
-
-        const QList<int> outgoing = m_outgoingPathIds.value(current);
-        for (int pathId : outgoing) {
-            const MapPath *path = pathById(pathId);
-            if (!path) {
-                continue;
-            }
-            const int nextPoint = path->endId;
-            if (visited.contains(nextPoint)) {
-                continue;
-            }
-            visited.insert(nextPoint);
-            cameFromPath.insert(nextPoint, pathId);
-            queue.enqueue(nextPoint);
-        }
+        RouteGraphEdge edge;
+        edge.pathId = path.id;
+        edge.fromId = path.startId;
+        edge.toId = path.endId;
+        edge.lengthMeters = polylineLength(path.polyline);
+        edge.isArc = (path.type == PathType::Arc);
+        edges.append(edge);
     }
 
-    if (!cameFromPath.contains(endId)) {
-        return result;
-    }
-
-    int current = endId;
-    while (current != startId) {
-        const int pathId = cameFromPath.value(current);
-        result.prepend(pathId);
-        const MapPath *path = pathById(pathId);
-        if (!path) {
-            result.clear();
-            return result;
-        }
-        current = path->startId;
-    }
-
-    return result;
+    const RoutePathFinderOptions options;
+    return RoutePathFinder::findShortestPath(startId, endId, edges, options);
 }
 
 QList<QPointF> Map::composePolyline(const QList<int> &pathIds) const
@@ -2525,6 +2644,92 @@ bool Map::rebuildRouteStep(RouteStep &step)
     step.pointSequence = buildPointSequenceFromPaths(pathIds, step.fromId);
     step.progressEdgeIndex = 0;
     return true;
+}
+
+bool Map::rebuildRemainingRouteFrom(int startIndex, int startPointId, QString *errorMessage)
+{
+    if (startIndex < 0 || startIndex > m_routeQueue.size()) {
+        if (errorMessage) {
+            *errorMessage = tr("重规划起始索引无效");
+        }
+        return false;
+    }
+    if (!m_points.contains(startPointId)) {
+        if (errorMessage) {
+            *errorMessage = tr("重规划起点 点%1 不存在").arg(startPointId);
+        }
+        return false;
+    }
+
+    QList<RouteStep> rebuiltQueue = m_routeQueue.mid(0, startIndex);
+    int currentStartId = startPointId;
+
+    for (int i = startIndex; i < m_routeQueue.size(); ++i) {
+        const int targetId = m_routeQueue.at(i).toId;
+        if (!m_points.contains(targetId)) {
+            if (errorMessage) {
+                *errorMessage = tr("重规划目标 点%1 不存在").arg(targetId);
+            }
+            return false;
+        }
+        if (currentStartId == targetId) {
+            continue;
+        }
+
+        RouteStep rebuiltStep;
+        rebuiltStep.fromId = currentStartId;
+        rebuiltStep.toId = targetId;
+        if (!rebuildRouteStep(rebuiltStep)) {
+            if (errorMessage) {
+                *errorMessage = tr("点%1至点%2没有可用路径").arg(currentStartId).arg(targetId);
+            }
+            return false;
+        }
+
+        rebuiltQueue.append(rebuiltStep);
+        currentStartId = targetId;
+    }
+
+    m_routeQueue = rebuiltQueue;
+    refreshRouteQueueUi();
+    return true;
+}
+
+std::optional<int> Map::resolveDynamicReplanStartPoint() const
+{
+    if (m_vehicleCurrentPointId.has_value() && m_points.contains(m_vehicleCurrentPointId.value())) {
+        return m_vehicleCurrentPointId;
+    }
+    if (!m_hasVehiclePose) {
+        return std::nullopt;
+    }
+
+    const int nearestId =
+        findNearestPointId(QPointF(m_vehiclePoseX, m_vehiclePoseY), kRouteReplanSnapThresholdMeters, nullptr);
+    if (nearestId <= 0 || !m_points.contains(nearestId)) {
+        return std::nullopt;
+    }
+    return nearestId;
+}
+
+bool Map::tryDynamicReplanAfterFailure(QString *errorMessage)
+{
+    if (m_activeRouteIndex < 0 || m_activeRouteIndex >= m_routeQueue.size()) {
+        if (errorMessage) {
+            *errorMessage = tr("当前没有可重规划的执行段");
+        }
+        return false;
+    }
+
+    const std::optional<int> startPointId = resolveDynamicReplanStartPoint();
+    if (!startPointId.has_value()) {
+        if (errorMessage) {
+            *errorMessage = tr("当前位姿无法匹配到可用地图点");
+        }
+        return false;
+    }
+
+    return rebuildRemainingRouteFrom(m_activeRouteIndex, startPointId.value(), errorMessage);
 }
 
 void Map::refreshPointUi()
@@ -2870,6 +3075,28 @@ void Map::dispatchNextEdge()
         m_activeRouteIndex = 0;
     }
 
+    QString replanError;
+    if (m_activeRouteIndex >= 0 && m_activeRouteIndex < m_routeQueue.size()) {
+        const int startPointId = m_routeQueue.at(m_activeRouteIndex).fromId;
+        if (!rebuildRemainingRouteFrom(m_activeRouteIndex, startPointId, &replanError)) {
+            setRouteStatusText(replanError.isEmpty() ? tr("剩余路线重规划失败") : replanError, true);
+            m_activeRouteIndex = -1;
+            m_waitingForSegmentCompletion = false;
+            updateRouteControlState();
+            return;
+        }
+        if (m_activeRouteIndex >= m_routeQueue.size()) {
+            m_waitingForSegmentCompletion = false;
+            m_activeRouteIndex = -1;
+            updateRouteControlState();
+            emit routeQueueCompletedOnce();
+            if (m_routeLoopCheck && m_routeLoopCheck->isChecked()) {
+                scheduleNextCycle();
+            }
+            return;
+        }
+    }
+
     while (m_activeRouteIndex < m_routeQueue.size()) {
         RouteStep &step = m_routeQueue[m_activeRouteIndex];
         if (step.pathIds.isEmpty()) {
@@ -2946,6 +3173,128 @@ void Map::scheduleNextCycle()
     updateRouteControlState();
 }
 
+void Map::resetToBlankMap()
+{
+    clearMapData();
+
+    m_gridWidth = kDefaultGridWidth;
+    m_gridHeight = kDefaultGridHeight;
+    m_cellSizeMeters = kCellSizeMeters;
+    m_nextPointId = 1;
+    m_nextPathId = 1;
+    m_currentMapFilePath.clear();
+
+    if (m_gridWidthSpin) {
+        QSignalBlocker blocker(m_gridWidthSpin);
+        m_gridWidthSpin->setValue(m_gridWidth);
+    }
+    if (m_gridHeightSpin) {
+        QSignalBlocker blocker(m_gridHeightSpin);
+        m_gridHeightSpin->setValue(m_gridHeight);
+    }
+
+    setMapRotation(0.0);
+
+    m_waitingForClickPlacement = false;
+    m_pendingPointSelection.reset();
+    if (m_addPointFromClickButton) {
+        QSignalBlocker blocker(m_addPointFromClickButton);
+        m_addPointFromClickButton->setChecked(false);
+    }
+
+    applyPresentationUpdates(true);
+    updateMapNameDisplay();
+    updateVehiclePointBinding();
+    syncCommittedMapState();
+    setRouteStatusText(tr("已新建空白地图"));
+}
+
+bool Map::saveCurrentMapInteractive(bool forceChooseFile)
+{
+    QString filePath = m_currentMapFilePath;
+    if (forceChooseFile || filePath.isEmpty()) {
+        const QString startDir = !m_lastSaveDirectory.isEmpty() ? m_lastSaveDirectory
+                                  : (!m_currentMapFilePath.isEmpty() ? QFileInfo(m_currentMapFilePath).absolutePath()
+                                     : (!s_lastMapFilePath.isEmpty() ? QFileInfo(s_lastMapFilePath).absolutePath()
+                                                                     : QDir::currentPath()));
+
+        filePath = QFileDialog::getSaveFileName(m_mapPage, tr("保存地图"), startDir,
+                                                tr("地图文件 (*.json);;所有文件 (*.*)"));
+        if (filePath.isEmpty()) {
+            return false;
+        }
+    }
+
+    if (!saveMapToFile(filePath)) {
+        return false;
+    }
+
+    m_currentMapFilePath = filePath;
+    s_lastMapFilePath = filePath;
+    m_lastSaveDirectory = QFileInfo(filePath).absolutePath();
+    updateMapNameDisplay();
+    syncCommittedMapState();
+    return true;
+}
+
+QByteArray Map::buildComparableMapState() const
+{
+    QJsonObject root;
+    root.insert(QStringLiteral("schemaVersion"), kMapSchemaVersion);
+    root.insert(QStringLiteral("gridWidth"), m_gridWidth);
+    root.insert(QStringLiteral("gridHeight"), m_gridHeight);
+    root.insert(QStringLiteral("cellSizeMeters"), m_cellSizeMeters);
+    root.insert(QStringLiteral("rotationDeg"), m_mapRotationDeg);
+
+    QJsonArray pointsArray;
+    QList<int> pointIds = m_points.keys();
+    std::sort(pointIds.begin(), pointIds.end());
+    for (int pointId : pointIds) {
+        const MapPoint *point = pointById(pointId);
+        if (!point) {
+            continue;
+        }
+        QJsonObject pointObj;
+        pointObj.insert(QStringLiteral("id"), point->id);
+        pointObj.insert(QStringLiteral("x"), point->mapPosition.x());
+        pointObj.insert(QStringLiteral("y"), point->mapPosition.y());
+        pointObj.insert(QStringLiteral("theta"), point->theta);
+        pointsArray.append(pointObj);
+    }
+    root.insert(QStringLiteral("points"), pointsArray);
+
+    QJsonArray pathsArray;
+    QList<int> pathIds = m_paths.keys();
+    std::sort(pathIds.begin(), pathIds.end());
+    for (int pathId : pathIds) {
+        const MapPath *path = pathById(pathId);
+        if (!path) {
+            continue;
+        }
+        QJsonObject pathObj;
+        pathObj.insert(QStringLiteral("id"), path->id);
+        pathObj.insert(QStringLiteral("start"), path->startId);
+        pathObj.insert(QStringLiteral("end"), path->endId);
+        pathObj.insert(QStringLiteral("type"), path->type == PathType::Arc ? QStringLiteral("arc")
+                                                                           : QStringLiteral("line"));
+        pathObj.insert(QStringLiteral("sagitta"), path->sagitta);
+        pathsArray.append(pathObj);
+    }
+    root.insert(QStringLiteral("paths"), pathsArray);
+
+    return QJsonDocument(root).toJson(QJsonDocument::Compact);
+}
+
+void Map::syncCommittedMapState()
+{
+    m_committedMapState = buildComparableMapState();
+}
+
+bool Map::hasUnsavedMapChanges() const
+{
+    return buildComparableMapState() != m_committedMapState;
+}
+
 void Map::clearMapData()
 {
     while (!m_paths.isEmpty()) {
@@ -2977,14 +3326,24 @@ bool Map::saveMapToFile(const QString &filePath) const
         return false;
     }
 
-    QFile file(filePath);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+    QSaveFile file(filePath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
         QMessageBox::warning(m_mapPage, tr("保存地图"), tr("无法写入文件: %1").arg(file.errorString()));
         return false;
     }
 
     QJsonDocument doc(serializeMap());
-    file.write(doc.toJson(QJsonDocument::Indented));
+    const QByteArray payload = doc.toJson(QJsonDocument::Indented);
+    const qint64 written = file.write(payload);
+    if (written != payload.size()) {
+        file.cancelWriting();
+        QMessageBox::warning(m_mapPage, tr("保存地图"), tr("写入失败: %1").arg(file.errorString()));
+        return false;
+    }
+    if (!file.commit()) {
+        QMessageBox::warning(m_mapPage, tr("保存地图"), tr("提交文件失败: %1").arg(file.errorString()));
+        return false;
+    }
     return true;
 }
 
@@ -3019,102 +3378,86 @@ bool Map::loadMapFromFile(const QString &filePath)
     m_currentMapFilePath = filePath;
     s_lastMapFilePath = filePath;
     updateMapNameDisplay();
+    syncCommittedMapState();
     return true;
 }
 
 QJsonObject Map::serializeMap() const
 {
-    QJsonObject root;
-    root.insert(QStringLiteral("gridWidth"), m_gridWidth);
-    root.insert(QStringLiteral("gridHeight"), m_gridHeight);
-    root.insert(QStringLiteral("cellSizeMeters"), m_cellSizeMeters);
-    root.insert(QStringLiteral("rotationDeg"), m_mapRotationDeg);
+    MapDocument doc;
+    doc.schemaVersion = kMapSchemaVersion;
+    doc.savedAtIsoUtc = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+    doc.gridWidth = m_gridWidth;
+    doc.gridHeight = m_gridHeight;
+    doc.cellSizeMeters = m_cellSizeMeters;
+    doc.rotationDeg = m_mapRotationDeg;
 
-    QJsonArray pointsArray;
+    doc.points.reserve(m_points.size());
     for (auto it = m_points.cbegin(); it != m_points.cend(); ++it) {
         const MapPoint &point = it.value();
-        QJsonObject obj;
-        obj.insert(QStringLiteral("id"), point.id);
-        obj.insert(QStringLiteral("x"), point.mapPosition.x());
-        obj.insert(QStringLiteral("y"), point.mapPosition.y());
-        obj.insert(QStringLiteral("theta"), point.theta);
-        pointsArray.append(obj);
+        MapDocumentPoint record;
+        record.id = point.id;
+        record.x = point.mapPosition.x();
+        record.y = point.mapPosition.y();
+        record.theta = point.theta;
+        doc.points.append(record);
     }
-    root.insert(QStringLiteral("points"), pointsArray);
 
-    QJsonArray pathsArray;
+    doc.paths.reserve(m_paths.size());
     for (auto it = m_paths.cbegin(); it != m_paths.cend(); ++it) {
         const MapPath &path = it.value();
-        QJsonObject obj;
-        obj.insert(QStringLiteral("id"), path.id);
-        obj.insert(QStringLiteral("start"), path.startId);
-        obj.insert(QStringLiteral("end"), path.endId);
-        obj.insert(QStringLiteral("type"), path.type == PathType::Line ? QStringLiteral("line")
-                                                                        : QStringLiteral("arc"));
-        obj.insert(QStringLiteral("sagitta"), path.sagitta);
-        pathsArray.append(obj);
+        MapDocumentPath record;
+        record.id = path.id;
+        record.startId = path.startId;
+        record.endId = path.endId;
+        record.type = (path.type == PathType::Arc) ? MapDocumentPathType::Arc : MapDocumentPathType::Line;
+        record.sagitta = path.sagitta;
+        doc.paths.append(record);
     }
-    root.insert(QStringLiteral("paths"), pathsArray);
 
-    return root;
+    return MapDocumentCodec::toJson(doc);
 }
 
 bool Map::deserializeMap(const QJsonObject &object)
 {
-    if (!object.contains(QStringLiteral("gridWidth")) || !object.contains(QStringLiteral("gridHeight"))) {
-        return false;
-    }
-
-    const int width = object.value(QStringLiteral("gridWidth")).toInt();
-    const int height = object.value(QStringLiteral("gridHeight")).toInt();
-    if (width <= 0 || height <= 0) {
+    MapDocument doc;
+    QString decodeError;
+    if (!MapDocumentCodec::fromJson(object, &doc, &decodeError, kMapSchemaVersion)) {
+        qCWarning(lcMapModule) << "Map deserialize failed:" << decodeError;
         return false;
     }
 
     if (m_gridWidthSpin) {
-        m_gridWidthSpin->setValue(width);
+        m_gridWidthSpin->setValue(doc.gridWidth);
     }
     if (m_gridHeightSpin) {
-        m_gridHeightSpin->setValue(height);
+        m_gridHeightSpin->setValue(doc.gridHeight);
     }
-    m_gridWidth = width;
-    m_gridHeight = height;
+    m_gridWidth = doc.gridWidth;
+    m_gridHeight = doc.gridHeight;
+    m_cellSizeMeters = doc.cellSizeMeters;
 
-    const double rotationDeg = object.value(QStringLiteral("rotationDeg")).toDouble(0.0);
-    setMapRotation(rotationDeg);
+    setMapRotation(doc.rotationDeg);
 
     clearMapData();
 
-    const QJsonArray pointsArray = object.value(QStringLiteral("points")).toArray();
     int maxPointId = 0;
-    for (const QJsonValue &value : pointsArray) {
-        const QJsonObject obj = value.toObject();
-        const int id = obj.value(QStringLiteral("id")).toInt();
-        const double x = obj.value(QStringLiteral("x")).toDouble();
-        const double y = obj.value(QStringLiteral("y")).toDouble();
-        const double theta = obj.value(QStringLiteral("theta")).toDouble();
-        if (addPointInternal(x, y, theta, id)) {
-            maxPointId = std::max(maxPointId, id);
+    for (const MapDocumentPoint &point : doc.points) {
+        if (addPointInternal(point.x, point.y, point.theta, point.id)) {
+            maxPointId = std::max(maxPointId, point.id);
         }
     }
 
-    const QJsonArray pathsArray = object.value(QStringLiteral("paths")).toArray();
     int maxPathId = 0;
-    for (const QJsonValue &value : pathsArray) {
-        const QJsonObject obj = value.toObject();
-        const int id = obj.value(QStringLiteral("id")).toInt();
-        const int startId = obj.value(QStringLiteral("start")).toInt();
-        const int endId = obj.value(QStringLiteral("end")).toInt();
-        const QString type = obj.value(QStringLiteral("type")).toString();
-        const double sagitta = obj.value(QStringLiteral("sagitta")).toDouble();
+    for (const MapDocumentPath &path : doc.paths) {
         bool ok = false;
-        if (type == QStringLiteral("arc")) {
-            ok = addArcPath(startId, endId, sagitta, id);
+        if (path.type == MapDocumentPathType::Arc) {
+            ok = addArcPath(path.startId, path.endId, path.sagitta, path.id);
         } else {
-            ok = addLinePath(startId, endId, id);
+            ok = addLinePath(path.startId, path.endId, path.id);
         }
         if (ok) {
-            maxPathId = std::max(maxPathId, id);
+            maxPathId = std::max(maxPathId, path.id);
         }
     }
 

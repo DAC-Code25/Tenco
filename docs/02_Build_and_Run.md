@@ -2,35 +2,44 @@
 
 ## 1. 构建依赖
 
-- Qt 5/6（推荐 Qt 6.5+）
-- Qt 模块：`core`, `gui`, `widgets`, `network`, `websockets`
+- Qt 6（推荐 Qt 6.5+）
+- Qt 模块：`Core`, `Gui`, `Widgets`, `Network`, `WebSockets`, `Core5Compat`
+- CMake 3.16+
 - 编译器：
   - Windows：MinGW 或 MSVC（以你安装的 Qt Kit 为准）
 
-工程文件：`Tenco.pro`
+工程入口：`CMakeLists.txt`
 
 ---
 
 ## 2. 使用 Qt Creator 构建运行（推荐）
 
-1. Qt Creator 打开 `Tenco.pro`
+1. Qt Creator 打开 `CMakeLists.txt`
 2. 选择 Kit（例如 Desktop Qt 6.8.3 MinGW 64-bit）
 3. Build → Run
 
-注意：`Tenco.pro` 设置了输出目录：
+注意：CMake 已设置统一输出目录：
 
-- `DESTDIR = $$PWD/../bin`
-- 也就是说可执行文件通常在 `..\bin\`（项目上级目录）里
+- 可执行文件默认在 `..\bin\`（项目上级目录）里
 
 ---
 
 ## 3. 命令行构建（可选）
 
-前提：Qt 的 `bin` 加入 `PATH`，能直接调用 `qmake`。
+前提：`cmake`、编译器、Qt 工具链可用。
 
 ```powershell
-qmake .\Tenco.pro
-mingw32-make -j
+cmake -S . -B build\cmake -G Ninja -DTENCO_BUILD_TESTS=ON
+cmake --build build\cmake --config Debug -j
+ctest --test-dir build\cmake -C Debug --output-on-failure
+```
+
+也可以使用预设（推荐）：
+
+```powershell
+cmake --preset default
+cmake --build --preset default
+ctest --preset default
 ```
 
 ---
@@ -48,6 +57,12 @@ mingw32-make -j
 - `video.streamUrl`
 
 否则：状态不会刷新/控制发不出去/视频打不开。
+
+可选：通过命令行显式指定配置文件（便于多环境切换）：
+
+```powershell
+.\Tenco.exe --config D:\QTProject\Tenco\config.json
+```
 
 ---
 
@@ -85,4 +100,3 @@ mingw32-make -j
 - [ ] 保存地图为 JSON、重新加载后数据一致
 - [ ] 路线开始后能分段派发、收到段完成信号继续下一段/结束
 - [ ] 路线停止能立即停速度
-

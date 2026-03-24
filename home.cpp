@@ -3,6 +3,8 @@
 #include "chassisclient.h"
 #include "videoclient.h"
 #include "routefollower.h"
+#include "home_status_presenter.h"
+#include "statusprotocol.h"
 #include "configmanager.h"
 #include "ui_mainwindow.h"         
 #include "imageswitch.h"         
@@ -13,7 +15,6 @@
 #include <QJsonArray>        // 构造批量寄存器读取的请求体
 #include <QJsonDocument>     // 将 JSON 请求/响应序列化与解析
 #include <QJsonObject>       // 处理单条键值信息
-#include <QMap>              // 将模式值映射为可读文本
 #include <QMessageBox>       // 输入校验提示与结果反馈
 #include <QLineEdit>         // 对经纬度输入框执行焦点与选中操作
 #include <QComboBox>       // 模式选择控件
@@ -27,7 +28,6 @@
 #include <QPixmap>
 #include <QPushButton>       // 访问 UI 中的按钮控件
 #include <QString>           // UI 文本与网络地址处理
-#include <QStringList>       // 拼接位置坐标展示字符串
 #include <QTimer>            // 周期性任务与长按控制的定时器
 #include <QUrl>              // 解析 WebSocket 与 HTTP 地址
 #include <QUrlQuery>
@@ -54,8 +54,6 @@ Home::Home(Ui::MainWindow *ui, QObject *parent)
     , m_chassisClient(new ChassisClient(this))
     , m_videoClient(new VideoClient(this))
     , m_routeFollower(new RouteFollower(this))
-    , lastConnectionStatus(false)
-    , connectionRestored(false)
     , forwardButtonHeld(false)
     , forwardKeyHeld(false)
     , backwardButtonHeld(false)
@@ -97,19 +95,15 @@ Home::Home(Ui::MainWindow *ui, QObject *parent)
         connect(m_routeFollower, &RouteFollower::segmentCompleted, this, &Home::routeSegmentCompleted);
     }
 
+    m_statusPresenter = std::make_unique<HomeStatusPresenter>(
+        ui,
+        m_routeFollower,
+        [this](const QString &text) { logMessage(text); },
+        [this](double x, double y, double theta) { emit vehiclePoseUpdated(x, y, theta); });
+
     // Status polling (HTTP, worker thread).
     if (m_statusClient) {
-        QJsonArray requests = {
-            QJsonObject{{"address", "3f"}, {"type", "uint8"}, {"len", 1}},
-            QJsonObject{{"address", "38"}, {"type", "float"}, {"len", 4}},
-            QJsonObject{{"address", "3c"}, {"type", "uint8"}, {"len", 1}},
-            QJsonObject{{"address", "100"}, {"type", "float"}, {"len", 12}},
-            QJsonObject{{"address", "320"}, {"type", "string"}, {"len", 32}},
-            QJsonObject{{"address", "20"}, {"type", "float"}, {"len", 4}},
-            QJsonObject{{"address", "13"}, {"type", "uint8"}, {"len", 1}},
-            QJsonObject{{"address", "14"}, {"type", "uint8"}, {"len", 1}},
-            QJsonObject{{"address", "15"}, {"type", "uint8"}, {"len", 3}}
-        };
+        const QJsonArray requests = StatusProtocol::defaultReadRequests();
 
         const auto &netCfg = config.network();
         const QUrl statusUrl(netCfg.statusReadUrl);
@@ -119,14 +113,16 @@ Home::Home(Ui::MainWindow *ui, QObject *parent)
 
         connect(m_statusClient, &StatusClient::statusReceived, this, &Home::handleStatusPacket);
         connect(m_statusClient, &StatusClient::requestFailed, this, &Home::handleNetworkFailure);
-        m_statusClient->configure(statusUrl, requests, netCfg.statusPollIntervalMs);
+        m_statusClient->configure(statusUrl, requests, netCfg.statusPollIntervalMs, netCfg.authToken);
         m_statusClient->start();
     }
 
     // Chassis WebSocket client.
     if (m_chassisClient) {
-        const QUrl wsUrl(config.network().websocketUrl.trimmed());
+        const auto &netCfg = config.network();
+        const QUrl wsUrl(netCfg.websocketUrl.trimmed());
         m_chassisClient->setUrl(wsUrl);
+        m_chassisClient->setAuthorizationToken(netCfg.authToken);
         connect(m_chassisClient, &ChassisClient::connected, this, &Home::handleChassisConnected);
         connect(m_chassisClient, &ChassisClient::disconnected, this, &Home::handleChassisDisconnected);
         connect(m_chassisClient, &ChassisClient::errorOccurred, this, &Home::handleChassisError);
@@ -157,8 +153,8 @@ void Home::initialize()
     connect(ui->recordButton, &QPushButton::clicked, this, &Home::record);
     connect(ui->captureButton, &QPushButton::clicked, this, &Home::photo);
     connect(ui->pushButton_restart, &QPushButton::clicked, this, &Home::restartControl);
-    connect(ui->pushButton_9, &QPushButton::clicked, this, &Home::orignsubmmit);
-    connect(ui->pushButton, &QPushButton::clicked, this, &Home::modesubmmit);
+    connect(ui->pushButton_9, &QPushButton::clicked, this, &Home::submitOriginCommand);
+    connect(ui->pushButton, &QPushButton::clicked, this, &Home::submitModeCommand);
     connect(ui->savePathButton, &QPushButton::clicked, this, &Home::handleSavePathButtonClicked);
     connect(ui->forwardButton, &QPushButton::pressed, this, &Home::handleForwardButtonPressed);
     connect(ui->forwardButton, &QPushButton::released, this, &Home::handleForwardButtonReleased);
@@ -577,111 +573,23 @@ void Home::updateRebootProgress()
 // 向 HTTP 接口请求最新的运行数据
 void Home::handleStatusPacket(const QJsonObject &resp)
 {
-    const bool wasConnected = lastConnectionStatus;
-    lastConnectionStatus = true;
-    if (!wasConnected) {
-        connectionRestored = true;
-        checkConnectionRestored();
-        logMessage(tr("状态通信已恢复"));
+    if (!m_statusPresenter) {
+        return;
     }
-    ui->pushButton_10->setText(tr("通信正常"));
-    ui->pushButton_10->setStyleSheet("background-color: #55ff00; min-width: 80px; min-height: 50px; border: 1px solid white; border-radius: 10px; font-size: 18px; font-family: 微软雅黑;");
-    const QJsonArray dataArray = resp.value("data").toArray();
-    for (const QJsonValue &item : dataArray) {
-        const QJsonObject data = item.toObject();
-        const QString addr = data.value("address").toString();
-        const QJsonArray values = data.value("value").toArray();
-        const QJsonValue val = values.isEmpty() ? QJsonValue() : values.first();
-        if (addr == "3f") {
-            const int battery = val.toInt();
-            ui->battery->setValue(battery);
-            ui->lable_battray->setText(QString::number(battery) + "%");
-        } else if (addr == "38") {
-            ui->lineEdit_BattryVol->setText(QString::number(val.toDouble(), 'f', 2) + "V");
-        } else if (addr == "3c") {
-            static const QMap<int, QString> modeMap{{0, QStringLiteral("维护模式")},
-                                                    {1, QStringLiteral("手动模式")},
-                                                    {2, QStringLiteral("自动模式")}};
-            ui->lineEdit_mode->setText(QStringLiteral("当前模式:   ") + modeMap.value(val.toInt(), QStringLiteral("未知模式")));
-        } else if (addr == "100") {
-            if (values.size() >= 3) {
-                const double x = values.at(0).toDouble();
-                const double y = values.at(1).toDouble();
-                const double theta = values.at(2).toDouble();
-                if (m_routeFollower) {
-                    m_routeFollower->updatePose(x, y, theta);
-                }
-                emit vehiclePoseUpdated(x, y, theta);
-                QStringList parts;
-                for (const QJsonValue &v : values) {
-                    parts << QString::number(v.toDouble(), 'f', 5);
-                }
-                ui->lineEdit_Position->setText(parts.join(", "));
-
-            } else {
-                if (m_routeFollower) {
-                    m_routeFollower->setPoseValid(false);
-                }
-            }
-        } else if (addr == "320") {
-            ui->lineEdit_mapname->setText(QStringLiteral("当前地图:   ") + val.toString());
-        } else if (addr == "20") {
-            if (!values.isEmpty()) {
-                const double velocity = values.first().toDouble();
-                if (velocity >= -2.0 && velocity <= 2.0) {
-                    ui->lcdNumber->setDigitCount(5);
-                    ui->lcdNumber->display(QString::number(qAbs(velocity), 'f', 2));
-                }
-            }
-        } else if (addr == "13") {
-            const int temp = val.toInt();
-            ui->lineEdit_BattryTemp->setText(QString::number(temp) + "℃");
-        } else if (addr == "14") {
-            QString bettray_state = QStringLiteral("电已充满");
-            if (val.toInt() == 1)
-                bettray_state = QStringLiteral("充电中");
-            if (val.toInt() == 2)
-                bettray_state = QStringLiteral("放电中");
-            ui->lineEdit_BattryState->setText(bettray_state);
-        } else if (addr == "15") {
-            const int hour = values.size() > 0 ? values.at(0).toInt() : 0;
-            const int minute = values.size() > 1 ? values.at(1).toInt() : 0;
-            const int second = values.size() > 2 ? values.at(2).toInt() : 0;
-            ui->lineEdit_RunTime->setText(QStringLiteral("%1小时%2分钟%3秒").arg(hour).arg(minute).arg(second));
-        }
-    }
+    m_statusPresenter->handleStatusPacket(resp);
+    checkConnectionRestored();
 }
+
 void Home::handleNetworkFailure(int httpStatus, const QString &errorString, const QByteArray &responseBody)
 {
-    const bool wasConnected = lastConnectionStatus;
-    ui->pushButton_10->setText(tr("通信故障"));
-    ui->pushButton_10->setStyleSheet("background-color: #ff0000; min-width: 80px; min-height: 50px; border: 1px solid white; border-radius: 10px; font-size: 18px; font-family: 微软雅黑;");
-    lastConnectionStatus = false;
-    connectionRestored = false;
-
-    QString detail = tr("通信故障，正在尝试重连");
-    if (httpStatus > 0) {
-        detail += tr(" (HTTP %1)").arg(httpStatus);
+    if (!m_statusPresenter) {
+        return;
     }
-    if (!errorString.isEmpty()) {
-        detail += tr("：%1").arg(errorString);
-    }
-    logMessage(detail);
-    if (!responseBody.isEmpty()) {
-        const QString bodyPreview = QString::fromUtf8(responseBody.left(200)).trimmed();
-        if (!bodyPreview.isEmpty()) {
-            logMessage(tr("响应: %1").arg(bodyPreview));
-        }
-    }
-    if (wasConnected) {
+    if (m_statusPresenter->handleNetworkFailure(httpStatus, errorString, responseBody)) {
         restartCheckTimer->start();
     }
-
-    if (m_routeFollower) {
-        m_routeFollower->setPoseValid(false);
-    }
 }
-void Home::modesubmmit()
+void Home::submitModeCommand()
 {
     if (!ui) {
         return;
@@ -710,6 +618,10 @@ void Home::modesubmmit()
     writeReq.append(dataObj);
     QNetworkRequest req(writeUrl);
     req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    const QString authToken = ConfigManager::instance().network().authToken.trimmed();
+    if (!authToken.isEmpty()) {
+        req.setRawHeader("Authorization", QByteArray("Bearer ") + authToken.toUtf8());
+    }
     auto manager = new QNetworkAccessManager(this);
     QNetworkReply *reply = manager->post(req, QJsonDocument(writeReq).toJson());
     connect(reply, &QNetworkReply::finished, this, [reply, manager]() {
@@ -977,7 +889,9 @@ void Home::restartControl()
     if (m_chassisClient) {
         m_chassisClient->sendRebootCommand();
     }
-    connectionRestored = false;
+    if (m_statusPresenter) {
+        m_statusPresenter->clearConnectionRestored();
+    }
     restartCheckTimer->start();
     if (!rebootProgressDialog) {
         rebootProgressDialog = new QProgressDialog(tr("控制器重启中..."), QString(), 0, 53, parentWidget ? parentWidget : ui->centralwidget);
@@ -996,7 +910,7 @@ void Home::restartControl()
     rebootProgressDialog->raise();
     rebootCountdownTimer->start(1000);
 }
-void Home::orignsubmmit()
+void Home::submitOriginCommand()
 {
     if (!ui) {
         return;
@@ -1070,6 +984,10 @@ void Home::orignsubmmit()
     QNetworkRequest request;
     request.setUrl(saveUrl);
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/x-www-form-urlencoded");
+    const QString authToken = ConfigManager::instance().network().authToken.trimmed();
+    if (!authToken.isEmpty()) {
+        request.setRawHeader("Authorization", QByteArray("Bearer ") + authToken.toUtf8());
+    }
     request.setRawHeader("Connection", "keep-alive");
     request.setRawHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36");
     request.setHeader(QNetworkRequest::ContentLengthHeader, QByteArray::number(postBody.length()));
@@ -1093,12 +1011,11 @@ void Home::orignsubmmit()
 // 检查控制器是否已经重连成功
 void Home::checkConnectionRestored()
 {
-    if (!connectionRestored) {  // 若尚未恢复则无需处理
+    if (!m_statusPresenter || !m_statusPresenter->takeConnectionRestored()) {
         return;
     }
     qDebug() << "连接已恢复";
     restartCheckTimer->stop();  // 停止重连轮询
-    connectionRestored = false;
 }
 void Home::followRouteSegment(int fromPointId, int toPointId, const QList<QPointF> &polyline, double startTheta, double endTheta)
 {

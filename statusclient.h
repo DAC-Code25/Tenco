@@ -20,7 +20,7 @@ public:
     explicit StatusClient(QObject *parent = nullptr);
     ~StatusClient() override;
 
-    void configure(const QUrl &url, const QJsonArray &requests, int intervalMs);
+    void configure(const QUrl &url, const QJsonArray &requests, int intervalMs, const QString &authToken = QString());
     void start();
     void stop();
 
@@ -37,6 +37,7 @@ private:
     QUrl m_url;
     QJsonArray m_requests;
     int m_intervalMs = 100;
+    QString m_authToken;
 
     HomeNetworkWorker *m_worker = nullptr;
     QThread *m_thread = nullptr;

@@ -9,11 +9,14 @@
 #include <QPointF>
 #include <QImage>
 
+#include <memory>
+
 class QProgressDialog;
 class StatusClient;
 class ChassisClient;
 class VideoClient;
 class RouteFollower;
+class HomeStatusPresenter;
 
 namespace Ui {
 class MainWindow;
@@ -50,8 +53,8 @@ private slots:
     void record();
     void photo();
     void restartControl();
-    void orignsubmmit();
-    void modesubmmit();
+    void submitOriginCommand();
+    void submitModeCommand();
     void handleForwardButtonPressed();
     void handleForwardButtonReleased();
     void handleBackwardButtonPressed();
@@ -117,15 +120,13 @@ private:
     ChassisClient *m_chassisClient = nullptr;
     VideoClient *m_videoClient = nullptr;
     RouteFollower *m_routeFollower = nullptr;
+    std::unique_ptr<HomeStatusPresenter> m_statusPresenter;
 
     QString m_recordFilePath;
     QString m_saveDirectory;
     bool m_videoScaleContents = true;
     QString m_activeVideoTopic;
     QImage m_lastVideoFrame;
-
-    bool lastConnectionStatus;
-    bool connectionRestored;
 
     bool forwardButtonHeld;
     bool forwardKeyHeld;

@@ -53,12 +53,14 @@ public:
         QString statusReadUrl;
         QString writeInsUrl;
         QString saveFileUrl;
+        QString authToken;
         int statusPollIntervalMs = 100;
     };
 
     static ConfigManager &instance();
 
     void reload();
+    void setConfigFilePath(const QString &path);
 
     const GeoConfig &geo() const { return m_geo; }
     const ControlConfig &control() const { return m_control; }
@@ -70,6 +72,7 @@ public:
     void localToGeo(const QPointF &localPoint, double &latitudeDeg, double &longitudeDeg) const;
 
     QString configFilePath() const { return m_configPath; }
+    bool loadedFromFile() const { return m_loadedFromFile; }
 
 private:
     explicit ConfigManager(QObject *parent = nullptr);
@@ -77,6 +80,7 @@ private:
     void load();
     void loadFromFile(const QString &path);
     void loadDefaults();
+    void sanitizeConfig();
     void updateCachedScales();
 
     GeoConfig m_geo;
@@ -87,7 +91,9 @@ private:
     double m_metersPerDegLat = 0.0;
     double m_metersPerDegLon = 0.0;
     QString m_configPath;
+    QString m_configPathOverride;
     bool m_loaded = false;
+    bool m_loadedFromFile = false;
 };
 
 #endif // CONFIGMANAGER_H

@@ -2,8 +2,11 @@
 
 #include "homenetworkworker.h"
 
+#include <QLoggingCategory>
 #include <QMetaObject>
 #include <QThread>
+
+Q_LOGGING_CATEGORY(lcStatusClient, "tenco.net.statusclient")
 
 StatusClient::StatusClient(QObject *parent)
     : QObject(parent)
@@ -16,11 +19,12 @@ StatusClient::~StatusClient()
     teardownWorker();
 }
 
-void StatusClient::configure(const QUrl &url, const QJsonArray &requests, int intervalMs)
+void StatusClient::configure(const QUrl &url, const QJsonArray &requests, int intervalMs, const QString &authToken)
 {
     m_url = url;
     m_requests = requests;
     m_intervalMs = intervalMs;
+    m_authToken = authToken.trimmed();
 
     // HomeNetworkWorker::configure is not a slot; rebuild to apply config safely.
     rebuildWorker(m_running);
@@ -39,9 +43,11 @@ void StatusClient::start()
 
     if (!m_worker) {
         m_running = false;
+        qCWarning(lcStatusClient) << "Start aborted: worker is not ready";
         return;
     }
 
+    qCInfo(lcStatusClient) << "Starting status polling worker";
     QMetaObject::invokeMethod(m_worker, "start", Qt::QueuedConnection);
 }
 
@@ -62,11 +68,13 @@ void StatusClient::rebuildWorker(bool restartAfterwards)
     teardownWorker();
 
     if (!m_url.isValid() || m_requests.isEmpty()) {
+        qCWarning(lcStatusClient) << "Skip worker rebuild due to invalid config, url valid?"
+                                 << m_url.isValid() << "requests empty?" << m_requests.isEmpty();
         return;
     }
 
     m_worker = new HomeNetworkWorker();
-    m_worker->configure(m_url, m_requests, m_intervalMs);
+    m_worker->configure(m_url, m_requests, m_intervalMs, m_authToken);
 
     m_thread = new QThread(this);
     m_worker->moveToThread(m_thread);
@@ -76,6 +84,7 @@ void StatusClient::rebuildWorker(bool restartAfterwards)
     connect(m_worker, &HomeNetworkWorker::requestFailed, this, &StatusClient::requestFailed);
 
     m_thread->start();
+    qCInfo(lcStatusClient) << "Worker thread started";
 
     if (restartAfterwards) {
         m_running = true;
@@ -94,8 +103,11 @@ void StatusClient::teardownWorker()
 
     if (m_thread) {
         m_thread->quit();
-        m_thread->wait();
+        if (!m_thread->wait(3000)) {
+            qCWarning(lcStatusClient) << "Worker thread quit timeout, forcing terminate";
+            m_thread->terminate();
+            m_thread->wait(1000);
+        }
         m_thread = nullptr;
     }
 }
-

@@ -5,17 +5,21 @@
 - **UI 容器层**：`MainWindow`（`mainwindow.h/.cpp` + `mainwindow.ui`）
 - **页面编排层**：`Home` / `Map` / `Maintenance` / `Help` / `About`
 - **业务模块层（已拆分）**
+  - `HomeStatusPresenter`：状态包解析与状态区 UI 映射
   - `StatusClient`：状态轮询编排（线程封装）
   - `HomeNetworkWorker`：真正执行 HTTP 轮询的 worker（跑在 QThread）
+  - `StatusProtocol`：状态字段枚举与地址映射、默认轮询请求构造
   - `ChassisClient`：WebSocket 协议封装（cmd_vel/reboot/stopLocation…）
   - `VideoClient`：MJPEG 拉流、解码、录像、截图、自动重连
   - `RouteFollower`：路线段跟随算法（输出速度命令，不直接发网络）
+  - `RoutePathFinder`：路径搜索（加权最短路）
+  - `MapDocument`：地图 JSON 文档模型编解码
 - **配置层**：`ConfigManager`（`config.json`）
 
 这样拆分的核心价值（企业常用思路）：
 
 - UI 不直接散落网络/协议细节，降低“改 UI 导致协议被改坏”的概率
-- 各模块可以被单测覆盖（尤其 `RouteFollower`、`ConfigManager`、`Map` 序列化）
+- 各模块可以被单测覆盖（尤其 `RouteFollower`、`ConfigManager`、`RoutePathFinder`、`StatusProtocol`、`MapDocument`）
 
 ---
 
@@ -141,4 +145,3 @@ sequenceDiagram
 - Home 编排：`Home::followRouteSegment()`（`home.cpp`）
 - 跟随算法：`routefollower.h/.cpp`
 - 发送速度：`ChassisClient`（`chassisclient.h/.cpp`）
-

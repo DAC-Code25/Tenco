@@ -51,3 +51,12 @@
 - 临时用 `-style fusion` 验证是否是主题问题
 - 降低对 spinbox 的 QSS 定制，或统一用 Fusion 风格
 
+---
+
+## 6. 接口返回 401/403（认证失败）
+
+排查顺序：
+
+1. 检查 `config.json` 的 `network.authToken` 是否为空或过期
+2. 确认服务端要求的认证方案是否为 `Bearer`（当前客户端按 Bearer 注入）
+3. 先用 Postman 验证同一 token 是否可访问 `statusReadUrl/writeInsUrl/saveFileUrl/websocketUrl`
