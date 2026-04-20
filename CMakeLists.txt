@@ -18,7 +18,7 @@ option(TENCO_ENABLE_WARNINGS "Enable stricter compiler warnings" ON)
 option(TENCO_BUILD_TESTS "Build unit tests" ON)
 
 # Qt 6 is the primary supported build for this repository.
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network WebSockets Core5Compat)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network WebSockets)
 
 qt_standard_project_setup()
 
@@ -101,7 +101,6 @@ target_link_libraries(Tenco PRIVATE
     Qt6::Widgets
     Qt6::Network
     Qt6::WebSockets
-    Qt6::Core5Compat
 )
 
 target_include_directories(Tenco PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
