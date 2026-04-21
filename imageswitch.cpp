@@ -1,4 +1,6 @@
-﻿#pragma execution_character_set("utf-8")  // 设置执行字符集为UTF-8，支持中文显示
+#ifdef Q_CC_MSVC
+#pragma execution_character_set("utf-8")  // 仅对 MSVC 设置执行字符集，避免 GCC/MinGW 警告
+#endif
 
 #include "imageswitch.h"
 #include "qpainter.h"

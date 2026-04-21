@@ -180,7 +180,6 @@ static QString LINEEDIT_STYLE2() {
         );
 }
 
-
 //确定按钮
 static QString BUTTON_STYLE6(){
     return    QStringLiteral(
@@ -401,9 +400,13 @@ void MainWindow::initUIComponents()
     ui->doubleSpinBox->setValue(0.20); //初始值
     ui->doubleSpinBox->setSingleStep(0.1);   // 每次增减0.1
     ui->doubleSpinBox->setSuffix("    直行速度");
+    ui->doubleSpinBox->setStyleSheet(QString());
+    ui->doubleSpinBox->setButtonSymbols(QAbstractSpinBox::UpDownArrows);
     ui->doubleSpinBox_2->setValue(0.20);
     ui->doubleSpinBox_2->setSingleStep(0.1);
     ui->doubleSpinBox_2->setSuffix("    转向速度");
+    ui->doubleSpinBox_2->setStyleSheet(QString());
+    ui->doubleSpinBox_2->setButtonSymbols(QAbstractSpinBox::UpDownArrows);
 
 
 

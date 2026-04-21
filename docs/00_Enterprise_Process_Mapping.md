@@ -67,7 +67,7 @@
 **在 Tenco 中对应**
 
 - 工程文件：`CMakeLists.txt` + `CMakePresets.json`
-- Qt 模块依赖：`find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network WebSockets Core5Compat)`
+- Qt 模块依赖：`find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network WebSockets)`
 - 资源：`resources.qrc` / `mainwindow.ui` / `app_icon.rc`
 - 忽略规则：`.gitignore`
 
