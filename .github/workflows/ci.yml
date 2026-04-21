@@ -24,7 +24,17 @@ jobs:
           host: "windows"
           target: "desktop"
           arch: "win64_mingw"
+          modules: "qtwebsockets"
+          tools: "tools_mingw1310,qt.tools.win64_mingw1310"
           cache: true
+
+      - name: Verify toolchain
+        shell: pwsh
+        run: |
+          where.exe gcc
+          where.exe g++
+          gcc --version
+          g++ --version
 
       - name: Configure (CMake)
         run: cmake -S . -B build/ci-${{ matrix.build_type }} -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DTENCO_BUILD_TESTS=ON
