@@ -48,6 +48,7 @@
 - `homenetworkworker.h/.cpp`
   - 真正执行 HTTP POST 的 worker（在工作线程）
   - 维护定时器、避免重入（上一次请求未结束则延后）
+  - 对单次轮询设置超时，并按失败次数做退避；接口不可达时常见日志为 `http=0` / `Operation canceled`
 - `statusprotocol.h/.cpp`
   - 状态读取地址与字段枚举映射（减少 Home 中硬编码）
 
@@ -97,7 +98,9 @@
 - `map.h/.cpp`
   - QGraphicsScene 地图编辑器：点、路径（直线/圆弧）、路线队列
   - 地图文件：JSON 序列化/反序列化（内部调用 `mapdocument.*`）
+  - 顶栏支持“新建/加载/另存为/保存”；新建时会按当前是否有未保存内容决定直接提示、保存到文件或丢弃重置
   - 路线分段派发：通过信号 `routeSegmentDispatched(...)` 交给 Home 执行
+  - 路径搜索基于**有向图**：几何上连通的点，如果路径方向不连续，也可能被判定为“没有可用路径”
 - `mapgraphicsview.h/.cpp`
   - 视图交互：缩放、平移、鼠标点击映射到场景坐标
 

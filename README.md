@@ -7,14 +7,14 @@
 - **状态监控（HTTP 轮询）**：电量/电压/温度/运行时长/当前地图名/速度/位姿等。
 - **底盘控制（WebSocket）**：发送 `cmd_vel` 速度指令；支持按钮长按连发与键盘 `W/A/S/D` 控制。
 - **视频（HTTP MJPEG）**：实时显示、断线重连、录像（`.mjpeg`）与截图（`.jpg`）。
-- **地图/路线**：地图网格、点/线/弧路径编辑、路线队列、分段下发与执行反馈。
+- **地图/路线**：地图网格、点/线/弧路径编辑、路线队列、分段下发与执行反馈；支持“新建/加载/另存为/保存”与未保存内容确认。
 - **窗口体验**：无边框窗口，支持拖动、置顶、最小化/最大化/关闭。
 
 ## 快速开始
 
 ### 环境依赖
 
-- **Qt 6**（建议 Qt 6.5+）：需要模块 `Core`, `Gui`, `Widgets`, `Network`, `WebSockets`, `Core5Compat`
+- **Qt 6**（建议 Qt 6.5+）：需要模块 `Core`, `Gui`, `Widgets`, `Network`, `WebSockets`
 - Windows 下可用 **MinGW** 或 **MSVC** 编译器；Qt Creator 推荐。
 
 ### 使用 Qt Creator 编译运行
@@ -129,6 +129,7 @@ ctest --preset release
 - 增加应用级日志落盘（`loggingmanager.*`，滚动日志）
 - 状态轮询增加失败退避与请求超时保护
 - WebSocket/MJPEG 重连改为指数退避，降低抖动场景重连风暴
+- 地图模块增加“新建空白地图”与未保存变更保护
 - CMake 增加 `tests/` 与 `ctest` 单测入口
 - 增加 GitHub Actions 工作流：Windows 编译 + 测试
 
@@ -145,3 +146,4 @@ ctest --preset release
   - 在 UI 中移除该控件的 `styleSheet`（先验证）
   - 或运行时指定风格：`-style fusion` / 设置环境变量 `QT_STYLE_OVERRIDE=fusion`
 - **WebSocket 报 “The proxy type is invalid for this operation”**：通常是系统代理导致。可关闭系统代理，或在代码中为 `QWebSocket` 显式设置 `NoProxy`。
+- **状态轮询日志反复出现 `http=0` / `Operation canceled` / `device not open`**：通常表示 `network.statusReadUrl` 不可达、接口响应超时，或设备未启动；当前实现对状态轮询设置了超时与失败退避，因此这类日志更接近“网络失败”而不是“地图/界面崩溃”。
