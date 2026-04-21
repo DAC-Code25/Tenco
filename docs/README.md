@@ -21,3 +21,7 @@
 13. `12_AI_Project_Learnings.md`：工程经验总结（带证据链）
 14. `13_Optimization_Audit_2026-03-12.md`：全面审查与后续优化清单
 
+## 专题开发方案
+
+- `develop/usb_oak_camera_integration_plan.md`：11F1E2 + OAK-D-Pro-W USB 相机接入方案，覆盖 V1/V2 实施、工控机部署、项目改造和稳定性要求。
+

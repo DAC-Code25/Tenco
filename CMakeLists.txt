@@ -16,9 +16,14 @@ set(CMAKE_AUTORCC ON)
 
 option(TENCO_ENABLE_WARNINGS "Enable stricter compiler warnings" ON)
 option(TENCO_BUILD_TESTS "Build unit tests" ON)
+option(TENCO_ENABLE_OAK_CAMERA "Enable DepthAI/OpenCV OAK camera backend" OFF)
 
 # Qt 6 is the primary supported build for this repository.
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network WebSockets)
+if(TENCO_ENABLE_OAK_CAMERA)
+    find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs videoio)
+    find_package(depthai CONFIG REQUIRED)
+endif()
 
 qt_standard_project_setup()
 
@@ -40,6 +45,13 @@ qt_add_executable(Tenco
 
     home.h
     home.cpp
+
+    abstractvideosource.h
+    abstractvideosource.cpp
+    mjpegvideosource.h
+    mjpegvideosource.cpp
+    oakcameravideosource.h
+    oakcameravideosource.cpp
 
     home_status_presenter.h
     home_status_presenter.cpp
@@ -102,6 +114,14 @@ target_link_libraries(Tenco PRIVATE
     Qt6::Network
     Qt6::WebSockets
 )
+
+if(TENCO_ENABLE_OAK_CAMERA)
+    target_compile_definitions(Tenco PRIVATE TENCO_ENABLE_OAK_CAMERA)
+    target_link_libraries(Tenco PRIVATE
+        ${OpenCV_LIBS}
+        depthai::core
+    )
+endif()
 
 target_include_directories(Tenco PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 

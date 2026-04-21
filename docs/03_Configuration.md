@@ -66,12 +66,19 @@
 
 ### 3.4 video（视频流）
 
+- `video.backend`：视频后端，当前支持 `mjpeg_http`（HTTP MJPEG）与 `oak_depthai`（OAK-D-Pro-W / DepthAI 本地 USB 相机后端骨架）
 - `video.streamUrl`：MJPEG 地址（可带 `topic` 参数）
+- `video.deviceId`：OAK 设备 ID，多相机场景下用于绑定固定设备
+- `video.previewWidth` / `video.previewHeight` / `video.previewFps`：本地相机预览参数
+- `video.recordMode`：录像模式，当前预留 `host_opencv`
+- `video.recordCodec`：录像编码，当前预留 `MJPG`
 - `video.reconnectIntervalMs`：断线重连间隔
 - `video.autoStart`：无话题选择控件时，是否自动启动
 - `video.scaleContents`：是否 `QLabel::setScaledContents(true)`（拉伸显示）
 
-对应模块：`VideoClient`（`videoclient.h/.cpp`）+ `Home` 的 UI 绑定（`home.cpp`）。
+对应模块：`AbstractVideoSource` + `MjpegVideoSource` / `OakCameraVideoSource` + `Home` 的 UI 绑定（`home.cpp`）。
+
+OAK/DepthAI 的完整落地方案见 `docs/develop/usb_oak_camera_integration_plan.md`。
 
 ### 3.5 network（网络接口）
 

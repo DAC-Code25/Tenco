@@ -12,9 +12,9 @@
 #include <memory>
 
 class QProgressDialog;
+class AbstractVideoSource;
 class StatusClient;
 class ChassisClient;
-class VideoClient;
 class RouteFollower;
 class HomeStatusPresenter;
 
@@ -118,7 +118,7 @@ private:
 
     StatusClient *m_statusClient = nullptr;
     ChassisClient *m_chassisClient = nullptr;
-    VideoClient *m_videoClient = nullptr;
+    AbstractVideoSource *m_videoSource = nullptr;
     RouteFollower *m_routeFollower = nullptr;
     std::unique_ptr<HomeStatusPresenter> m_statusPresenter;
 

@@ -1,7 +1,9 @@
 #include "home.h"
 #include "statusclient.h"
 #include "chassisclient.h"
-#include "videoclient.h"
+#include "abstractvideosource.h"
+#include "mjpegvideosource.h"
+#include "oakcameravideosource.h"
 #include "routefollower.h"
 #include "home_status_presenter.h"
 #include "statusprotocol.h"
@@ -52,7 +54,6 @@ Home::Home(Ui::MainWindow *ui, QObject *parent)
     , rebootProgressDialog(nullptr)
     , m_statusClient(new StatusClient(this))
     , m_chassisClient(new ChassisClient(this))
-    , m_videoClient(new VideoClient(this))
     , m_routeFollower(new RouteFollower(this))
     , forwardButtonHeld(false)
     , forwardKeyHeld(false)
@@ -136,9 +137,9 @@ Home::Home(Ui::MainWindow *ui, QObject *parent)
 Home::~Home()
 {
     cancelRouteExecution();
-    if (m_videoClient) {
-        m_videoClient->stop();
-        m_videoClient->stopRecording();
+    if (m_videoSource) {
+        m_videoSource->stop();
+        m_videoSource->stopRecording();
     }
 }
 void Home::initialize()
@@ -209,20 +210,28 @@ void Home::initializeVideoDisplay()
     m_videoScaleContents = videoCfg.scaleContents;
     videoLabel->setScaledContents(m_videoScaleContents);
 
-    if (!m_videoClient) {
+    if (!m_videoSource) {
+        if (videoCfg.backend == QStringLiteral("oak_depthai")) {
+            m_videoSource = new OakCameraVideoSource(videoCfg, this);
+        } else {
+            m_videoSource = new MjpegVideoSource(this);
+        }
+    }
+
+    if (!m_videoSource) {
         updateVideoPlaceholder(tr("视频模块未初始化"));
         return;
     }
 
-    m_videoClient->setStreamUrlTemplate(videoCfg.streamUrl);
-    m_videoClient->setReconnectIntervalMs(videoCfg.reconnectIntervalMs);
-    m_videoClient->setAutoReconnect(true);
+    m_videoSource->setStreamUrlTemplate(videoCfg.streamUrl);
+    m_videoSource->setReconnectIntervalMs(videoCfg.reconnectIntervalMs);
+    m_videoSource->setAutoReconnect(true);
 
-    connect(m_videoClient, &VideoClient::frameReceived, this, &Home::handleVideoFrameReceived);
-    connect(m_videoClient, &VideoClient::stateChanged, this, [this](VideoClient::State state, const QString &message) {
+    connect(m_videoSource, &AbstractVideoSource::frameReceived, this, &Home::handleVideoFrameReceived);
+    connect(m_videoSource, &AbstractVideoSource::stateChanged, this, [this](AbstractVideoSource::State state, const QString &message) {
         if (!message.isEmpty()) {
             logMessage(message);
-            if (state != VideoClient::State::Streaming) {
+            if (state != AbstractVideoSource::State::Streaming) {
                 updateVideoPlaceholder(message);
             }
         }
@@ -230,7 +239,7 @@ void Home::initializeVideoDisplay()
 
     m_activeVideoTopic.clear();
     QComboBox *topicCombo = ui->video_topic_name;
-    if (topicCombo) {
+    if (topicCombo && m_videoSource->supportsTopics()) {
         topicCombo->setCurrentIndex(0);
 #if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
         connect(topicCombo, qOverload<int>(&QComboBox::currentIndexChanged), this, &Home::handleVideoTopicChanged);
@@ -241,10 +250,14 @@ void Home::initializeVideoDisplay()
                                                                      : tr("请选择视频话题以开启视频流"));
     } else {
         const QUrl url(videoCfg.streamUrl.trimmed());
-        m_videoClient->setStreamUrl(url);
-        updateVideoPlaceholder(url.isValid() ? tr("等待视频流...") : tr("未配置视频流 URL"));
-        if (videoCfg.autoStart && url.isValid()) {
-            m_videoClient->start();
+        if (m_videoSource->supportsTopics()) {
+            m_videoSource->setStreamUrl(url);
+            updateVideoPlaceholder(url.isValid() ? tr("等待视频流...") : tr("未配置视频流 URL"));
+        } else {
+            updateVideoPlaceholder(tr("等待本地相机..."));
+        }
+        if (videoCfg.autoStart && (m_videoSource->isConfigured() || url.isValid())) {
+            m_videoSource->start();
         }
     }
 }
@@ -327,13 +340,13 @@ void Home::handleVideoTopicChanged(int index)
     if (!ui || !ui->video_topic_name) {
         return;
     }
-    if (!m_videoClient) {
+    if (!m_videoSource) {
         return;
     }
 
     if (index <= 0) {
         m_activeVideoTopic.clear();
-        m_videoClient->stop();
+        m_videoSource->stop();
         updateVideoPlaceholder(tr("视频流已关闭"));
         return;
     }
@@ -343,9 +356,9 @@ void Home::handleVideoTopicChanged(int index)
         return;
     }
 
-    const QString nextUrlStr = m_videoClient->buildUrlForTopic(topic);
+    const QString nextUrlStr = m_videoSource->buildUrlForTopic(topic);
     if (nextUrlStr.isEmpty()) {
-        m_videoClient->stop();
+        m_videoSource->stop();
         updateVideoPlaceholder(tr("视频流 URL 配置无效"));
         return;
     }
@@ -353,18 +366,18 @@ void Home::handleVideoTopicChanged(int index)
     m_activeVideoTopic = topic;
     const QUrl nextUrl(nextUrlStr);
     if (!nextUrl.isValid()) {
-        m_videoClient->stop();
+        m_videoSource->stop();
         updateVideoPlaceholder(tr("视频流 URL 配置无效"));
         return;
     }
 
-    if (m_videoClient->streamUrl() == nextUrl && m_videoClient->isActive()) {
+    if (m_videoSource->streamUrl() == nextUrl && m_videoSource->isActive()) {
         return;
     }
 
-    m_videoClient->stop();
-    m_videoClient->setStreamUrl(nextUrl);
-    m_videoClient->start();
+    m_videoSource->stop();
+    m_videoSource->setStreamUrl(nextUrl);
+    m_videoSource->start();
 }
 // 判断按钮手动控制是否被授权
 bool Home::isManualControlEnabledForButtons() const
@@ -493,7 +506,7 @@ void Home::sendTurnRightCommand()
 void Home::startRecording()
 {
     QWidget *parentWidget = ui ? ui->centralwidget : nullptr;
-    if (!m_videoClient) {
+    if (!m_videoSource) {
         return;
     }
 
@@ -505,7 +518,7 @@ void Home::startRecording()
     }
 
     QString path;
-    if (!m_videoClient->startRecording(m_saveDirectory, &path)) {
+    if (!m_videoSource->startRecording(m_saveDirectory, &path)) {
         QMessageBox::warning(parentWidget, tr("提示"), tr("无法开始录像：无法写入文件。"));
         return;
     }
@@ -521,11 +534,11 @@ void Home::startRecording()
 void Home::stopRecordingAndSave()
 {
     QWidget *parentWidget = ui ? ui->centralwidget : nullptr;
-    if (!m_videoClient) {
+    if (!m_videoSource) {
         return;
     }
 
-    const QString savedPath = m_videoClient->stopRecording();
+    const QString savedPath = m_videoSource->stopRecording();
     if (ui && ui->recordButton) {
         ui->recordButton->setText(tr("开始录像"));
     }
@@ -824,21 +837,21 @@ bool Home::handleKeyRelease(int key, bool isAutoRepeat)
 // 录像按钮占位实现：后续可接入实际录像逻辑
 void Home::record()
 {
-    if (!m_videoClient) {
+    if (!m_videoSource) {
         return;
     }
 
-    // If the stream is not configured (e.g. topic not selected), stop early.
-    if (m_videoClient->streamUrl().isEmpty() || !m_videoClient->streamUrl().isValid()) {
+    // If the stream/source is not configured (e.g. topic not selected), stop early.
+    if (!m_videoSource->isConfigured()) {
         QMessageBox::warning(ui ? ui->centralwidget : nullptr, tr("提示"), tr("请先选择/配置视频流后再录像。"));
         return;
     }
 
-    if (!m_videoClient->isActive()) {
-        m_videoClient->start();
+    if (!m_videoSource->isActive()) {
+        m_videoSource->start();
     }
 
-    if (!m_videoClient->isRecording()) {
+    if (!m_videoSource->isRecording()) {
         startRecording();
     } else {
         stopRecordingAndSave();
@@ -847,10 +860,10 @@ void Home::record()
 // 截图按钮占位实现
 void Home::photo()
 {
-    if (!m_videoClient) {
+    if (!m_videoSource) {
         return;
     }
-    if (m_videoClient->lastFrame().isNull()) {
+    if (m_videoSource->lastFrame().isNull()) {
         QMessageBox::warning(ui ? ui->centralwidget : nullptr, tr("提示"), tr("请先开启视频流后再拍照。"));
         return;
     }
@@ -863,7 +876,7 @@ void Home::photo()
     }
 
     QString savedPath;
-    if (m_videoClient->saveSnapshot(m_saveDirectory, &savedPath)) {
+    if (m_videoSource->saveSnapshot(m_saveDirectory, &savedPath)) {
         QMessageBox::information(parentWidget, tr("成功"), tr("已保存到:\n%1").arg(savedPath));
         logMessage(tr("已拍照并保存到 %1").arg(savedPath));
         return;

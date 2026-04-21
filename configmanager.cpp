@@ -20,6 +20,9 @@ constexpr const char *kDefaultWebSocketUrl = "ws://192.168.31.7:1202";
 constexpr const char *kDefaultStatusReadUrl = "http://192.168.31.7:9999/table/reads";
 constexpr const char *kDefaultWriteInsUrl = "http://192.168.31.7:9999/table/writeIns";
 constexpr const char *kDefaultSaveFileUrl = "http://192.168.31.7:9999/saveFile";
+constexpr const char *kDefaultVideoBackend = "mjpeg_http";
+constexpr const char *kDefaultVideoRecordMode = "host_opencv";
+constexpr const char *kDefaultVideoRecordCodec = "MJPG";
 constexpr int kDefaultStatusPollIntervalMs = 100;
 constexpr int kMinStatusPollIntervalMs = 50;
 constexpr int kMaxStatusPollIntervalMs = 5000;
@@ -154,7 +157,14 @@ void ConfigManager::loadFromFile(const QString &path)
     }
 
     if (const QJsonObject videoObj = root.value(QStringLiteral("video")).toObject(); !videoObj.isEmpty()) {
+        m_video.backend = videoObj.value(QStringLiteral("backend")).toString(m_video.backend).trimmed();
         m_video.streamUrl = videoObj.value(QStringLiteral("streamUrl")).toString(m_video.streamUrl);
+        m_video.deviceId = videoObj.value(QStringLiteral("deviceId")).toString(m_video.deviceId).trimmed();
+        m_video.previewWidth = videoObj.value(QStringLiteral("previewWidth")).toInt(m_video.previewWidth);
+        m_video.previewHeight = videoObj.value(QStringLiteral("previewHeight")).toInt(m_video.previewHeight);
+        m_video.previewFps = videoObj.value(QStringLiteral("previewFps")).toInt(m_video.previewFps);
+        m_video.recordMode = videoObj.value(QStringLiteral("recordMode")).toString(m_video.recordMode).trimmed();
+        m_video.recordCodec = videoObj.value(QStringLiteral("recordCodec")).toString(m_video.recordCodec).trimmed();
         m_video.reconnectIntervalMs = videoObj.value(QStringLiteral("reconnectIntervalMs")).toInt(m_video.reconnectIntervalMs);
         m_video.reconnectIntervalMs = qMax(200, m_video.reconnectIntervalMs);
         m_video.autoStart = videoObj.value(QStringLiteral("autoStart")).toBool(m_video.autoStart);
@@ -180,6 +190,9 @@ void ConfigManager::loadDefaults()
     m_control = ControlConfig{};
     m_vehicle = VehicleConfig{};
     m_video = VideoConfig{};
+    m_video.backend = QString::fromUtf8(kDefaultVideoBackend);
+    m_video.recordMode = QString::fromUtf8(kDefaultVideoRecordMode);
+    m_video.recordCodec = QString::fromUtf8(kDefaultVideoRecordCodec);
     m_network = NetworkConfig{};
     m_network.websocketUrl = QString::fromUtf8(kDefaultWebSocketUrl);
     m_network.statusReadUrl = QString::fromUtf8(kDefaultStatusReadUrl);
@@ -213,6 +226,22 @@ void ConfigManager::sanitizeConfig()
     m_vehicle.gearReduction = qMax(0.01, m_vehicle.gearReduction);
 
     m_video.reconnectIntervalMs = qMax(200, m_video.reconnectIntervalMs);
+    if (m_video.backend.isEmpty()) {
+        m_video.backend = QString::fromUtf8(kDefaultVideoBackend);
+    }
+    if (m_video.backend != QStringLiteral("mjpeg_http") && m_video.backend != QStringLiteral("oak_depthai")) {
+        qCWarning(lcConfigManager) << "Unsupported video backend, fallback to mjpeg_http:" << m_video.backend;
+        m_video.backend = QString::fromUtf8(kDefaultVideoBackend);
+    }
+    m_video.previewWidth = qBound(320, m_video.previewWidth, 4096);
+    m_video.previewHeight = qBound(240, m_video.previewHeight, 3040);
+    m_video.previewFps = qBound(1, m_video.previewFps, 120);
+    if (m_video.recordMode.isEmpty()) {
+        m_video.recordMode = QString::fromUtf8(kDefaultVideoRecordMode);
+    }
+    if (m_video.recordCodec.isEmpty()) {
+        m_video.recordCodec = QString::fromUtf8(kDefaultVideoRecordCodec);
+    }
     m_network.statusPollIntervalMs = qBound(kMinStatusPollIntervalMs, m_network.statusPollIntervalMs, kMaxStatusPollIntervalMs);
 }
 
