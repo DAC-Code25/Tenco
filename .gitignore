@@ -38,3 +38,6 @@ build-cmake*/
 *.err
 *.out
 __tiny.cpp
+
+# docs
+docs/matirays/
