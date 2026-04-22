@@ -28,7 +28,14 @@
     "gearReduction": 14.5
   },
   "video": {
+    "backend": "mjpeg_http",
     "streamUrl": "http://192.168.31.7:8080/stream?topic=/camera/color/image_raw&type=mjpeg",
+    "deviceId": "",
+    "previewWidth": 1280,
+    "previewHeight": 720,
+    "previewFps": 30,
+    "recordMode": "host_opencv",
+    "recordCodec": "MJPG",
     "reconnectIntervalMs": 2000,
     "autoStart": true,
     "scaleContents": true

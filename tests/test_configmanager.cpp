@@ -34,7 +34,12 @@ void ConfigManagerTest::loadCustomConfigAndSanitize()
                      {QStringLiteral("nearTargetSpeedMultiplier"), 5.0},
                      {QStringLiteral("maxLinearSpeed"), -1.0},
                      {QStringLiteral("maxAngularSpeed"), -1.0}}},
-        {QStringLiteral("video"), QJsonObject{{QStringLiteral("reconnectIntervalMs"), 10}}},
+        {QStringLiteral("video"),
+         QJsonObject{{QStringLiteral("backend"), QStringLiteral("bad_backend")},
+                     {QStringLiteral("previewWidth"), 99},
+                     {QStringLiteral("previewHeight"), 99999},
+                     {QStringLiteral("previewFps"), 999},
+                     {QStringLiteral("reconnectIntervalMs"), 10}}},
         {QStringLiteral("network"), QJsonObject{{QStringLiteral("statusPollIntervalMs"), 1}}}
     };
 
@@ -53,6 +58,10 @@ void ConfigManagerTest::loadCustomConfigAndSanitize()
     QVERIFY(cfg.control().maxLinearSpeed >= 0.0);
     QVERIFY(cfg.control().maxAngularSpeed >= 0.0);
     QVERIFY(cfg.video().reconnectIntervalMs >= 200);
+    QCOMPARE(cfg.video().backend, QStringLiteral("mjpeg_http"));
+    QVERIFY(cfg.video().previewWidth >= 320);
+    QVERIFY(cfg.video().previewHeight <= 3040);
+    QVERIFY(cfg.video().previewFps <= 120);
     QVERIFY(cfg.network().statusPollIntervalMs >= 50);
 
     cfg.setConfigFilePath(QString());

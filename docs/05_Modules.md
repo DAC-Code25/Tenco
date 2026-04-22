@@ -67,6 +67,14 @@
 
 ## 5. 视频（MJPEG + 录像/截图）
 
+- `abstractvideosource.h/.cpp`
+  - 视频源统一接口：预览帧、状态、录像、截图
+  - 让首页不再直接依赖具体视频协议
+- `mjpegvideosource.h/.cpp`
+  - 适配现有 HTTP MJPEG 客户端，保持旧链路兼容
+- `oakcameravideosource.h/.cpp`
+  - OAK-D-Pro-W / DepthAI 本地 USB 相机后端骨架
+  - 默认不强制依赖 DepthAI/OpenCV，真实采集由 `TENCO_ENABLE_OAK_CAMERA` 选项控制后续落地
 - `videoclient.h/.cpp`
   - HTTP GET 拉流（multipart/x-mixed-replace）
   - 通过扫描 JPEG 起止标记（FFD8/FFD9）提取帧并解码为 `QImage`

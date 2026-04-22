@@ -42,7 +42,14 @@ public:
     };
 
     struct VideoConfig {
+        QString backend;
         QString streamUrl;
+        QString deviceId;
+        int previewWidth = 1280;
+        int previewHeight = 720;
+        int previewFps = 30;
+        QString recordMode;
+        QString recordCodec;
         int reconnectIntervalMs = 2000;
         bool autoStart = true;
         bool scaleContents = true;
