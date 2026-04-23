@@ -44,6 +44,7 @@ public:
     struct VideoConfig {
         QString backend;
         QString streamUrl;
+        QString controlBaseUrl;
         QString deviceId;
         int previewWidth = 1280;
         int previewHeight = 720;

@@ -11,8 +11,8 @@
 
 本文档包含两版实现：
 
-- **V1 稳定落地版**：`DepthAI C++ + OpenCV + Qt QLabel/QImage`
-- **V2 高性能增强版**：`DepthAI 设备端编码 + Qt/OpenGL 显示优化 + 可选远程视频发布`
+- **V1 稳定落地版**：`工控机侧 DepthAI C++ + OpenCV + HTTP 相机服务` + `上位机侧 Qt + MJPEG 预览 + 远程控制`
+- **V2 高性能增强版**：`DepthAI 设备端编码 + 工控机视频服务优化 + 可选 OpenGL / 远程子码流`
 
 同时覆盖两部分内容：
 
@@ -63,13 +63,22 @@
 
 ## 3. 总体架构
 
-推荐将现有视频架构改为“统一视频源接口 + 多后端实现”：
+推荐采用“工控机相机服务 + 上位机统一视频源接口”的分布式架构：
 
 ```text
-Home
-  -> AbstractVideoSource
-       -> MjpegVideoSource      (现有 HTTP MJPEG)
-       -> OakCameraVideoSource  (新增 OAK / DepthAI)
+OAK Camera
+  -> USB
+  -> IPC Camera Service (DepthAI / OpenCV / HTTP API)
+       -> /camera/stream.mjpeg
+       -> /camera/photo
+       -> /camera/record/start
+       -> /camera/record/stop
+       -> /camera/status
+  -> Wireless / LAN
+  -> Tenco Home
+       -> AbstractVideoSource
+            -> MjpegVideoSource
+       -> CameraControlClient
 ```
 
 ### 3.1 模块职责
@@ -86,13 +95,15 @@ Home
 
 - `MjpegVideoSource`
   - 封装现有 `VideoClient`
-  - 保持对现有远程 MJPEG 能力的兼容
+  - 负责接工控机相机服务输出的 MJPEG 预览流
+
+- `CameraControlClient`
+  - 调用工控机相机服务
+  - 负责拍照、开始录像、停止录像、状态查询
 
 - `OakCameraVideoSource`
-  - 负责 OAK 本地视频采集
-  - 负责 still capture
-  - 负责录像
-  - 负责相机掉线恢复
+  - 保留为开发调试/单机部署兜底能力
+  - 不作为当前分布式生产架构的默认主路径
 
 ### 3.2 为什么不能直接把 OAK 逻辑塞进 `VideoClient`
 
@@ -111,24 +122,25 @@ Home
 
 ### 目标
 
-- 首页显示 OAK 实时画面
-- 拍照
-- 录像
+- 首页显示工控机侧 OAK 实时画面
+- 上位机可远程触发拍照
+- 上位机可远程触发开始/停止录像
 - 尽量少改 UI
 - 尽量少动现有 HTTP/WebSocket/状态轮询链路
 
 ### 技术选型
 
-- 设备接入：`DepthAI C++`
-- 图像处理与主机侧录像：`OpenCV`
-- 页面显示：Qt `QLabel/QImage/QPixmap`
+- 工控机侧设备接入：`DepthAI C++`
+- 工控机侧预览/录像：`OpenCV`
+- 上位机预览：Qt `QLabel/QImage/QPixmap` + 现有 HTTP MJPEG
+- 上位机控制：HTTP JSON 接口
 
 ### V1 的原则
 
 - 不优先做 OpenGL
-- 不优先做远程视频无线发布
+- 不优先做高码率远程视频无线发布
 - 不优先做 H.265 设备端录像
-- 优先做“本地直连相机稳定工作”
+- 优先做“工控机本地稳定采集 + 上位机稳定远程控制”
 
 ## 4.2 V2 高性能增强版
 
@@ -323,6 +335,47 @@ sudo systemctl daemon-reload
 sudo systemctl enable tenco-oak-probe.service
 ```
 
+### 5.1.9 5.1 完成后的下一步
+
+完成 5.1 后，说明工控机已经具备：
+
+- OAK 相机可枚举
+- DepthAI / OpenCV 开发环境可用
+- 本地目录规划已建立
+- `systemd` 托管方式已验证
+
+这时**不要直接去运行上位机 UI**，而是继续在工控机侧完成一个最小可用的 `IPC Camera Service`，作为 5.2 项目侧远程预览与远程控制的对接对象。
+
+工控机侧下一步必须继续完成：
+
+1. 实现并启动相机服务进程
+2. 提供这些 HTTP 接口：
+   - `GET /camera/stream.mjpeg`
+   - `GET /camera/status`
+   - `POST /camera/photo`
+   - `POST /camera/record/start`
+   - `POST /camera/record/stop`
+3. 照片与录像默认保存到：
+   - `/opt/tenco/media/snapshots`
+   - `/opt/tenco/media/recordings`
+4. 接口返回统一 JSON，至少包含：
+   - `success`
+   - `message`
+   - `path`
+   - `cameraConnected`
+   - `recording`
+5. 用 `curl` / `ffplay` 在工控机本机先验证接口，再和上位机联调
+
+推荐自测命令：
+
+```bash
+curl http://127.0.0.1:18080/camera/status
+curl -X POST http://127.0.0.1:18080/camera/photo
+curl -X POST http://127.0.0.1:18080/camera/record/start
+curl -X POST http://127.0.0.1:18080/camera/record/stop
+ffplay http://127.0.0.1:18080/camera/stream.mjpeg
+```
+
 ---
 
 ## 5.2 项目侧实施
@@ -383,57 +436,47 @@ signals:
 - 旧的 HTTP MJPEG 方案继续可用
 - 首页代码以后只依赖统一接口
 
-## 5.2.3 新增 OAK 视频源
+## 5.2.3 新增远程相机控制客户端
 
 新增：
 
-- `oakcameravideosource.h`
-- `oakcameravideosource.cpp`
+- `cameracontrolclient.h`
+- `cameracontrolclient.cpp`
 
 职责：
 
-- 创建设备与 pipeline
-- 管理采集线程
-- 管理 still capture
-- 管理录像
-- 管理断连重试
+- 调用工控机相机服务的 HTTP 接口
+- 管理拍照、开始录像、停止录像命令
+- 管理状态查询
+- 管理请求超时与错误上报
 
-### V1 pipeline 建议
+### V1 接口建议
 
-- `ColorCamera.preview`：用于 UI 实时显示
-- `ColorCamera.still`：用于拍照
-- `XLinkOut preview`
-- `XLinkOut still`
+- `GET /camera/stream.mjpeg`
+- `GET /camera/status`
+- `POST /camera/photo`
+- `POST /camera/record/start`
+- `POST /camera/record/stop`
 
-建议预览配置：
+建议接口返回：
 
-- `previewWidth=1280`
-- `previewHeight=720`
-- `previewFps=30`
-
-拍照：
-
-- 单独触发 still 输出
-- 保存为 `.jpg`
-
-### 线程模型建议
-
-不要在 UI 线程里直接轮询 DepthAI。
-
-建议做法：
-
-- `OakCameraVideoSource` 自己管理一个工作线程
-- 工作线程中阻塞读取 preview 队列
-- 每拿到一帧就转换并 emit `frameReceived`
-- UI 线程只负责显示
+```json
+{
+  "success": true,
+  "message": "photo saved",
+  "path": "/opt/tenco/media/snapshots/oak_photo_20260423_153000.jpg",
+  "recording": false,
+  "cameraConnected": true
+}
+```
 
 ## 5.2.4 录像实现建议
 
-V1 采用**主机侧录像**：
+V1 采用**工控机本地录像**：
 
-- 将预览帧转为 `cv::Mat`
-- 使用 `cv::VideoWriter`
+- 工控机使用 `cv::VideoWriter`
 - 输出为 `.avi` 或 `.mp4`
+- 上位机只发开始/停止命令，不承载主录像数据写盘
 
 建议参数：
 
@@ -444,11 +487,11 @@ V1 采用**主机侧录像**：
 
 - 最稳
 - 最容易跨 Ubuntu 22.04 落地
-- 对调试友好
+- 对无线链路更友好
 
 ## 5.2.5 拍照实现建议
 
-拍照不使用预览帧截图，而是尽量使用 still 通道。
+拍照不使用上位机预览截图，而是由工控机尽量使用 still 通道。
 
 优点：
 
@@ -482,7 +525,10 @@ V1 采用**主机侧录像**：
 - `record()`
 - `photo()`
 
-只把底层实现替换成多后端选择。
+但职责改为：
+
+- 预览继续走 `AbstractVideoSource` / `MjpegVideoSource`
+- 拍照/录像控制由 `CameraControlClient` 调工控机接口
 
 ## 5.2.7 配置系统扩展
 
@@ -497,8 +543,9 @@ V1 采用**主机侧录像**：
 
 ```json
 "video": {
-  "backend": "oak_depthai",
-  "streamUrl": "",
+  "backend": "mjpeg_http",
+  "streamUrl": "http://192.168.31.7:18080/camera/stream.mjpeg",
+  "controlBaseUrl": "http://192.168.31.7:18080",
   "deviceId": "",
   "previewWidth": 1280,
   "previewHeight": 720,
@@ -513,7 +560,8 @@ V1 采用**主机侧录像**：
 
 说明：
 
-- `backend`: `mjpeg_http` / `oak_depthai`
+- `backend`: 当前生产推荐 `mjpeg_http`
+- `controlBaseUrl`: 工控机相机控制服务地址
 - `deviceId`: 多 OAK 设备时指定 MxId
 - `recordMode`: 为 V2 留扩展点
 
@@ -523,32 +571,20 @@ V1 采用**主机侧录像**：
 
 - `CMakeLists.txt`
 
-新增依赖：
+新增/保留依赖：
 
 ```cmake
-find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs videoio)
-find_package(depthai CONFIG REQUIRED)
-```
-
-链接：
-
-```cmake
-target_link_libraries(Tenco PRIVATE
-    Qt6::Core
-    Qt6::Gui
-    Qt6::Widgets
-    Qt6::Network
-    Qt6::WebSockets
-    ${OpenCV_LIBS}
-    depthai::core
-)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network WebSockets)
 ```
 
 新增源文件：
 
 - `abstractvideosource.*`
 - `mjpegvideosource.*`
-- `oakcameravideosource.*`
+- `cameracontrolclient.*`
+
+`oakcameravideosource.*` 和 `DepthAI/OpenCV` 依赖仅在需要单机直连调试时通过 `TENCO_ENABLE_OAK_CAMERA=ON` 启用。
+- 调试分支可保留 `oakcameravideosource.*`
 
 ---
 
@@ -564,14 +600,15 @@ target_link_libraries(Tenco PRIVATE
 
 因此：
 
-- **首页视频若能在工控机本地显示，就不要默认走无线视频传输**
-- USB 相机应优先在本机内存中处理，而不是先推流再回拉
+- **USB 相机的高质量采集、拍照、录像应优先在工控机本机内存中处理**
+- 上位机只拿预览流和控制结果，不承担主录像数据链路
+- 远程预览默认控制在可接受码率，不与现有状态/控制链路抢占带宽
 
 ### 5.3.2 避免相机异常拖垮主程序
 
 要求：
 
-- OAK 初始化失败时只影响视频区，不影响主窗口其他功能
+- 工控机相机服务不可用时只影响视频区，不影响主窗口其他功能
 - 相机拔插、采集失败时进入 `Error` 状态，并允许重试
 - 视频线程不可阻塞 UI 主线程
 
@@ -676,7 +713,7 @@ ffmpeg -framerate 30 -i input.h264 -c copy output.mp4
 
 若确有远程查看需求，建议做成**可选能力**：
 
-- 本机默认：本地显示
+- 默认：工控机本地高质量处理，上位机按需获取预览
 - 远程模式：按需启动轻量视频服务
 
 可选路线：
@@ -687,8 +724,8 @@ ffmpeg -framerate 30 -i input.h264 -c copy output.mp4
 
 推荐顺序：
 
-1. 本地 USB 直显
-2. 本地设备端编码录像
+1. 工控机本地高质量采集与处理
+2. 工控机本地设备端编码录像
 3. 如确有需要，再做低码率远程子码流
 
 ## 6.5 双码流建议
@@ -696,7 +733,7 @@ ffmpeg -framerate 30 -i input.h264 -c copy output.mp4
 若未来要兼顾本地高质量与远程无线查看：
 
 - 主码流：
-  - 本地显示 / 本地录像
+  - 工控机本地显示 / 本地录像
   - 720p / 1080p
 - 子码流：
   - 远程无线查看
@@ -715,21 +752,29 @@ ffmpeg -framerate 30 -i input.h264 -c copy output.mp4
 2. 把现有 `VideoClient` 适配成 `MjpegVideoSource`
 3. `Home` 改为只依赖抽象接口
 
-## 7.2 第二步：接入 OAK V1
+## 7.2 第二步：完成工控机侧相机服务
 
-1. 新增 `OakCameraVideoSource`
-2. 跑通 preview
-3. 跑通 still capture
-4. 跑通 host-side recording
+1. 在工控机上接入 OAK
+2. 跑通 `GET /camera/status`
+3. 跑通 `GET /camera/stream.mjpeg`
+4. 跑通 `POST /camera/photo`
+5. 跑通 `POST /camera/record/start` / `POST /camera/record/stop`
 
 ## 7.3 第三步：补齐配置和文档
 
-1. `config.json` 增加 OAK 参数
+1. `config.json` 增加 `streamUrl` / `controlBaseUrl`
 2. `docs/03_Configuration.md` 更新
 3. `docs/05_Modules.md` 更新
 4. `docs/10_Troubleshooting.md` 增加相机故障说明
 
-## 7.4 第四步：V2 优化
+## 7.4 第四步：项目侧联调
+
+1. 上位机接入远程 MJPEG 预览
+2. 上位机接入远程拍照接口
+3. 上位机接入远程录像控制接口
+4. 联调日志、错误提示、状态恢复
+
+## 7.5 第五步：V2 优化
 
 1. 设备端编码
 2. OpenGL 显示优化
@@ -754,6 +799,21 @@ v4l2-ctl --list-devices
 /opt/tenco/bin/oak_probe
 ```
 
+### 相机服务接口验证
+
+```bash
+curl http://127.0.0.1:18080/camera/status
+curl -X POST http://127.0.0.1:18080/camera/photo
+curl -X POST http://127.0.0.1:18080/camera/record/start
+curl -X POST http://127.0.0.1:18080/camera/record/stop
+```
+
+### 预览流验证
+
+```bash
+ffplay http://127.0.0.1:18080/camera/stream.mjpeg
+```
+
 ### 录像文件验证
 
 ```bash
@@ -770,11 +830,11 @@ file /opt/tenco/media/snapshots/xxx.jpg
 
 ## 8.2 项目侧验收
 
-- 首页打开后视频区能在 3 秒内看到预览
+- 首页打开后视频区能在 3 秒内看到工控机输出的预览
 - 相机断开时页面不崩溃，仅提示错误
-- 重插相机后可恢复
-- 拍照成功后能生成可打开的 `.jpg`
-- 录像成功后能生成可播放的视频文件
+- 工控机相机服务恢复后，预览与控制可恢复
+- 点击拍照后，上位机能收到成功反馈，且工控机本地生成可打开的 `.jpg`
+- 点击录像开始/停止后，上位机能收到成功反馈，且工控机本地生成可播放的视频文件
 - 状态轮询、底盘控制、地图页面不受视频模块阻塞影响
 
 ## 8.3 无线链路稳定性验收
@@ -821,8 +881,8 @@ ping <robot-ip>
 
 规避：
 
-- 默认本地直显
-- 不默认远程推流
+- 默认由工控机本地完成高质量采集、拍照、录像
+- 上位机仅接预览流与控制接口
 - 远程查看做成显式可选模式
 
 ## 9.4 风险：相机故障导致 UI 卡死
@@ -841,8 +901,8 @@ ping <robot-ip>
 ### 阶段 A
 
 - 完成 V1
-- 本地 USB 直连
-- 首页预览 + 拍照 + 主机侧录像
+- 工控机本地 USB 直连 OAK
+- 上位机远程预览 + 远程拍照 + 工控机本地录像
 - 先把系统跑稳
 
 ### 阶段 B
@@ -862,8 +922,8 @@ ping <robot-ip>
 
 在你当前项目、11F1E2 工控机、OAK-D-Pro-W 相机、Ubuntu 22.04、无线控制链路并存的约束下，最佳方案是：
 
-- **V1：DepthAI C++ + OpenCV + Qt 现有显示链路**
-- **V2：DepthAI 设备端编码 + 可选 OpenGL 显示优化 + 可选远程子码流**
+- **V1：工控机侧 DepthAI/OpenCV 相机服务 + 上位机侧 Qt 现有 MJPEG 显示链路 + 远程控制**
+- **V2：DepthAI 设备端编码 + 工控机侧服务优化 + 可选 OpenGL 显示优化 + 可选远程子码流**
 
 这条路线兼顾：
 

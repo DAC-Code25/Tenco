@@ -1,6 +1,7 @@
 #include "home.h"
 #include "statusclient.h"
 #include "chassisclient.h"
+#include "cameracontrolclient.h"
 #include "abstractvideosource.h"
 #include "mjpegvideosource.h"
 #include "oakcameravideosource.h"
@@ -167,6 +168,7 @@ void Home::initialize()
     connect(ui->rightButton, &QPushButton::released, this, &Home::handleTurnRightButtonReleased);
     connect(ui->stopButton, &QPushButton::clicked, this, &Home::handleStopButtonClicked);
     initializeVideoDisplay();
+    initializeCameraControl();
     logMessage(tr("首页模块已初始化，等待操作…"));
 }
 void Home::setupImageSwitches()
@@ -262,9 +264,75 @@ void Home::initializeVideoDisplay()
     }
 }
 
+void Home::initializeCameraControl()
+{
+    const auto &cfg = ConfigManager::instance();
+    const QUrl controlUrl(cfg.video().controlBaseUrl.trimmed());
+    if (!controlUrl.isValid() || controlUrl.isEmpty()) {
+        return;
+    }
+
+    if (!m_cameraControlClient) {
+        m_cameraControlClient = new CameraControlClient(this);
+    }
+
+    m_cameraControlClient->setBaseUrl(controlUrl);
+    m_cameraControlClient->setAuthorizationToken(cfg.network().authToken);
+
+    connect(m_cameraControlClient, &CameraControlClient::recordingStateChanged, this, &Home::updateRecordButtonText);
+    connect(m_cameraControlClient, &CameraControlClient::photoSaved, this, [this](const QString &path, const QString &message) {
+        QWidget *parentWidget = ui ? ui->centralwidget : nullptr;
+        const QString finalMessage = message.isEmpty() ? tr("工控机拍照成功") : message;
+        QMessageBox::information(parentWidget,
+                                 tr("成功"),
+                                 path.isEmpty() ? finalMessage : tr("%1\n\n保存路径：\n%2").arg(finalMessage, path));
+        logMessage(path.isEmpty() ? finalMessage : tr("%1：%2").arg(finalMessage, path));
+    });
+    connect(m_cameraControlClient, &CameraControlClient::recordingStarted, this, [this](const QString &path, const QString &message) {
+        const QString finalMessage = message.isEmpty() ? tr("工控机已开始录像") : message;
+        m_recordFilePath = path;
+        logMessage(path.isEmpty() ? finalMessage : tr("%1：%2").arg(finalMessage, path));
+    });
+    connect(m_cameraControlClient, &CameraControlClient::recordingStopped, this, [this](const QString &path, const QString &message) {
+        QWidget *parentWidget = ui ? ui->centralwidget : nullptr;
+        const QString finalMessage = message.isEmpty() ? tr("工控机已停止录像") : message;
+        m_recordFilePath.clear();
+        QMessageBox::information(parentWidget,
+                                 tr("成功"),
+                                 path.isEmpty() ? finalMessage : tr("%1\n\n保存路径：\n%2").arg(finalMessage, path));
+        logMessage(path.isEmpty() ? finalMessage : tr("%1：%2").arg(finalMessage, path));
+    });
+    connect(m_cameraControlClient, &CameraControlClient::statusReceived, this, [this](bool cameraConnected, bool recording, const QString &message) {
+        if (!message.isEmpty()) {
+            logMessage(message);
+        }
+        if (!cameraConnected) {
+            updateVideoPlaceholder(tr("工控机相机服务在线，但相机未连接"));
+        }
+        updateRecordButtonText(recording);
+    });
+    connect(m_cameraControlClient, &CameraControlClient::requestFailed, this, [this](const QString &operation, const QString &message) {
+        const QString text = tr("远程相机操作失败（%1）：%2").arg(operation, message);
+        logMessage(text);
+        if (operation == QStringLiteral("status")) {
+            return;
+        }
+        QWidget *parentWidget = ui ? ui->centralwidget : nullptr;
+        QMessageBox::warning(parentWidget, tr("失败"), text);
+    });
+
+    updateRecordButtonText(m_cameraControlClient->isRecording());
+    m_cameraControlClient->requestStatus();
+}
+
 bool Home::isVideoDisplayReady() const
 {
     return ui && ui->videoDisplay;
+}
+
+bool Home::usesRemoteCameraControl() const
+{
+    return m_cameraControlClient && m_cameraControlClient->isConfigured();
 }
 
 void Home::updateVideoPlaceholder(const QString &message)
@@ -298,6 +366,14 @@ void Home::displayVideoFrame(const QImage &image)
     videoLabel->setText(QString());
     videoLabel->setPixmap(pixmap);
     m_lastVideoFrame = frame;
+}
+
+void Home::updateRecordButtonText(bool remoteRecordingActive)
+{
+    if (!ui || !ui->recordButton) {
+        return;
+    }
+    ui->recordButton->setText(remoteRecordingActive ? tr("停止录像") : tr("开始录像"));
 }
 
 void Home::logMessage(const QString &text)
@@ -837,7 +913,20 @@ bool Home::handleKeyRelease(int key, bool isAutoRepeat)
 // 录像按钮占位实现：后续可接入实际录像逻辑
 void Home::record()
 {
-    if (!m_videoSource) {
+    if (!m_videoSource && !usesRemoteCameraControl()) {
+        return;
+    }
+
+    if (usesRemoteCameraControl()) {
+        if (m_cameraControlClient->isBusy()) {
+            QMessageBox::information(ui ? ui->centralwidget : nullptr, tr("提示"), tr("相机命令处理中，请稍后再试。"));
+            return;
+        }
+        if (!m_cameraControlClient->isRecording()) {
+            m_cameraControlClient->startRecording();
+        } else {
+            m_cameraControlClient->stopRecording();
+        }
         return;
     }
 
@@ -860,9 +949,22 @@ void Home::record()
 // 截图按钮占位实现
 void Home::photo()
 {
-    if (!m_videoSource) {
+    if (!m_videoSource && !usesRemoteCameraControl()) {
         return;
     }
+
+    if (usesRemoteCameraControl()) {
+        if (m_videoSource && m_videoSource->isConfigured() && !m_videoSource->isActive()) {
+            m_videoSource->start();
+        }
+        if (m_cameraControlClient->isBusy()) {
+            QMessageBox::information(ui ? ui->centralwidget : nullptr, tr("提示"), tr("相机命令处理中，请稍后再试。"));
+            return;
+        }
+        m_cameraControlClient->capturePhoto();
+        return;
+    }
+
     if (m_videoSource->lastFrame().isNull()) {
         QMessageBox::warning(ui ? ui->centralwidget : nullptr, tr("提示"), tr("请先开启视频流后再拍照。"));
         return;
@@ -898,7 +1000,7 @@ void Home::restartControl()
         return;
     }
     logMessage(tr("正在下发控制器重启指令"));
-    qDebug() << "重启控制命令";
+    qDebug() << "Sending reboot command";
     if (m_chassisClient) {
         m_chassisClient->sendRebootCommand();
     }
@@ -1027,7 +1129,7 @@ void Home::checkConnectionRestored()
     if (!m_statusPresenter || !m_statusPresenter->takeConnectionRestored()) {
         return;
     }
-    qDebug() << "连接已恢复";
+    qDebug() << "Connection restored";
     restartCheckTimer->stop();  // 停止重连轮询
 }
 void Home::followRouteSegment(int fromPointId, int toPointId, const QList<QPointF> &polyline, double startTheta, double endTheta)

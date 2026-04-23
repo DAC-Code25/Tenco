@@ -30,6 +30,7 @@
   "video": {
     "backend": "mjpeg_http",
     "streamUrl": "http://192.168.31.7:8080/stream?topic=/camera/color/image_raw&type=mjpeg",
+    "controlBaseUrl": "",
     "deviceId": "",
     "previewWidth": 1280,
     "previewHeight": 720,

@@ -5,6 +5,8 @@
 
 #include "configmanager.h"
 
+#include <memory>
+
 class OakCameraVideoSource : public AbstractVideoSource
 {
     Q_OBJECT
@@ -25,12 +27,12 @@ public:
     bool saveSnapshot(const QString &directory, QString *outPath = nullptr) const override;
     QImage lastFrame() const override;
 
+    void setReconnectIntervalMs(int intervalMs) override;
+    void setAutoReconnect(bool enabled) override;
+
 private:
-    ConfigManager::VideoConfig m_config;
-    bool m_active = false;
-    bool m_recording = false;
-    QString m_recordFilePath;
-    QImage m_lastFrame;
+    class Impl;
+    std::unique_ptr<Impl> m_impl;
 };
 
 #endif // OAKCAMERAVIDEOSOURCE_H

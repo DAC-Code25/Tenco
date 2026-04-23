@@ -46,6 +46,9 @@ qt_add_executable(Tenco
     home.h
     home.cpp
 
+    cameracontrolclient.h
+    cameracontrolclient.cpp
+
     abstractvideosource.h
     abstractvideosource.cpp
     mjpegvideosource.h

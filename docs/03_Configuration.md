@@ -66,17 +66,71 @@
 
 ### 3.4 video（视频流）
 
-- `video.backend`：视频后端，当前支持 `mjpeg_http`（HTTP MJPEG）与 `oak_depthai`（OAK-D-Pro-W / DepthAI 本地 USB 相机后端骨架）
-- `video.streamUrl`：MJPEG 地址（可带 `topic` 参数）
+推荐的生产部署方式是分布式：
+
+- 当前上位机程序运行在操作员机器
+- OAK 相机通过 USB 连接在工控机
+- 上位机通过 `video.streamUrl` 接工控机输出的预览流
+- 上位机通过 `video.controlBaseUrl` 调用工控机相机服务的拍照/录像接口
+
+当前支持字段：
+
+- `video.backend`：视频后端，当前支持 `mjpeg_http`（推荐，用于远程 MJPEG 预览）与 `oak_depthai`（仅用于本机直连调试，不是当前分布式主路径）
+- `video.streamUrl`：MJPEG 地址（可带 `topic` 参数），例如工控机提供的 `/camera/stream.mjpeg`
+- `video.controlBaseUrl`：工控机相机控制服务基地址，例如 `http://192.168.31.7:18080`
 - `video.deviceId`：OAK 设备 ID，多相机场景下用于绑定固定设备
-- `video.previewWidth` / `video.previewHeight` / `video.previewFps`：本地相机预览参数
-- `video.recordMode`：录像模式，当前预留 `host_opencv`
-- `video.recordCodec`：录像编码，当前预留 `MJPG`
+- `video.previewWidth` / `video.previewHeight` / `video.previewFps`：预览参数，主要供本机直连 OAK 或工控机服务配置对齐使用
+- `video.recordMode`：录像模式，当前支持 `host_opencv`
+- `video.recordCodec`：录像编码，当前支持 `MJPG` / `XVID` / `MP4V`
 - `video.reconnectIntervalMs`：断线重连间隔
 - `video.autoStart`：无话题选择控件时，是否自动启动
 - `video.scaleContents`：是否 `QLabel::setScaledContents(true)`（拉伸显示）
 
-对应模块：`AbstractVideoSource` + `MjpegVideoSource` / `OakCameraVideoSource` + `Home` 的 UI 绑定（`home.cpp`）。
+对应模块：
+
+- 预览：`AbstractVideoSource` + `MjpegVideoSource`
+- 远程控制：`CameraControlClient`
+- 页面绑定：`Home`
+
+`controlBaseUrl` 启用后，首页中的拍照/录像按钮会优先走远程工控机接口，而不是在上位机本地保存文件。
+
+推荐的分布式配置示例：
+
+```json
+"video": {
+  "backend": "mjpeg_http",
+  "streamUrl": "http://192.168.31.7:18080/camera/stream.mjpeg",
+  "controlBaseUrl": "http://192.168.31.7:18080",
+  "deviceId": "",
+  "previewWidth": 1280,
+  "previewHeight": 720,
+  "previewFps": 30,
+  "recordMode": "host_opencv",
+  "recordCodec": "MJPG",
+  "reconnectIntervalMs": 2000,
+  "autoStart": true,
+  "scaleContents": true
+}
+```
+
+如果只是开发机上做本机直连调试，也可以使用 `oak_depthai`：
+
+```json
+"video": {
+  "backend": "oak_depthai",
+  "streamUrl": "",
+  "controlBaseUrl": "",
+  "deviceId": "",
+  "previewWidth": 1280,
+  "previewHeight": 720,
+  "previewFps": 30,
+  "recordMode": "host_opencv",
+  "recordCodec": "MJPG",
+  "reconnectIntervalMs": 2000,
+  "autoStart": true,
+  "scaleContents": true
+}
+```
 
 OAK/DepthAI 的完整落地方案见 `docs/develop/usb_oak_camera_integration_plan.md`。
 

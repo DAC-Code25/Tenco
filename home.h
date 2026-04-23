@@ -13,6 +13,7 @@
 
 class QProgressDialog;
 class AbstractVideoSource;
+class CameraControlClient;
 class StatusClient;
 class ChassisClient;
 class RouteFollower;
@@ -106,6 +107,9 @@ private:
     void updateVideoPlaceholder(const QString &message);
     void displayVideoFrame(const QImage &image);
     bool isVideoDisplayReady() const;
+    bool usesRemoteCameraControl() const;
+    void initializeCameraControl();
+    void updateRecordButtonText(bool remoteRecordingActive);
 
     QTimer *restartCheckTimer;
     QTimer *forwardRepeatTimer;
@@ -119,6 +123,7 @@ private:
     StatusClient *m_statusClient = nullptr;
     ChassisClient *m_chassisClient = nullptr;
     AbstractVideoSource *m_videoSource = nullptr;
+    CameraControlClient *m_cameraControlClient = nullptr;
     RouteFollower *m_routeFollower = nullptr;
     std::unique_ptr<HomeStatusPresenter> m_statusPresenter;
 

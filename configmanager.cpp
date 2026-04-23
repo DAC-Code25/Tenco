@@ -6,6 +6,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLoggingCategory>
+#include <QStringList>
 #include <QtGlobal>
 #include <QtMath>
 
@@ -159,6 +160,7 @@ void ConfigManager::loadFromFile(const QString &path)
     if (const QJsonObject videoObj = root.value(QStringLiteral("video")).toObject(); !videoObj.isEmpty()) {
         m_video.backend = videoObj.value(QStringLiteral("backend")).toString(m_video.backend).trimmed();
         m_video.streamUrl = videoObj.value(QStringLiteral("streamUrl")).toString(m_video.streamUrl);
+        m_video.controlBaseUrl = videoObj.value(QStringLiteral("controlBaseUrl")).toString(m_video.controlBaseUrl).trimmed();
         m_video.deviceId = videoObj.value(QStringLiteral("deviceId")).toString(m_video.deviceId).trimmed();
         m_video.previewWidth = videoObj.value(QStringLiteral("previewWidth")).toInt(m_video.previewWidth);
         m_video.previewHeight = videoObj.value(QStringLiteral("previewHeight")).toInt(m_video.previewHeight);
@@ -236,10 +238,25 @@ void ConfigManager::sanitizeConfig()
     m_video.previewWidth = qBound(320, m_video.previewWidth, 4096);
     m_video.previewHeight = qBound(240, m_video.previewHeight, 3040);
     m_video.previewFps = qBound(1, m_video.previewFps, 120);
+    m_video.controlBaseUrl = m_video.controlBaseUrl.trimmed();
     if (m_video.recordMode.isEmpty()) {
         m_video.recordMode = QString::fromUtf8(kDefaultVideoRecordMode);
     }
+    if (m_video.recordMode != QStringLiteral("host_opencv")) {
+        qCWarning(lcConfigManager) << "Unsupported video record mode, fallback to host_opencv:" << m_video.recordMode;
+        m_video.recordMode = QString::fromUtf8(kDefaultVideoRecordMode);
+    }
     if (m_video.recordCodec.isEmpty()) {
+        m_video.recordCodec = QString::fromUtf8(kDefaultVideoRecordCodec);
+    }
+    static const QStringList supportedCodecs{
+        QStringLiteral("MJPG"),
+        QStringLiteral("XVID"),
+        QStringLiteral("MP4V")
+    };
+    m_video.recordCodec = m_video.recordCodec.trimmed().toUpper();
+    if (!supportedCodecs.contains(m_video.recordCodec)) {
+        qCWarning(lcConfigManager) << "Unsupported video record codec, fallback to MJPG:" << m_video.recordCodec;
         m_video.recordCodec = QString::fromUtf8(kDefaultVideoRecordCodec);
     }
     m_network.statusPollIntervalMs = qBound(kMinStatusPollIntervalMs, m_network.statusPollIntervalMs, kMaxStatusPollIntervalMs);

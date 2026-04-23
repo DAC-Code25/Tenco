@@ -36,9 +36,12 @@ void ConfigManagerTest::loadCustomConfigAndSanitize()
                      {QStringLiteral("maxAngularSpeed"), -1.0}}},
         {QStringLiteral("video"),
          QJsonObject{{QStringLiteral("backend"), QStringLiteral("bad_backend")},
+                     {QStringLiteral("controlBaseUrl"), QStringLiteral(" http://192.168.31.7:18080/ ")},
                      {QStringLiteral("previewWidth"), 99},
                      {QStringLiteral("previewHeight"), 99999},
                      {QStringLiteral("previewFps"), 999},
+                     {QStringLiteral("recordMode"), QStringLiteral("unsupported_mode")},
+                     {QStringLiteral("recordCodec"), QStringLiteral("bad_codec")},
                      {QStringLiteral("reconnectIntervalMs"), 10}}},
         {QStringLiteral("network"), QJsonObject{{QStringLiteral("statusPollIntervalMs"), 1}}}
     };
@@ -59,9 +62,12 @@ void ConfigManagerTest::loadCustomConfigAndSanitize()
     QVERIFY(cfg.control().maxAngularSpeed >= 0.0);
     QVERIFY(cfg.video().reconnectIntervalMs >= 200);
     QCOMPARE(cfg.video().backend, QStringLiteral("mjpeg_http"));
+    QCOMPARE(cfg.video().controlBaseUrl, QStringLiteral("http://192.168.31.7:18080/"));
     QVERIFY(cfg.video().previewWidth >= 320);
     QVERIFY(cfg.video().previewHeight <= 3040);
     QVERIFY(cfg.video().previewFps <= 120);
+    QCOMPARE(cfg.video().recordMode, QStringLiteral("host_opencv"));
+    QCOMPARE(cfg.video().recordCodec, QStringLiteral("MJPG"));
     QVERIFY(cfg.network().statusPollIntervalMs >= 50);
 
     cfg.setConfigFilePath(QString());

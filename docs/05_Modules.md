@@ -70,11 +70,17 @@
 - `abstractvideosource.h/.cpp`
   - 视频源统一接口：预览帧、状态、录像、截图
   - 让首页不再直接依赖具体视频协议
+- `cameracontrolclient.h/.cpp`
+  - 远程相机控制客户端
+  - 调用工控机相机服务的 `/camera/photo`、`/camera/record/start`、`/camera/record/stop`、`/camera/status`
+  - 负责请求超时、错误上报、远程录像状态同步
 - `mjpegvideosource.h/.cpp`
-  - 适配现有 HTTP MJPEG 客户端，保持旧链路兼容
+  - 适配现有 HTTP MJPEG 客户端，作为分布式部署下的远程预览通道
 - `oakcameravideosource.h/.cpp`
-  - OAK-D-Pro-W / DepthAI 本地 USB 相机后端骨架
-  - 默认不强制依赖 DepthAI/OpenCV，真实采集由 `TENCO_ENABLE_OAK_CAMERA` 选项控制后续落地
+  - OAK-D-Pro-W / DepthAI 本地 USB 相机后端
+  - 负责设备枚举、预览帧采集、still 拍照、主机侧录像、异常自动重连
+  - 默认不强制依赖 DepthAI/OpenCV，仅在 `TENCO_ENABLE_OAK_CAMERA=ON` 时启用真实采集
+  - 主要用于本机直连调试，不是当前“上位机在当前机器、相机在工控机 USB 上”场景的最终生产主路径
 - `videoclient.h/.cpp`
   - HTTP GET 拉流（multipart/x-mixed-replace）
   - 通过扫描 JPEG 起止标记（FFD8/FFD9）提取帧并解码为 `QImage`
