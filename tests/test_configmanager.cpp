@@ -1,6 +1,7 @@
 #include "configmanager.h"
 
 #include <QFile>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QTemporaryDir>
@@ -37,6 +38,13 @@ void ConfigManagerTest::loadCustomConfigAndSanitize()
         {QStringLiteral("video"),
          QJsonObject{{QStringLiteral("backend"), QStringLiteral("bad_backend")},
                      {QStringLiteral("controlBaseUrl"), QStringLiteral(" http://192.168.31.7:18080/ ")},
+                     {QStringLiteral("streamOptions"),
+                      QJsonArray{
+                          QJsonObject{{QStringLiteral("name"), QStringLiteral(" 前置相机 ")},
+                                      {QStringLiteral("url"), QStringLiteral(" http://192.168.31.13:18080/camera/stream.mjpeg ")}},
+                          QJsonObject{{QStringLiteral("name"), QStringLiteral("坏地址")},
+                                      {QStringLiteral("url"), QStringLiteral("://bad-url")}}
+                      }},
                      {QStringLiteral("previewWidth"), 99},
                      {QStringLiteral("previewHeight"), 99999},
                      {QStringLiteral("previewFps"), 999},
@@ -63,6 +71,9 @@ void ConfigManagerTest::loadCustomConfigAndSanitize()
     QVERIFY(cfg.video().reconnectIntervalMs >= 200);
     QCOMPARE(cfg.video().backend, QStringLiteral("mjpeg_http"));
     QCOMPARE(cfg.video().controlBaseUrl, QStringLiteral("http://192.168.31.7:18080/"));
+    QCOMPARE(cfg.video().streamOptions.size(), 1);
+    QCOMPARE(cfg.video().streamOptions.first().name, QStringLiteral("前置相机"));
+    QCOMPARE(cfg.video().streamOptions.first().url, QStringLiteral("http://192.168.31.13:18080/camera/stream.mjpeg"));
     QVERIFY(cfg.video().previewWidth >= 320);
     QVERIFY(cfg.video().previewHeight <= 3040);
     QVERIFY(cfg.video().previewFps <= 120);

@@ -2,6 +2,7 @@
 #define CONFIGMANAGER_H
 
 #include <QObject>
+#include <QList>
 #include <QPointF>
 #include <QString>
 
@@ -42,9 +43,15 @@ public:
     };
 
     struct VideoConfig {
+        struct StreamOption {
+            QString name;
+            QString url;
+        };
+
         QString backend;
         QString streamUrl;
         QString controlBaseUrl;
+        QList<StreamOption> streamOptions;
         QString deviceId;
         int previewWidth = 1280;
         int previewHeight = 720;

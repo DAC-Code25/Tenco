@@ -36,6 +36,7 @@ private:
     static AbstractVideoSource::State mapState(VideoClient::State state);
 
     VideoClient m_client;
+    bool m_supportsTopics = false;
 };
 
 #endif // MJPEGVIDEOSOURCE_H

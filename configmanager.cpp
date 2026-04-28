@@ -3,12 +3,14 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLoggingCategory>
 #include <QStringList>
 #include <QtGlobal>
 #include <QtMath>
+#include <utility>
 
 Q_LOGGING_CATEGORY(lcConfigManager, "tenco.config")
 
@@ -161,6 +163,18 @@ void ConfigManager::loadFromFile(const QString &path)
         m_video.backend = videoObj.value(QStringLiteral("backend")).toString(m_video.backend).trimmed();
         m_video.streamUrl = videoObj.value(QStringLiteral("streamUrl")).toString(m_video.streamUrl);
         m_video.controlBaseUrl = videoObj.value(QStringLiteral("controlBaseUrl")).toString(m_video.controlBaseUrl).trimmed();
+        m_video.streamOptions.clear();
+        const QJsonArray streamOptions = videoObj.value(QStringLiteral("streamOptions")).toArray();
+        for (const QJsonValue &value : streamOptions) {
+            const QJsonObject optionObj = value.toObject();
+            if (optionObj.isEmpty()) {
+                continue;
+            }
+            VideoConfig::StreamOption option;
+            option.name = optionObj.value(QStringLiteral("name")).toString().trimmed();
+            option.url = optionObj.value(QStringLiteral("url")).toString().trimmed();
+            m_video.streamOptions.push_back(option);
+        }
         m_video.deviceId = videoObj.value(QStringLiteral("deviceId")).toString(m_video.deviceId).trimmed();
         m_video.previewWidth = videoObj.value(QStringLiteral("previewWidth")).toInt(m_video.previewWidth);
         m_video.previewHeight = videoObj.value(QStringLiteral("previewHeight")).toInt(m_video.previewHeight);
@@ -238,6 +252,25 @@ void ConfigManager::sanitizeConfig()
     m_video.previewWidth = qBound(320, m_video.previewWidth, 4096);
     m_video.previewHeight = qBound(240, m_video.previewHeight, 3040);
     m_video.previewFps = qBound(1, m_video.previewFps, 120);
+    QList<VideoConfig::StreamOption> sanitizedStreamOptions;
+    for (const VideoConfig::StreamOption &option : std::as_const(m_video.streamOptions)) {
+        VideoConfig::StreamOption sanitizedOption = option;
+        sanitizedOption.name = sanitizedOption.name.trimmed();
+        sanitizedOption.url = sanitizedOption.url.trimmed();
+        if (sanitizedOption.url.isEmpty()) {
+            continue;
+        }
+        const QUrl optionUrl(sanitizedOption.url);
+        if (!optionUrl.isValid()) {
+            qCWarning(lcConfigManager) << "Ignoring invalid video stream option URL:" << sanitizedOption.url;
+            continue;
+        }
+        if (sanitizedOption.name.isEmpty()) {
+            sanitizedOption.name = sanitizedOption.url;
+        }
+        sanitizedStreamOptions.push_back(sanitizedOption);
+    }
+    m_video.streamOptions = sanitizedStreamOptions;
     m_video.controlBaseUrl = m_video.controlBaseUrl.trimmed();
     if (m_video.recordMode.isEmpty()) {
         m_video.recordMode = QString::fromUtf8(kDefaultVideoRecordMode);

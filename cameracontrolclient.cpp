@@ -129,7 +129,9 @@ void CameraControlClient::handleReplyFinished()
                 message = tr("远程相机服务无响应");
             }
         }
-        qCWarning(lcCameraControlClient) << "Remote camera request failed:" << operationName(operation) << message;
+        if (operation != Operation::QueryStatus) {
+            qCWarning(lcCameraControlClient) << "Remote camera request failed:" << operationName(operation) << message;
+        }
         cleanupReply();
         emit requestFailed(operationName(operation), message);
         return;
@@ -164,7 +166,9 @@ void CameraControlClient::handleReplyFinished()
         break;
     }
 
-    qCInfo(lcCameraControlClient) << "Remote camera request succeeded:" << operationName(operation) << message << path;
+    if (operation != Operation::QueryStatus) {
+        qCInfo(lcCameraControlClient) << "Remote camera request succeeded:" << operationName(operation) << message << path;
+    }
     cleanupReply();
 }
 
@@ -218,7 +222,9 @@ void CameraControlClient::sendRequest(Operation operation, const QString &endpoi
     connect(m_reply, &QNetworkReply::finished, this, &CameraControlClient::handleReplyFinished);
     m_timeoutTimer->start(kRequestTimeoutMs);
     emit busyChanged(true);
-    qCInfo(lcCameraControlClient) << "Sending remote camera request:" << opName << url;
+    if (operation != Operation::QueryStatus) {
+        qCInfo(lcCameraControlClient) << "Sending remote camera request:" << opName << url;
+    }
 }
 
 void CameraControlClient::cleanupReply()

@@ -6,6 +6,7 @@
 #include <QProgressDialog>
 #include <QTimer>
 #include <QList>
+#include <QHash>
 #include <QPointF>
 #include <QImage>
 
@@ -80,6 +81,9 @@ private:
     void setupImageSwitches();
     void initializeMotionTimers();
     void initializeVideoDisplay();
+    void initializeCameraStatusPolling();
+    void populateVideoStreamSelector();
+    bool applyConfiguredVideoStreamSelection();
 
     bool isManualControlEnabledForButtons() const;
     bool isManualControlEnabledForKeys() const;
@@ -110,6 +114,9 @@ private:
     bool usesRemoteCameraControl() const;
     void initializeCameraControl();
     void updateRecordButtonText(bool remoteRecordingActive);
+    void updateRemoteCameraUiState();
+    void requestRemoteCameraStatus();
+    void logCameraStatusChange(const QString &message);
 
     QTimer *restartCheckTimer;
     QTimer *forwardRepeatTimer;
@@ -117,6 +124,7 @@ private:
     QTimer *turnLeftRepeatTimer;
     QTimer *turnRightRepeatTimer;
     QTimer *rebootCountdownTimer;
+    QTimer *cameraStatusTimer;
 
     QProgressDialog *rebootProgressDialog;
 
@@ -132,6 +140,15 @@ private:
     bool m_videoScaleContents = true;
     QString m_activeVideoTopic;
     QImage m_lastVideoFrame;
+    bool m_remoteCameraServiceAvailable = false;
+    bool m_remoteCameraConnected = false;
+    bool m_remoteCameraRecording = false;
+    QString m_lastRemoteCameraStatusMessage;
+    bool m_lastLoggedRemoteCameraConnected = false;
+    bool m_lastLoggedRemoteCameraRecording = false;
+    bool m_hasLoggedRemoteCameraStatus = false;
+    QHash<QString, QString> m_videoStreamOptions;
+    QString m_lastHomeLogMessage;
 
     bool forwardButtonHeld;
     bool forwardKeyHeld;

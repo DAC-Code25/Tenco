@@ -81,6 +81,13 @@ OAK Camera
        -> CameraControlClient
 ```
 
+部署时要明确区分：
+
+- 底盘/控制器通信地址
+- 工控机相机服务地址
+
+若二者不是同一台设备，项目配置中应分别填写，不可复用同一个 IP。
+
 ### 3.1 模块职责
 
 - `Home`
@@ -313,26 +320,26 @@ sudo chown -R $USER:$USER /opt/tenco
 示例：
 
 ```bash
-sudo tee /etc/systemd/system/tenco-oak-probe.service >/dev/null <<'EOF'
+sudo tee /etc/systemd/system/tenco-oak-camera.service >/dev/null <<'EOF'
 [Unit]
-Description=Tenco OAK Probe
+Description=Tenco OAK Camera Service
 After=network-online.target
 
 [Service]
 User=nvidia
 WorkingDirectory=/opt/tenco
-ExecStart=/opt/tenco/bin/oak_probe
+ExecStart=/opt/tenco/bin/tenco-oak-camera-service
 Restart=on-failure
 RestartSec=3
-StandardOutput=append:/opt/tenco/logs/oak_probe.log
-StandardError=append:/opt/tenco/logs/oak_probe.err
+StandardOutput=append:/opt/tenco/logs/tenco-oak-camera.log
+StandardError=append:/opt/tenco/logs/tenco-oak-camera.err
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
 sudo systemctl daemon-reload
-sudo systemctl enable tenco-oak-probe.service
+sudo systemctl enable tenco-oak-camera.service
 ```
 
 ### 5.1.9 5.1 完成后的下一步
@@ -447,7 +454,7 @@ signals:
 
 - 调用工控机相机服务的 HTTP 接口
 - 管理拍照、开始录像、停止录像命令
-- 管理状态查询
+- 管理启动后与运行期间的状态查询
 - 管理请求超时与错误上报
 
 ### V1 接口建议
@@ -469,6 +476,25 @@ signals:
   "cameraConnected": true
 }
 ```
+
+当前工控机实际 `GET /camera/status` 还额外返回：
+
+- `deviceId`
+- `previewWidth`
+- `previewHeight`
+- `previewFps`
+- `jpegQuality`
+- `snapshotDir`
+- `recordingDir`
+- `lastPhotoPath`
+- `lastRecordingPath`
+
+项目侧当前已消费：
+
+- `message`
+- `path`
+- `cameraConnected`
+- `recording`
 
 ## 5.2.4 录像实现建议
 
@@ -529,6 +555,7 @@ V1 采用**工控机本地录像**：
 
 - 预览继续走 `AbstractVideoSource` / `MjpegVideoSource`
 - 拍照/录像控制由 `CameraControlClient` 调工控机接口
+- 根据 `/camera/status` 返回的 `cameraConnected` / `recording` 更新 UI 使能、状态提示和恢复逻辑
 
 ## 5.2.7 配置系统扩展
 
@@ -544,8 +571,18 @@ V1 采用**工控机本地录像**：
 ```json
 "video": {
   "backend": "mjpeg_http",
-  "streamUrl": "http://192.168.31.7:18080/camera/stream.mjpeg",
-  "controlBaseUrl": "http://192.168.31.7:18080",
+  "streamUrl": "http://192.168.31.13:18080/camera/stream.mjpeg",
+  "controlBaseUrl": "http://192.168.31.13:18080",
+  "streamOptions": [
+    {
+      "name": "前置彩色相机",
+      "url": "http://192.168.31.13:18080/camera/stream.mjpeg"
+    },
+    {
+      "name": "后置相机",
+      "url": "http://192.168.31.13:18080/camera/rear/stream.mjpeg"
+    }
+  ],
   "deviceId": "",
   "previewWidth": 1280,
   "previewHeight": 720,
@@ -562,8 +599,26 @@ V1 采用**工控机本地录像**：
 
 - `backend`: 当前生产推荐 `mjpeg_http`
 - `controlBaseUrl`: 工控机相机控制服务地址
+- `streamOptions`: 首页视频流选择项列表。配置后 `video_topic_name` 将直接切换不同 MJPEG 地址，适合多相机/多码流场景
 - `deviceId`: 多 OAK 设备时指定 MxId
 - `recordMode`: 为 V2 留扩展点
+- 若 `streamUrl` 不带 `topic` 查询参数，则按固定 MJPEG 地址直接拉流，不要求首页选择视频话题
+- 若 `streamUrl` 带 `topic` 查询参数，则首页仍兼容历史 topic 切换模式
+
+当前项目侧实现已经按以下规则落地：
+
+- 远程 MJPEG 预览继续由 `MjpegVideoSource` 承担
+- 拍照/录像/状态查询继续由 `CameraControlClient` 调工控机服务
+- 首页日志对 `/camera/status` 轮询做了状态去重，只在工控机服务状态、相机连接状态、录像状态或提示消息变化时输出
+- 首页 `video_topic_name` 已从“固定话题框”扩展为统一“视频流选择器”
+
+如果未来要接入工控机另一台相机，或者给当前相机增加另一条预览流，工控机侧必须先提供独立流地址，例如：
+
+- `GET /camera/front/stream.mjpeg`
+- `GET /camera/rear/stream.mjpeg`
+- `GET /camera/stream_low.mjpeg`
+
+然后项目侧只需要在 `streamOptions` 中增加对应条目，不需要再改首页代码。
 
 ## 5.2.8 CMake 改造
 
@@ -622,10 +677,10 @@ find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network WebSockets)
 
 日志内容至少包括：
 
-- 设备枚举结果
-- pipeline 启动/停止
+- 工控机相机服务状态变化
+- 预览启动/停止
 - 录像开始/结束路径
-- 相机异常与重试次数
+- 相机异常与状态恢复次数
 
 ### 5.3.4 保存策略
 

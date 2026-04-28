@@ -21,10 +21,12 @@
   - 绑定首页 UI 控件（按钮/开关/视频区域/日志框）
   - 负责把模块“串起来”，但不再把所有网络细节都堆在一个类里
   - 通过 `HomeStatusPresenter` 承接状态包解析与状态区 UI 映射
+  - `video_topic_name` 已扩展为统一“视频流选择器”，既兼容历史 topic 模式，也支持配置驱动的多路 MJPEG 流切换
   - 关键职责：
     - StatusClient：状态轮询
     - ChassisClient：速度下发/重启/停止定位
-    - VideoClient：视频显示/录像/截图
+    - AbstractVideoSource / MjpegVideoSource：视频预览
+    - CameraControlClient：工控机相机拍照/录像/状态查询
     - RouteFollower：路线段跟随（从 Map 来的 polyline）
 
 - `home_status_presenter.h/.cpp`
@@ -73,9 +75,12 @@
 - `cameracontrolclient.h/.cpp`
   - 远程相机控制客户端
   - 调用工控机相机服务的 `/camera/photo`、`/camera/record/start`、`/camera/record/stop`、`/camera/status`
-  - 负责请求超时、错误上报、远程录像状态同步
+  - 负责请求超时、错误上报、远程录像状态同步、服务恢复后的状态刷新
+  - 对高频 `/camera/status` 轮询做静默处理，避免控制台刷屏；状态变化日志由 `Home` 统一输出
+  - 由 `Home` 内的定时器周期调用状态查询，用于联动按钮使能、占位提示和恢复提示
 - `mjpegvideosource.h/.cpp`
   - 适配现有 HTTP MJPEG 客户端，作为分布式部署下的远程预览通道
+  - 同时兼容“固定 MJPEG 地址”和“带 topic 查询参数的模板地址”两种配置方式
 - `oakcameravideosource.h/.cpp`
   - OAK-D-Pro-W / DepthAI 本地 USB 相机后端
   - 负责设备枚举、预览帧采集、still 拍照、主机侧录像、异常自动重连
