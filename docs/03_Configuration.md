@@ -66,17 +66,121 @@
 
 ### 3.4 video（视频流）
 
-- `video.backend`：视频后端，当前支持 `mjpeg_http`（HTTP MJPEG）与 `oak_depthai`（OAK-D-Pro-W / DepthAI 本地 USB 相机后端骨架）
-- `video.streamUrl`：MJPEG 地址（可带 `topic` 参数）
+推荐的生产部署方式是分布式：
+
+- 当前上位机程序运行在操作员机器
+- OAK 相机通过 USB 连接在工控机
+- 上位机通过 `video.streamUrl` 接工控机输出的预览流
+- 上位机通过 `video.controlBaseUrl` 调用工控机相机服务的拍照/录像接口
+
+如果控制器和工控机不是同一台设备，要明确区分这两组地址：
+
+- `network.*`：指向底盘/控制器接口地址
+- `video.streamUrl` / `video.controlBaseUrl`：指向工控机相机服务地址
+
+当前现场环境下：
+
+- 控制器 IP：`192.168.31.7`
+- 工控机相机服务 IP：`192.168.31.13`
+
+当前支持字段：
+
+- `video.backend`：视频后端，当前支持 `mjpeg_http`（推荐，用于远程 MJPEG 预览）与 `oak_depthai`（仅用于本机直连调试，不是当前分布式主路径）
+- `video.streamUrl`：MJPEG 地址（可带 `topic` 参数），例如工控机提供的 `/camera/stream.mjpeg`
+- `video.controlBaseUrl`：工控机相机控制服务基地址，例如 `http://192.168.31.13:18080`
+- `video.streamOptions`：可选的视频流列表；配置后首页 `video_topic_name` 会作为“视频流选择器”使用，每个选项直接绑定一条 MJPEG URL
 - `video.deviceId`：OAK 设备 ID，多相机场景下用于绑定固定设备
-- `video.previewWidth` / `video.previewHeight` / `video.previewFps`：本地相机预览参数
-- `video.recordMode`：录像模式，当前预留 `host_opencv`
-- `video.recordCodec`：录像编码，当前预留 `MJPG`
+- `video.previewWidth` / `video.previewHeight` / `video.previewFps`：预览参数，主要供本机直连 OAK 或工控机服务配置对齐使用
+- `video.recordMode`：录像模式，当前支持 `host_opencv`
+- `video.recordCodec`：录像编码，当前支持 `MJPG` / `XVID` / `MP4V`
 - `video.reconnectIntervalMs`：断线重连间隔
 - `video.autoStart`：无话题选择控件时，是否自动启动
 - `video.scaleContents`：是否 `QLabel::setScaledContents(true)`（拉伸显示）
 
-对应模块：`AbstractVideoSource` + `MjpegVideoSource` / `OakCameraVideoSource` + `Home` 的 UI 绑定（`home.cpp`）。
+对应模块：
+
+- 预览：`AbstractVideoSource` + `MjpegVideoSource`
+- 远程控制：`CameraControlClient`
+- 页面绑定：`Home`
+
+`controlBaseUrl` 启用后，首页中的拍照/录像按钮会优先走远程工控机接口，而不是在上位机本地保存文件。项目侧会在启动后和运行过程中持续调用 `/camera/status`，用于同步 `cameraConnected` / `recording` 状态，并在工控机服务短时异常后自动恢复状态查询。
+
+当前首页视频选择框支持两种模式：
+
+- `streamOptions` 模式：推荐生产使用。选择框每一项对应一条明确的远程预览 URL，适合多相机/多码流/多工控机视频入口。
+- `topic` 模板模式：兼容历史方案。当 `video.streamUrl` 自身带 `?topic=...` 查询参数时，选择框继续沿用 UI 里的历史 topic 列表，并通过替换 `topic` 参数拼接 URL。
+
+如果项目要接入“工控机另一台相机”或者“当前相机另一条流”，必须先让工控机相机服务暴露出另一条独立的流地址，然后再写入 `streamOptions`。项目侧不会凭空生成第二路流。
+
+当前项目侧实际依赖 `/camera/status` 的这些字段：
+
+- `success`
+- `message`
+- `path`
+- `cameraConnected`
+- `recording`
+
+工控机当前实际还额外返回了：
+
+- `deviceId`
+- `previewWidth`
+- `previewHeight`
+- `previewFps`
+- `jpegQuality`
+- `snapshotDir`
+- `recordingDir`
+- `lastPhotoPath`
+- `lastRecordingPath`
+
+推荐的分布式配置示例：
+
+```json
+"video": {
+  "backend": "mjpeg_http",
+  "streamUrl": "http://192.168.31.13:18080/camera/stream.mjpeg",
+  "controlBaseUrl": "http://192.168.31.13:18080",
+  "streamOptions": [
+    {
+      "name": "前置彩色相机",
+      "url": "http://192.168.31.13:18080/camera/stream.mjpeg"
+    },
+    {
+      "name": "后置相机",
+      "url": "http://192.168.31.13:18080/camera/rear/stream.mjpeg"
+    }
+  ],
+  "deviceId": "",
+  "previewWidth": 1280,
+  "previewHeight": 720,
+  "previewFps": 30,
+  "recordMode": "host_opencv",
+  "recordCodec": "MJPG",
+  "reconnectIntervalMs": 2000,
+  "autoStart": true,
+  "scaleContents": true
+}
+```
+
+如果暂时只有一路远程流，也建议保留单项 `streamOptions`，这样首页行为更一致，后续扩展第二路流时不需要再改代码。
+
+如果只是开发机上做本机直连调试，也可以使用 `oak_depthai`：
+
+```json
+"video": {
+  "backend": "oak_depthai",
+  "streamUrl": "",
+  "controlBaseUrl": "",
+  "deviceId": "",
+  "previewWidth": 1280,
+  "previewHeight": 720,
+  "previewFps": 30,
+  "recordMode": "host_opencv",
+  "recordCodec": "MJPG",
+  "reconnectIntervalMs": 2000,
+  "autoStart": true,
+  "scaleContents": true
+}
+```
 
 OAK/DepthAI 的完整落地方案见 `docs/develop/usb_oak_camera_integration_plan.md`。
 

@@ -1,6 +1,7 @@
 #include "home.h"
 #include "statusclient.h"
 #include "chassisclient.h"
+#include "cameracontrolclient.h"
 #include "abstractvideosource.h"
 #include "mjpegvideosource.h"
 #include "oakcameravideosource.h"
@@ -51,6 +52,7 @@ Home::Home(Ui::MainWindow *ui, QObject *parent)
     , turnLeftRepeatTimer(new QTimer(this))
     , turnRightRepeatTimer(new QTimer(this))
     , rebootCountdownTimer(new QTimer(this))
+    , cameraStatusTimer(new QTimer(this))
     , rebootProgressDialog(nullptr)
     , m_statusClient(new StatusClient(this))
     , m_chassisClient(new ChassisClient(this))
@@ -167,6 +169,8 @@ void Home::initialize()
     connect(ui->rightButton, &QPushButton::released, this, &Home::handleTurnRightButtonReleased);
     connect(ui->stopButton, &QPushButton::clicked, this, &Home::handleStopButtonClicked);
     initializeVideoDisplay();
+    initializeCameraControl();
+    initializeCameraStatusPolling();
     logMessage(tr("首页模块已初始化，等待操作…"));
 }
 void Home::setupImageSwitches()
@@ -238,19 +242,17 @@ void Home::initializeVideoDisplay()
     });
 
     m_activeVideoTopic.clear();
+    const bool isMjpegBackend = videoCfg.backend == QStringLiteral("mjpeg_http");
+    const QUrl url(videoCfg.streamUrl.trimmed());
+    populateVideoStreamSelector();
     QComboBox *topicCombo = ui->video_topic_name;
-    if (topicCombo && m_videoSource->supportsTopics()) {
-        topicCombo->setCurrentIndex(0);
-#if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
-        connect(topicCombo, qOverload<int>(&QComboBox::currentIndexChanged), this, &Home::handleVideoTopicChanged);
-#else
-        connect(topicCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &Home::handleVideoTopicChanged);
-#endif
-        updateVideoPlaceholder(videoCfg.streamUrl.trimmed().isEmpty() ? tr("未配置视频流 URL")
-                                                                     : tr("请选择视频话题以开启视频流"));
+    if (topicCombo && topicCombo->count() > 1) {
+        const bool selectionApplied = applyConfiguredVideoStreamSelection();
+        if (!selectionApplied) {
+            updateVideoPlaceholder(tr("请选择视频流以开启预览"));
+        }
     } else {
-        const QUrl url(videoCfg.streamUrl.trimmed());
-        if (m_videoSource->supportsTopics()) {
+        if (isMjpegBackend) {
             m_videoSource->setStreamUrl(url);
             updateVideoPlaceholder(url.isValid() ? tr("等待视频流...") : tr("未配置视频流 URL"));
         } else {
@@ -262,9 +264,201 @@ void Home::initializeVideoDisplay()
     }
 }
 
+void Home::initializeCameraStatusPolling()
+{
+    if (!cameraStatusTimer) {
+        return;
+    }
+    cameraStatusTimer->setSingleShot(false);
+    cameraStatusTimer->setInterval(qMax(1000, ConfigManager::instance().video().reconnectIntervalMs));
+    connect(cameraStatusTimer, &QTimer::timeout, this, &Home::requestRemoteCameraStatus);
+    if (usesRemoteCameraControl()) {
+        cameraStatusTimer->start();
+    }
+}
+
+void Home::populateVideoStreamSelector()
+{
+    if (!ui || !ui->video_topic_name) {
+        return;
+    }
+
+    QComboBox *topicCombo = ui->video_topic_name;
+    m_videoStreamOptions.clear();
+
+    const auto &videoCfg = ConfigManager::instance().video();
+    const bool useConfiguredStreamOptions = !videoCfg.streamOptions.isEmpty();
+    const bool useTopicTemplateSelection = m_videoSource && m_videoSource->supportsTopics();
+
+    topicCombo->blockSignals(true);
+
+    if (useConfiguredStreamOptions || !useTopicTemplateSelection) {
+        topicCombo->clear();
+        topicCombo->addItem(tr("关闭视频"), QString());
+    } else {
+        if (topicCombo->count() == 0) {
+            topicCombo->addItem(tr("关闭视频"), QString());
+        } else {
+            topicCombo->setItemData(0, QString());
+        }
+    }
+
+    if (useConfiguredStreamOptions) {
+        for (const auto &option : videoCfg.streamOptions) {
+            topicCombo->addItem(option.name, option.url);
+            m_videoStreamOptions.insert(option.name, option.url);
+        }
+    } else if (useTopicTemplateSelection) {
+        for (int i = 1; i < topicCombo->count(); ++i) {
+            const QString topicName = topicCombo->itemText(i).trimmed();
+            if (!topicName.isEmpty()) {
+                m_videoStreamOptions.insert(topicName, QString());
+            }
+        }
+    } else if (!videoCfg.streamUrl.trimmed().isEmpty()) {
+        topicCombo->addItem(tr("默认视频流"), videoCfg.streamUrl.trimmed());
+        m_videoStreamOptions.insert(tr("默认视频流"), videoCfg.streamUrl.trimmed());
+    }
+
+    topicCombo->setEnabled(topicCombo->count() > 1);
+    topicCombo->setCurrentIndex(0);
+    topicCombo->blockSignals(false);
+    topicCombo->disconnect(this);
+#if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
+    connect(topicCombo, qOverload<int>(&QComboBox::currentIndexChanged), this, &Home::handleVideoTopicChanged);
+#else
+    connect(topicCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &Home::handleVideoTopicChanged);
+#endif
+}
+
+bool Home::applyConfiguredVideoStreamSelection()
+{
+    if (!ui || !ui->video_topic_name) {
+        return false;
+    }
+    QComboBox *topicCombo = ui->video_topic_name;
+    const QString configuredUrl = ConfigManager::instance().video().streamUrl.trimmed();
+    if (configuredUrl.isEmpty() || topicCombo->count() <= 1) {
+        return false;
+    }
+
+    const bool hasExplicitStreamOptions = !ConfigManager::instance().video().streamOptions.isEmpty();
+
+    if (!hasExplicitStreamOptions && !m_videoSource->supportsTopics()) {
+        topicCombo->setCurrentIndex(1);
+        return true;
+    }
+
+    for (int i = 1; i < topicCombo->count(); ++i) {
+        const QString itemUrl = topicCombo->itemData(i).toString().trimmed();
+        if (itemUrl == configuredUrl) {
+            topicCombo->setCurrentIndex(i);
+            return true;
+        }
+    }
+
+    if (!hasExplicitStreamOptions && m_videoSource && m_videoSource->supportsTopics()) {
+        const QUrl configuredStreamUrl(configuredUrl);
+        const QString configuredTopic = QUrlQuery(configuredStreamUrl).queryItemValue(QStringLiteral("topic")).trimmed();
+        if (!configuredTopic.isEmpty()) {
+            for (int i = 1; i < topicCombo->count(); ++i) {
+                if (topicCombo->itemText(i).trimmed() == configuredTopic) {
+                    topicCombo->setCurrentIndex(i);
+                    return true;
+                }
+            }
+        }
+    }
+
+    return false;
+}
+
+void Home::initializeCameraControl()
+{
+    const auto &cfg = ConfigManager::instance();
+    const QUrl controlUrl(cfg.video().controlBaseUrl.trimmed());
+    if (!controlUrl.isValid() || controlUrl.isEmpty()) {
+        return;
+    }
+
+    if (!m_cameraControlClient) {
+        m_cameraControlClient = new CameraControlClient(this);
+    }
+
+    m_cameraControlClient->setBaseUrl(controlUrl);
+    m_cameraControlClient->setAuthorizationToken(cfg.network().authToken);
+
+    connect(m_cameraControlClient, &CameraControlClient::recordingStateChanged, this, &Home::updateRecordButtonText);
+    connect(m_cameraControlClient, &CameraControlClient::photoSaved, this, [this](const QString &path, const QString &message) {
+        m_remoteCameraServiceAvailable = true;
+        QWidget *parentWidget = ui ? ui->centralwidget : nullptr;
+        const QString finalMessage = message.isEmpty() ? tr("工控机拍照成功") : message;
+        QMessageBox::information(parentWidget,
+                                 tr("成功"),
+                                 path.isEmpty() ? finalMessage : tr("%1\n\n保存路径：\n%2").arg(finalMessage, path));
+        logMessage(path.isEmpty() ? finalMessage : tr("%1：%2").arg(finalMessage, path));
+    });
+    connect(m_cameraControlClient, &CameraControlClient::recordingStarted, this, [this](const QString &path, const QString &message) {
+        m_remoteCameraServiceAvailable = true;
+        m_remoteCameraRecording = true;
+        const QString finalMessage = message.isEmpty() ? tr("工控机已开始录像") : message;
+        m_recordFilePath = path;
+        logMessage(path.isEmpty() ? finalMessage : tr("%1：%2").arg(finalMessage, path));
+        updateRemoteCameraUiState();
+    });
+    connect(m_cameraControlClient, &CameraControlClient::recordingStopped, this, [this](const QString &path, const QString &message) {
+        m_remoteCameraServiceAvailable = true;
+        m_remoteCameraRecording = false;
+        QWidget *parentWidget = ui ? ui->centralwidget : nullptr;
+        const QString finalMessage = message.isEmpty() ? tr("工控机已停止录像") : message;
+        m_recordFilePath.clear();
+        QMessageBox::information(parentWidget,
+                                 tr("成功"),
+                                 path.isEmpty() ? finalMessage : tr("%1\n\n保存路径：\n%2").arg(finalMessage, path));
+        logMessage(path.isEmpty() ? finalMessage : tr("%1：%2").arg(finalMessage, path));
+        updateRemoteCameraUiState();
+    });
+    connect(m_cameraControlClient, &CameraControlClient::statusReceived, this, [this](bool cameraConnected, bool recording, const QString &message) {
+        const bool serviceRecovered = !m_remoteCameraServiceAvailable;
+        m_remoteCameraServiceAvailable = true;
+        m_remoteCameraConnected = cameraConnected;
+        m_remoteCameraRecording = recording;
+        logCameraStatusChange(message);
+        if (serviceRecovered) {
+            logMessage(tr("工控机相机服务已恢复"));
+        }
+        updateRecordButtonText(recording);
+        updateRemoteCameraUiState();
+    });
+    connect(m_cameraControlClient, &CameraControlClient::requestFailed, this, [this](const QString &operation, const QString &message) {
+        const QString text = tr("远程相机操作失败（%1）：%2").arg(operation, message);
+        if (operation == QStringLiteral("status")) {
+            if (m_remoteCameraServiceAvailable) {
+                logMessage(text);
+            }
+            m_remoteCameraServiceAvailable = false;
+            m_remoteCameraConnected = false;
+            m_remoteCameraRecording = false;
+            updateRemoteCameraUiState();
+            return;
+        }
+        logMessage(text);
+        QWidget *parentWidget = ui ? ui->centralwidget : nullptr;
+        QMessageBox::warning(parentWidget, tr("失败"), text);
+    });
+
+    updateRecordButtonText(m_cameraControlClient->isRecording());
+    requestRemoteCameraStatus();
+}
+
 bool Home::isVideoDisplayReady() const
 {
     return ui && ui->videoDisplay;
+}
+
+bool Home::usesRemoteCameraControl() const
+{
+    return m_cameraControlClient && m_cameraControlClient->isConfigured();
 }
 
 void Home::updateVideoPlaceholder(const QString &message)
@@ -300,14 +494,83 @@ void Home::displayVideoFrame(const QImage &image)
     m_lastVideoFrame = frame;
 }
 
+void Home::updateRecordButtonText(bool remoteRecordingActive)
+{
+    if (!ui || !ui->recordButton) {
+        return;
+    }
+    ui->recordButton->setText(remoteRecordingActive ? tr("停止录像") : tr("开始录像"));
+}
+
+void Home::updateRemoteCameraUiState()
+{
+    if (!usesRemoteCameraControl() || !ui) {
+        return;
+    }
+
+    if (ui->captureButton) {
+        ui->captureButton->setEnabled(m_remoteCameraServiceAvailable && m_remoteCameraConnected);
+    }
+    if (ui->recordButton) {
+        ui->recordButton->setEnabled(m_remoteCameraServiceAvailable && m_remoteCameraConnected);
+    }
+
+    if (!m_remoteCameraServiceAvailable) {
+        updateVideoPlaceholder(tr("工控机相机服务不可用，等待恢复..."));
+        return;
+    }
+    if (!m_remoteCameraConnected) {
+        updateVideoPlaceholder(tr("工控机相机服务在线，但相机未连接"));
+        return;
+    }
+    if (m_lastVideoFrame.isNull()) {
+        updateVideoPlaceholder(tr("相机已连接，等待预览画面..."));
+    }
+}
+
+void Home::requestRemoteCameraStatus()
+{
+    if (!usesRemoteCameraControl() || !m_cameraControlClient || m_cameraControlClient->isBusy()) {
+        return;
+    }
+    m_cameraControlClient->requestStatus();
+}
+
+void Home::logCameraStatusChange(const QString &message)
+{
+    const QString normalizedMessage = message.trimmed();
+    const bool shouldLog = !m_hasLoggedRemoteCameraStatus ||
+                           m_lastLoggedRemoteCameraConnected != m_remoteCameraConnected ||
+                           m_lastLoggedRemoteCameraRecording != m_remoteCameraRecording ||
+                           m_lastRemoteCameraStatusMessage != normalizedMessage;
+    if (!shouldLog) {
+        return;
+    }
+    if (!normalizedMessage.isEmpty()) {
+        logMessage(normalizedMessage);
+    }
+    m_lastLoggedRemoteCameraConnected = m_remoteCameraConnected;
+    m_lastLoggedRemoteCameraRecording = m_remoteCameraRecording;
+    m_lastRemoteCameraStatusMessage = normalizedMessage;
+    m_hasLoggedRemoteCameraStatus = true;
+}
+
 void Home::logMessage(const QString &text)
 {
     if (!ui || !ui->plainTextEdit) {
         return;
     }
+    const QString normalizedText = text.trimmed();
+    if (normalizedText.isEmpty()) {
+        return;
+    }
+    if (m_lastHomeLogMessage == normalizedText) {
+        return;
+    }
+    m_lastHomeLogMessage = normalizedText;
     const QString line = QStringLiteral("[%1] %2")
                              .arg(QDateTime::currentDateTime().toString("hh:mm:ss"))
-                             .arg(text);
+                             .arg(normalizedText);
     ui->plainTextEdit->appendPlainText(line);
 }
 
@@ -356,7 +619,10 @@ void Home::handleVideoTopicChanged(int index)
         return;
     }
 
-    const QString nextUrlStr = m_videoSource->buildUrlForTopic(topic);
+    QString nextUrlStr = ui->video_topic_name->itemData(index).toString().trimmed();
+    if (nextUrlStr.isEmpty()) {
+        nextUrlStr = m_videoSource->buildUrlForTopic(topic);
+    }
     if (nextUrlStr.isEmpty()) {
         m_videoSource->stop();
         updateVideoPlaceholder(tr("视频流 URL 配置无效"));
@@ -378,6 +644,7 @@ void Home::handleVideoTopicChanged(int index)
     m_videoSource->stop();
     m_videoSource->setStreamUrl(nextUrl);
     m_videoSource->start();
+    updateVideoPlaceholder(tr("正在切换视频流..."));
 }
 // 判断按钮手动控制是否被授权
 bool Home::isManualControlEnabledForButtons() const
@@ -837,7 +1104,20 @@ bool Home::handleKeyRelease(int key, bool isAutoRepeat)
 // 录像按钮占位实现：后续可接入实际录像逻辑
 void Home::record()
 {
-    if (!m_videoSource) {
+    if (!m_videoSource && !usesRemoteCameraControl()) {
+        return;
+    }
+
+    if (usesRemoteCameraControl()) {
+        if (m_cameraControlClient->isBusy()) {
+            QMessageBox::information(ui ? ui->centralwidget : nullptr, tr("提示"), tr("相机命令处理中，请稍后再试。"));
+            return;
+        }
+        if (!m_cameraControlClient->isRecording()) {
+            m_cameraControlClient->startRecording();
+        } else {
+            m_cameraControlClient->stopRecording();
+        }
         return;
     }
 
@@ -860,9 +1140,22 @@ void Home::record()
 // 截图按钮占位实现
 void Home::photo()
 {
-    if (!m_videoSource) {
+    if (!m_videoSource && !usesRemoteCameraControl()) {
         return;
     }
+
+    if (usesRemoteCameraControl()) {
+        if (m_videoSource && m_videoSource->isConfigured() && !m_videoSource->isActive()) {
+            m_videoSource->start();
+        }
+        if (m_cameraControlClient->isBusy()) {
+            QMessageBox::information(ui ? ui->centralwidget : nullptr, tr("提示"), tr("相机命令处理中，请稍后再试。"));
+            return;
+        }
+        m_cameraControlClient->capturePhoto();
+        return;
+    }
+
     if (m_videoSource->lastFrame().isNull()) {
         QMessageBox::warning(ui ? ui->centralwidget : nullptr, tr("提示"), tr("请先开启视频流后再拍照。"));
         return;
@@ -898,7 +1191,7 @@ void Home::restartControl()
         return;
     }
     logMessage(tr("正在下发控制器重启指令"));
-    qDebug() << "重启控制命令";
+    qDebug() << "Sending reboot command";
     if (m_chassisClient) {
         m_chassisClient->sendRebootCommand();
     }
@@ -1027,7 +1320,7 @@ void Home::checkConnectionRestored()
     if (!m_statusPresenter || !m_statusPresenter->takeConnectionRestored()) {
         return;
     }
-    qDebug() << "连接已恢复";
+    qDebug() << "Connection restored";
     restartCheckTimer->stop();  // 停止重连轮询
 }
 void Home::followRouteSegment(int fromPointId, int toPointId, const QList<QPointF> &polyline, double startTheta, double endTheta)

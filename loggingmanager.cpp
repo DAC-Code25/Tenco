@@ -66,8 +66,14 @@ static void tencoMessageHandler(QtMsgType type, const QMessageLogContext &contex
     const QString line =
         QStringLiteral("%1 [%2] %3").arg(QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd hh:mm:ss.zzz")), level, message);
 
-    fprintf(stderr, "%s\n", line.toUtf8().constData());
-    fflush(stderr);
+#ifdef Q_OS_WIN
+    const QByteArray consoleLine = line.toLocal8Bit();
+#else
+    const QByteArray consoleLine = line.toUtf8();
+#endif
+    FILE *consoleStream = (type == QtDebugMsg || type == QtInfoMsg) ? stdout : stderr;
+    fprintf(consoleStream, "%s\n", consoleLine.constData());
+    fflush(consoleStream);
 
     QMutexLocker locker(&g_logMutex);
     if (g_logFile.isOpen()) {
