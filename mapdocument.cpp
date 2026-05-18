@@ -56,6 +56,14 @@ QJsonObject MapDocumentCodec::toJson(const MapDocument &doc)
     }
     root.insert(QStringLiteral("paths"), pathsArray);
 
+    if (doc.hasRowWorkPlan) {
+        root.insert(QStringLiteral("rowWork"), RowWorkJson::planToJson(doc.rowWorkPlan));
+    }
+
+    if (doc.hasRowMissionPlan) {
+        root.insert(QStringLiteral("rowMission"), RowMissionJson::planToJson(doc.rowMissionPlan));
+    }
+
     return root;
 }
 
@@ -146,6 +154,28 @@ bool MapDocumentCodec::fromJson(const QJsonObject &json,
             return false;
         }
         doc.paths.append(path);
+    }
+
+    const QJsonObject rowWorkObj = json.value(QStringLiteral("rowWork")).toObject();
+    if (!rowWorkObj.isEmpty()) {
+        RowWorkPlan rowWorkPlan;
+        if (!RowWorkJson::planFromJson(rowWorkObj, &rowWorkPlan)) {
+            setError(errorMessage, QStringLiteral("rowWork 字段无效"));
+            return false;
+        }
+        doc.hasRowWorkPlan = true;
+        doc.rowWorkPlan = rowWorkPlan;
+    }
+
+    const QJsonObject rowMissionObj = json.value(QStringLiteral("rowMission")).toObject();
+    if (!rowMissionObj.isEmpty()) {
+        RowMissionPlan rowMissionPlan;
+        if (!RowMissionJson::planFromJson(rowMissionObj, &rowMissionPlan)) {
+            setError(errorMessage, QStringLiteral("rowMission 字段无效"));
+            return false;
+        }
+        doc.hasRowMissionPlan = true;
+        doc.rowMissionPlan = rowMissionPlan;
     }
 
     *outDoc = doc;

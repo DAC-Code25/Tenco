@@ -569,8 +569,8 @@ void Home::logMessage(const QString &text)
     }
     m_lastHomeLogMessage = normalizedText;
     const QString line = QStringLiteral("[%1] %2")
-                             .arg(QDateTime::currentDateTime().toString("hh:mm:ss"))
-                             .arg(normalizedText);
+                             .arg(QDateTime::currentDateTime().toString(QStringLiteral("hh:mm:ss")),
+                                  normalizedText);
     ui->plainTextEdit->appendPlainText(line);
 }
 
@@ -1104,11 +1104,15 @@ bool Home::handleKeyRelease(int key, bool isAutoRepeat)
 // 录像按钮占位实现：后续可接入实际录像逻辑
 void Home::record()
 {
-    if (!m_videoSource && !usesRemoteCameraControl()) {
+    const bool remoteControl = usesRemoteCameraControl();
+    if (!m_videoSource && !remoteControl) {
         return;
     }
 
-    if (usesRemoteCameraControl()) {
+    if (remoteControl) {
+        if (!m_cameraControlClient) {
+            return;
+        }
         if (m_cameraControlClient->isBusy()) {
             QMessageBox::information(ui ? ui->centralwidget : nullptr, tr("提示"), tr("相机命令处理中，请稍后再试。"));
             return;
@@ -1118,6 +1122,10 @@ void Home::record()
         } else {
             m_cameraControlClient->stopRecording();
         }
+        return;
+    }
+
+    if (!m_videoSource) {
         return;
     }
 
@@ -1140,11 +1148,15 @@ void Home::record()
 // 截图按钮占位实现
 void Home::photo()
 {
-    if (!m_videoSource && !usesRemoteCameraControl()) {
+    const bool remoteControl = usesRemoteCameraControl();
+    if (!m_videoSource && !remoteControl) {
         return;
     }
 
-    if (usesRemoteCameraControl()) {
+    if (remoteControl) {
+        if (!m_cameraControlClient) {
+            return;
+        }
         if (m_videoSource && m_videoSource->isConfigured() && !m_videoSource->isActive()) {
             m_videoSource->start();
         }
@@ -1153,6 +1165,10 @@ void Home::photo()
             return;
         }
         m_cameraControlClient->capturePhoto();
+        return;
+    }
+
+    if (!m_videoSource) {
         return;
     }
 

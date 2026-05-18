@@ -72,6 +72,14 @@ public:
         int statusPollIntervalMs = 100;
     };
 
+    struct RowWorkConfig {
+        bool enabled = false;
+        QString gatewayBaseUrl;
+        int statusPollIntervalMs = 300;
+        int commandTimeoutMs = 3000;
+        bool autoRefreshPlanStatus = true;
+    };
+
     static ConfigManager &instance();
 
     void reload();
@@ -82,6 +90,7 @@ public:
     const VehicleConfig &vehicle() const { return m_vehicle; }
     const VideoConfig &video() const { return m_video; }
     const NetworkConfig &network() const { return m_network; }
+    const RowWorkConfig &rowWork() const { return m_rowWork; }
 
     QPointF geoToLocal(double latitudeDeg, double longitudeDeg) const;
     void localToGeo(const QPointF &localPoint, double &latitudeDeg, double &longitudeDeg) const;
@@ -103,6 +112,7 @@ private:
     VehicleConfig m_vehicle;
     VideoConfig m_video;
     NetworkConfig m_network;
+    RowWorkConfig m_rowWork;
     double m_metersPerDegLat = 0.0;
     double m_metersPerDegLon = 0.0;
     QString m_configPath;

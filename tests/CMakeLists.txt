@@ -1,4 +1,4 @@
-find_package(Qt6 REQUIRED COMPONENTS Core Test)
+find_package(Qt6 REQUIRED COMPONENTS Core Test Network)
 
 qt_add_executable(tenco_test_routefollower
     test_routefollower.cpp
@@ -32,6 +32,10 @@ qt_add_executable(tenco_test_mapdocument
     test_mapdocument.cpp
     ../mapdocument.h
     ../mapdocument.cpp
+    ../rowmissiontypes.h
+    ../rowmissiontypes.cpp
+    ../rowworktypes.h
+    ../rowworktypes.cpp
 )
 target_include_directories(tenco_test_mapdocument PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/..
@@ -41,6 +45,36 @@ target_link_libraries(tenco_test_mapdocument PRIVATE
     Qt6::Test
 )
 add_test(NAME tenco_test_mapdocument COMMAND tenco_test_mapdocument)
+
+qt_add_executable(tenco_test_rowworktypes
+    test_rowworktypes.cpp
+    ../rowworktypes.h
+    ../rowworktypes.cpp
+)
+target_include_directories(tenco_test_rowworktypes PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+)
+target_link_libraries(tenco_test_rowworktypes PRIVATE
+    Qt6::Core
+    Qt6::Test
+)
+add_test(NAME tenco_test_rowworktypes COMMAND tenco_test_rowworktypes)
+
+qt_add_executable(tenco_test_rowmissiontypes
+    test_rowmissiontypes.cpp
+    ../rowmissiontypes.h
+    ../rowmissiontypes.cpp
+    ../rowworktypes.h
+    ../rowworktypes.cpp
+)
+target_include_directories(tenco_test_rowmissiontypes PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+)
+target_link_libraries(tenco_test_rowmissiontypes PRIVATE
+    Qt6::Core
+    Qt6::Test
+)
+add_test(NAME tenco_test_rowmissiontypes COMMAND tenco_test_rowmissiontypes)
 
 qt_add_executable(tenco_test_configmanager
     test_configmanager.cpp
@@ -74,6 +108,12 @@ qt_add_executable(tenco_test_map_route_integration
     test_map_route_integration.cpp
     ../map.h
     ../map.cpp
+    ../rowmissiontypes.h
+    ../rowmissiontypes.cpp
+    ../rowworktypes.h
+    ../rowworktypes.cpp
+    ../rowworkclient.h
+    ../rowworkclient.cpp
     ../mapgraphicsview.h
     ../mapgraphicsview.cpp
     ../mapdocument.h
@@ -98,6 +138,7 @@ target_link_libraries(tenco_test_map_route_integration PRIVATE
     Qt6::Core
     Qt6::Gui
     Qt6::Widgets
+    Qt6::Network
     Qt6::Test
 )
 add_test(NAME tenco_test_map_route_integration COMMAND tenco_test_map_route_integration)

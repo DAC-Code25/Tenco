@@ -1,6 +1,9 @@
 #ifndef MAPDOCUMENT_H
 #define MAPDOCUMENT_H
 
+#include "rowworktypes.h"
+#include "rowmissiontypes.h"
+
 #include <QList>
 #include <QString>
 
@@ -39,6 +42,10 @@ struct MapDocument
     double rotationDeg = 0.0;
     QList<MapDocumentPoint> points;
     QList<MapDocumentPath> paths;
+    bool hasRowWorkPlan = false;
+    RowWorkPlan rowWorkPlan;
+    bool hasRowMissionPlan = false;
+    RowMissionPlan rowMissionPlan;
 };
 
 namespace MapDocumentCodec

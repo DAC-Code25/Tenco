@@ -6,11 +6,14 @@
 #include <QCoreApplication>
 #include <QDoubleSpinBox>
 #include <QEventLoop>
+#include <QGroupBox>
 #include <QLabel>
 #include <QListWidget>
 #include <QMainWindow>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QSignalSpy>
+#include <QTabWidget>
 #include <QTableWidget>
 #include <QTimer>
 
@@ -182,9 +185,70 @@ private:
     }
 
 private slots:
+    void showsTaskTabsForRouteAndRowWork();
+    void showsRowWorkModeTabsForPrimitiveAndMission();
+    void showsScrollableLeftEditorPanelWithStackedGroups();
     void executesQueuedRouteEndToEnd();
     void replansRemainingRouteAfterSegmentFailure();
 };
+
+void MapRouteIntegrationTest::showsTaskTabsForRouteAndRowWork()
+{
+    QMainWindow window;
+    Ui::MainWindow ui;
+    ui.setupUi(&window);
+
+    Map map(&ui);
+    QWidget *mapPage = ui.mapPage;
+    QVERIFY(mapPage != nullptr);
+
+    auto *tabWidget = requireChild<QTabWidget>(mapPage, "mapTaskTabWidget");
+    QVERIFY(tabWidget != nullptr);
+    QCOMPARE(tabWidget->count(), 2);
+    QCOMPARE(tabWidget->tabText(0), QStringLiteral("常规任务"));
+    QCOMPARE(tabWidget->tabText(1), QStringLiteral("直线作业"));
+}
+
+void MapRouteIntegrationTest::showsRowWorkModeTabsForPrimitiveAndMission()
+{
+    QMainWindow window;
+    Ui::MainWindow ui;
+    ui.setupUi(&window);
+
+    Map map(&ui);
+    QWidget *mapPage = ui.mapPage;
+    QVERIFY(mapPage != nullptr);
+
+    auto *taskTabs = requireChild<QTabWidget>(mapPage, "mapTaskTabWidget");
+    QVERIFY(taskTabs != nullptr);
+    taskTabs->setCurrentIndex(1);
+    pumpEvents();
+
+    auto *rowWorkModeTabs = requireChild<QTabWidget>(mapPage, "mapRowWorkModeTabWidget");
+    QVERIFY(rowWorkModeTabs != nullptr);
+    QCOMPARE(rowWorkModeTabs->count(), 2);
+    QCOMPARE(rowWorkModeTabs->tabText(0), QStringLiteral("单垄原语"));
+    QCOMPARE(rowWorkModeTabs->tabText(1), QStringLiteral("多垄任务"));
+}
+
+void MapRouteIntegrationTest::showsScrollableLeftEditorPanelWithStackedGroups()
+{
+    QMainWindow window;
+    Ui::MainWindow ui;
+    ui.setupUi(&window);
+
+    Map map(&ui);
+    QWidget *mapPage = ui.mapPage;
+    QVERIFY(mapPage != nullptr);
+
+    auto *leftScrollArea = requireChild<QScrollArea>(mapPage, "mapLeftScrollArea");
+    QVERIFY(leftScrollArea != nullptr);
+    QVERIFY(leftScrollArea->widgetResizable());
+    QVERIFY(requireChild<QGroupBox>(mapPage, "mapGridBox") != nullptr);
+    QVERIFY(requireChild<QGroupBox>(mapPage, "mapPointBox") != nullptr);
+    QVERIFY(requireChild<QGroupBox>(mapPage, "mapBatchBox") != nullptr);
+    QVERIFY(requireChild<QGroupBox>(mapPage, "mapPathBox") != nullptr);
+}
 
 void MapRouteIntegrationTest::executesQueuedRouteEndToEnd()
 {

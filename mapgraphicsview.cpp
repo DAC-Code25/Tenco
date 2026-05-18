@@ -23,6 +23,9 @@ MapGraphicsView::MapGraphicsView(QWidget *parent)
     setResizeAnchor(QGraphicsView::AnchorViewCenter);
     setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    setViewportUpdateMode(QGraphicsView::BoundingRectViewportUpdate);
+    setOptimizationFlag(QGraphicsView::DontAdjustForAntialiasing, true);
+    setOptimizationFlag(QGraphicsView::DontSavePainterState, true);
     setFocusPolicy(Qt::StrongFocus);
     setFrameShape(QFrame::NoFrame);
     setMouseTracking(true);

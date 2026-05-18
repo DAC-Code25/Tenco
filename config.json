@@ -54,5 +54,12 @@
     "saveFileUrl": "http://192.168.31.7:9999/saveFile",
     "authToken": "",
     "statusPollIntervalMs": 100
+  },
+  "rowWork": {
+    "enabled": true,
+    "gatewayBaseUrl": "http://192.168.31.13:18120",
+    "statusPollIntervalMs": 300,
+    "commandTimeoutMs": 3000,
+    "autoRefreshPlanStatus": true
   }
 }

@@ -73,6 +73,8 @@ MainWindow::MainWindow(QWidget *parent) // 主窗口构造函数
         connect(mapPage, &Map::routeQueueCompletedOnce, homePage, &Home::handleRouteQueueCompleted); //队列完成推送
         connect(mapPage, &Map::routeExecutionCancelled, homePage, &Home::cancelRouteExecution); //路线取消推送
         connect(homePage, &Home::routeSegmentCompleted, mapPage, &Map::handleRouteSegmentCompleted); //跟随结果推送
+        connect(mapPage, &Map::rowWorkAutoStartRequested, homePage, &Home::cancelRouteExecution);
+        connect(mapPage, &Map::rowWorkAutoStopRequested, homePage, &Home::cancelRouteExecution);
     }
 
     //四个界面控制按钮

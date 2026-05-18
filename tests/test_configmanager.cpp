@@ -51,7 +51,13 @@ void ConfigManagerTest::loadCustomConfigAndSanitize()
                      {QStringLiteral("recordMode"), QStringLiteral("unsupported_mode")},
                      {QStringLiteral("recordCodec"), QStringLiteral("bad_codec")},
                      {QStringLiteral("reconnectIntervalMs"), 10}}},
-        {QStringLiteral("network"), QJsonObject{{QStringLiteral("statusPollIntervalMs"), 1}}}
+        {QStringLiteral("network"), QJsonObject{{QStringLiteral("statusPollIntervalMs"), 1}}},
+        {QStringLiteral("rowWork"),
+         QJsonObject{{QStringLiteral("enabled"), true},
+                     {QStringLiteral("gatewayBaseUrl"), QStringLiteral(" http://192.168.31.13:18120/ ")},
+                     {QStringLiteral("statusPollIntervalMs"), 1},
+                     {QStringLiteral("commandTimeoutMs"), 10},
+                     {QStringLiteral("autoRefreshPlanStatus"), false}}}
     };
 
     file.write(QJsonDocument(root).toJson(QJsonDocument::Compact));
@@ -80,6 +86,11 @@ void ConfigManagerTest::loadCustomConfigAndSanitize()
     QCOMPARE(cfg.video().recordMode, QStringLiteral("host_opencv"));
     QCOMPARE(cfg.video().recordCodec, QStringLiteral("MJPG"));
     QVERIFY(cfg.network().statusPollIntervalMs >= 50);
+    QVERIFY(cfg.rowWork().enabled);
+    QCOMPARE(cfg.rowWork().gatewayBaseUrl, QStringLiteral("http://192.168.31.13:18120/"));
+    QVERIFY(cfg.rowWork().statusPollIntervalMs >= 100);
+    QVERIFY(cfg.rowWork().commandTimeoutMs >= 1000);
+    QVERIFY(!cfg.rowWork().autoRefreshPlanStatus);
 
     cfg.setConfigFilePath(QString());
 }

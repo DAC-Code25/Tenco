@@ -29,6 +29,13 @@ constexpr const char *kDefaultVideoRecordCodec = "MJPG";
 constexpr int kDefaultStatusPollIntervalMs = 100;
 constexpr int kMinStatusPollIntervalMs = 50;
 constexpr int kMaxStatusPollIntervalMs = 5000;
+constexpr const char *kDefaultRowWorkGatewayBaseUrl = "http://192.168.31.13:18120";
+constexpr int kDefaultRowWorkStatusPollIntervalMs = 300;
+constexpr int kDefaultRowWorkCommandTimeoutMs = 3000;
+constexpr int kMinRowWorkStatusPollIntervalMs = 100;
+constexpr int kMaxRowWorkStatusPollIntervalMs = 10000;
+constexpr int kMinRowWorkCommandTimeoutMs = 1000;
+constexpr int kMaxRowWorkCommandTimeoutMs = 20000;
 
 QString defaultConfigPath()
 {
@@ -197,6 +204,17 @@ void ConfigManager::loadFromFile(const QString &path)
             networkObj.value(QStringLiteral("statusPollIntervalMs")).toInt(m_network.statusPollIntervalMs);
         m_network.statusPollIntervalMs = qBound(kMinStatusPollIntervalMs, m_network.statusPollIntervalMs, kMaxStatusPollIntervalMs);
     }
+
+    if (const QJsonObject rowWorkObj = root.value(QStringLiteral("rowWork")).toObject(); !rowWorkObj.isEmpty()) {
+        m_rowWork.enabled = rowWorkObj.value(QStringLiteral("enabled")).toBool(m_rowWork.enabled);
+        m_rowWork.gatewayBaseUrl = rowWorkObj.value(QStringLiteral("gatewayBaseUrl")).toString(m_rowWork.gatewayBaseUrl).trimmed();
+        m_rowWork.statusPollIntervalMs =
+            rowWorkObj.value(QStringLiteral("statusPollIntervalMs")).toInt(m_rowWork.statusPollIntervalMs);
+        m_rowWork.commandTimeoutMs =
+            rowWorkObj.value(QStringLiteral("commandTimeoutMs")).toInt(m_rowWork.commandTimeoutMs);
+        m_rowWork.autoRefreshPlanStatus =
+            rowWorkObj.value(QStringLiteral("autoRefreshPlanStatus")).toBool(m_rowWork.autoRefreshPlanStatus);
+    }
 }
 
 void ConfigManager::loadDefaults()
@@ -215,6 +233,10 @@ void ConfigManager::loadDefaults()
     m_network.writeInsUrl = QString::fromUtf8(kDefaultWriteInsUrl);
     m_network.saveFileUrl = QString::fromUtf8(kDefaultSaveFileUrl);
     m_network.statusPollIntervalMs = kDefaultStatusPollIntervalMs;
+    m_rowWork = RowWorkConfig{};
+    m_rowWork.gatewayBaseUrl = QString::fromUtf8(kDefaultRowWorkGatewayBaseUrl);
+    m_rowWork.statusPollIntervalMs = kDefaultRowWorkStatusPollIntervalMs;
+    m_rowWork.commandTimeoutMs = kDefaultRowWorkCommandTimeoutMs;
 }
 
 void ConfigManager::sanitizeConfig()
@@ -293,6 +315,12 @@ void ConfigManager::sanitizeConfig()
         m_video.recordCodec = QString::fromUtf8(kDefaultVideoRecordCodec);
     }
     m_network.statusPollIntervalMs = qBound(kMinStatusPollIntervalMs, m_network.statusPollIntervalMs, kMaxStatusPollIntervalMs);
+
+    m_rowWork.gatewayBaseUrl = m_rowWork.gatewayBaseUrl.trimmed();
+    m_rowWork.statusPollIntervalMs =
+        qBound(kMinRowWorkStatusPollIntervalMs, m_rowWork.statusPollIntervalMs, kMaxRowWorkStatusPollIntervalMs);
+    m_rowWork.commandTimeoutMs =
+        qBound(kMinRowWorkCommandTimeoutMs, m_rowWork.commandTimeoutMs, kMaxRowWorkCommandTimeoutMs);
 }
 
 void ConfigManager::updateCachedScales()

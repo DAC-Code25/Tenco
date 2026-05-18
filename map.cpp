@@ -3,6 +3,7 @@
 #include "mapgraphicsview.h"
 #include "mapdocument.h"
 #include "routepathfinder.h"
+#include "rowworkclient.h"
 #include "ui_mainwindow.h"
 #include "configmanager.h"
 
@@ -19,6 +20,7 @@
 #include <QFormLayout>
 #include <QGraphicsEllipseItem>
 #include <QGraphicsItemGroup>
+#include <QGraphicsLineItem>
 #include <QGraphicsPathItem>
 #include <QGraphicsRectItem>
 #include <QGraphicsScene>
@@ -38,7 +40,10 @@
 #include <QCursor>
 #include <QPen>
 #include <QPushButton>
+#include <QUrl>
+#include <QScrollArea>
 #include <QSplitter>
+#include <QTabWidget>
 #include <QMenu>
 #include <QSignalBlocker>
 #include <QLineEdit>
@@ -46,6 +51,7 @@
 #include <QSpinBox>
 #include <QTableWidget>
 #include <QTableWidgetItem>
+#include <QVariant>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QVector2D>
@@ -79,10 +85,19 @@ constexpr int kDefaultRouteLoopIntervalSeconds = 3;
 constexpr double kArcSagittaEpsilon = 1e-3;
 constexpr double kGeometryEpsilon = 1e-6;
 constexpr int kMinArcSegments = 24;
-constexpr int kMapSchemaVersion = 2;
 constexpr int kVehiclePoseRefreshMinIntervalMs = 120;
 constexpr double kVehiclePoseMinDistanceDeltaMeters = 0.02;
 constexpr double kVehiclePoseMinAngleDeltaRad = 1.5 * M_PI / 180.0;
+constexpr int kMapSchemaVersion = 4;
+constexpr int kRowWorkCheckpointTableNameColumn = 0;
+constexpr int kRowWorkCheckpointTableProgressColumn = 1;
+constexpr int kRowWorkCheckpointTableDwellColumn = 2;
+constexpr int kRowWorkCheckpointTableForwardColumn = 3;
+constexpr int kRowWorkCheckpointTableBackwardColumn = 4;
+constexpr int kRowMissionStepEnabledColumn = 0;
+constexpr int kRowMissionStepNameColumn = 1;
+constexpr int kRowMissionStepTypeColumn = 2;
+constexpr int kRowMissionStepSummaryColumn = 3;
 
 inline double normalizeAngle(double angle)
 {
@@ -156,6 +171,18 @@ inline double polylineLength(const QList<QPointF> &polyline)
     return length;
 }
 
+QPainterPath makeDirectionArrowPath()
+{
+    QPainterPath path;
+    path.moveTo(0.0, 0.0);
+    path.lineTo(26.0, 0.0);
+    path.moveTo(26.0, 0.0);
+    path.lineTo(18.0, -5.0);
+    path.moveTo(26.0, 0.0);
+    path.lineTo(18.0, 5.0);
+    return path;
+}
+
 } // namespace
 
 QString Map::s_lastMapFilePath;
@@ -166,10 +193,16 @@ Map::Map(Ui::MainWindow *ui, QObject *parent)
 {
     m_cellSizeMeters = kCellSizeMeters;
     m_cellSizePixels = 50.0;
+    m_rowWorkPlan.planId = RowWorkJson::generatePlanId();
+    m_rowWorkPlan.frameId = QStringLiteral("map");
+    m_rowWorkPlan.params.loopEnabled = true;
+    m_rowMissionPlan.missionId = RowMissionJson::generateMissionId();
+    m_rowMissionPlan.frameId = QStringLiteral("map");
 
     initializeUi();
     ensureScene();
     ensureVehicleItem();
+    ensureRowWorkClient();
     m_vehiclePoseRefreshClock.start();
     handleModuleActivated();
 }
@@ -677,6 +710,17 @@ void Map::handleSceneClick(const QPointF &scenePos, Qt::MouseButton button, Qt::
     }
 
     if (button == Qt::LeftButton) {
+        if (m_rowWorkClickPlacementMode) {
+            addRowWorkCheckpoint(mapPos);
+            m_rowWorkClickPlacementMode = false;
+            if (m_rowWorkAddCheckpointFromMapButton) {
+                QSignalBlocker blocker(m_rowWorkAddCheckpointFromMapButton);
+                m_rowWorkAddCheckpointFromMapButton->setChecked(false);
+            }
+            setRowWorkStatusText(tr("已添加地图中间点"));
+            return;
+        }
+
         if (m_waitingForClickPlacement) {
             const double theta = m_pointThetaSpin ? m_pointThetaSpin->value() : 0.0;
             if (addPointInternal(mapPos.x(), mapPos.y(), theta)) {
@@ -1121,6 +1165,11 @@ void Map::handleRouteClear()
 
 void Map::handleRouteStart()
 {
+    if (m_hasRowWorkStatus && m_rowWorkStatus.isActive() && m_rowWorkStatus.state != QStringLiteral("PlanReady")) {
+        QMessageBox::warning(m_mapPage, tr("发送路线"), tr("当前直线作业正在运行，请先停止后再发送普通路线"));
+        return;
+    }
+
     if (m_routeQueue.isEmpty()) {
         QMessageBox::information(m_mapPage, tr("发送路线"), tr("请先添加需要发送的路线"));
         return;
@@ -1372,35 +1421,70 @@ void Map::initializeUi()
     auto mainSplitter = new QSplitter(Qt::Horizontal, m_mapPage);
     mainSplitter->setObjectName(QStringLiteral("mapMainSplitter"));
     mainSplitter->setChildrenCollapsible(false);
+    mainSplitter->setOpaqueResize(true);
+    mainSplitter->setHandleWidth(8);
     rootLayout->addWidget(mainSplitter);
 
     auto leftPanel = new QFrame(m_mapPage);
     leftPanel->setObjectName(QStringLiteral("mapLeftPanel"));
     leftPanel->setFrameShape(QFrame::StyledPanel);
-    leftPanel->setMinimumWidth(260);
-    auto leftLayout = new QVBoxLayout(leftPanel);
-    leftLayout->setContentsMargins(8, 8, 8, 8);
-    leftLayout->setSpacing(8);
+    leftPanel->setMinimumWidth(250);
+    auto leftPanelLayout = new QVBoxLayout(leftPanel);
+    leftPanelLayout->setContentsMargins(6, 6, 6, 6);
+    leftPanelLayout->setSpacing(6);
 
-    mainSplitter->addWidget(leftPanel);
+    auto leftScrollArea = new QScrollArea(leftPanel);
+    leftScrollArea->setObjectName(QStringLiteral("mapLeftScrollArea"));
+    leftScrollArea->setWidgetResizable(true);
+    leftScrollArea->setFrameShape(QFrame::NoFrame);
+    leftScrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    leftScrollArea->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
 
-    auto gridBox = new QGroupBox(tr("地图尺寸"), leftPanel);
+    auto leftScrollWidget = new QWidget(leftScrollArea);
+    leftScrollWidget->setObjectName(QStringLiteral("mapLeftScrollWidget"));
+    auto leftScrollLayout = new QVBoxLayout(leftScrollWidget);
+    leftScrollLayout->setContentsMargins(0, 0, 0, 0);
+    leftScrollLayout->setSpacing(8);
+
+    const auto configureSpinField = [](QWidget *field, int minWidth = 90) {
+        if (!field) {
+            return;
+        }
+        field->setMinimumWidth(minWidth);
+        field->setMaximumWidth(QWIDGETSIZE_MAX);
+        field->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    };
+
+    const auto configureComboField = [](QComboBox *combo, int minWidth = 100) {
+        if (!combo) {
+            return;
+        }
+        combo->setMinimumWidth(minWidth);
+        combo->setMaximumWidth(QWIDGETSIZE_MAX);
+        combo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        combo->setSizeAdjustPolicy(QComboBox::AdjustToContentsOnFirstShow);
+    };
+
+    auto gridBox = new QGroupBox(tr("地图尺寸"), leftScrollWidget);
     gridBox->setObjectName(QStringLiteral("mapGridBox"));
     gridBox->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     auto gridForm = new QFormLayout(gridBox);
     gridForm->setContentsMargins(8, 8, 8, 8);
     gridForm->setSpacing(6);
+    gridForm->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
 
     m_gridWidthSpin = new QSpinBox(gridBox);
     m_gridWidthSpin->setObjectName(QStringLiteral("mapGridWidthSpin"));
     m_gridWidthSpin->setRange(1, kMaxGridSize);
     m_gridWidthSpin->setValue(kDefaultGridWidth);
+    configureSpinField(m_gridWidthSpin);
     gridForm->addRow(tr("宽度(格)"), m_gridWidthSpin);
 
     m_gridHeightSpin = new QSpinBox(gridBox);
     m_gridHeightSpin->setObjectName(QStringLiteral("mapGridHeightSpin"));
     m_gridHeightSpin->setRange(1, kMaxGridSize);
     m_gridHeightSpin->setValue(kDefaultGridHeight);
+    configureSpinField(m_gridHeightSpin);
     gridForm->addRow(tr("高度(格)"), m_gridHeightSpin);
 
     m_gridRotationSpin = new QDoubleSpinBox(gridBox);
@@ -1410,15 +1494,17 @@ void Map::initializeUi()
     m_gridRotationSpin->setSingleStep(1.0);
     m_gridRotationSpin->setSuffix(QStringLiteral("°"));
     m_gridRotationSpin->setValue(0.0);
+    configureSpinField(m_gridRotationSpin);
     gridForm->addRow(tr("旋转(°)"), m_gridRotationSpin);
 
     m_buildGridButton = new QPushButton(tr("Update Size"), gridBox);
     m_buildGridButton->setObjectName(QStringLiteral("mapBuildGridButton"));
+    m_buildGridButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     gridForm->addRow(QString(), m_buildGridButton);
 
-    leftLayout->addWidget(gridBox);
+    leftScrollLayout->addWidget(gridBox);
 
-    auto pointBox = new QGroupBox(tr("点管理"), leftPanel);
+    auto pointBox = new QGroupBox(tr("点管理"), leftScrollWidget);
     pointBox->setObjectName(QStringLiteral("mapPointBox"));
     pointBox->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     auto pointLayout = new QVBoxLayout(pointBox);
@@ -1428,12 +1514,14 @@ void Map::initializeUi()
     auto pointForm = new QFormLayout();
     pointForm->setContentsMargins(0, 0, 0, 0);
     pointForm->setSpacing(4);
+    pointForm->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
 
     m_pointXSpin = new QDoubleSpinBox(pointBox);
     m_pointXSpin->setObjectName(QStringLiteral("mapPointXSpin"));
     m_pointXSpin->setRange(-10000.0, 10000.0);
     m_pointXSpin->setDecimals(3);
     m_pointXSpin->setSingleStep(0.1);
+    configureSpinField(m_pointXSpin);
     pointForm->addRow(tr("X (m)"), m_pointXSpin);
 
     m_pointYSpin = new QDoubleSpinBox(pointBox);
@@ -1441,6 +1529,7 @@ void Map::initializeUi()
     m_pointYSpin->setRange(-10000.0, 10000.0);
     m_pointYSpin->setDecimals(3);
     m_pointYSpin->setSingleStep(0.1);
+    configureSpinField(m_pointYSpin);
     pointForm->addRow(tr("Y (m)"), m_pointYSpin);
 
     m_pointThetaSpin = new QDoubleSpinBox(pointBox);
@@ -1448,29 +1537,38 @@ void Map::initializeUi()
     m_pointThetaSpin->setRange(-M_PI, M_PI);
     m_pointThetaSpin->setDecimals(4);
     m_pointThetaSpin->setSingleStep(0.1);
+    configureSpinField(m_pointThetaSpin);
     pointForm->addRow(tr("角度 (rad)"), m_pointThetaSpin);
 
     pointLayout->addLayout(pointForm);
 
-    auto pointButtonLayout = new QHBoxLayout();
-    pointButtonLayout->setSpacing(4);
+    auto pointButtonLayout = new QGridLayout();
+    pointButtonLayout->setContentsMargins(0, 0, 0, 0);
+    pointButtonLayout->setHorizontalSpacing(4);
+    pointButtonLayout->setVerticalSpacing(4);
 
     m_addPointFromInputButton = new QPushButton(tr("添加"), pointBox);
     m_addPointFromInputButton->setObjectName(QStringLiteral("mapAddPointButton"));
-    pointButtonLayout->addWidget(m_addPointFromInputButton);
+    m_addPointFromInputButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    pointButtonLayout->addWidget(m_addPointFromInputButton, 0, 0);
 
     m_addPointFromClickButton = new QPushButton(tr("点击添加"), pointBox);
     m_addPointFromClickButton->setObjectName(QStringLiteral("mapAddPointFromClickButton"));
     m_addPointFromClickButton->setCheckable(true);
-    pointButtonLayout->addWidget(m_addPointFromClickButton);
+    m_addPointFromClickButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    pointButtonLayout->addWidget(m_addPointFromClickButton, 0, 1);
 
     m_updatePointButton = new QPushButton(tr("更新"), pointBox);
     m_updatePointButton->setObjectName(QStringLiteral("mapUpdatePointButton"));
-    pointButtonLayout->addWidget(m_updatePointButton);
+    m_updatePointButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    pointButtonLayout->addWidget(m_updatePointButton, 1, 0);
 
     m_removePointButton = new QPushButton(tr("删除"), pointBox);
     m_removePointButton->setObjectName(QStringLiteral("mapRemovePointButton"));
-    pointButtonLayout->addWidget(m_removePointButton);
+    m_removePointButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    pointButtonLayout->addWidget(m_removePointButton, 1, 1);
+    pointButtonLayout->setColumnStretch(0, 1);
+    pointButtonLayout->setColumnStretch(1, 1);
 
     pointLayout->addLayout(pointButtonLayout);
 
@@ -1500,19 +1598,22 @@ void Map::initializeUi()
     m_pointTable->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     pointLayout->addWidget(m_pointTable);
 
-    leftLayout->addWidget(pointBox, 2);
+    leftScrollLayout->addWidget(pointBox, 2);
 
-    auto batchBox = new QGroupBox(tr("批量生成点"), leftPanel);
+    auto batchBox = new QGroupBox(tr("批量生成点"), leftScrollWidget);
     batchBox->setObjectName(QStringLiteral("mapBatchBox"));
     batchBox->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     auto batchLayout = new QFormLayout(batchBox);
     batchLayout->setContentsMargins(8, 8, 8, 8);
     batchLayout->setSpacing(6);
+    batchLayout->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
 
     m_batchBasePointCombo = new QComboBox(batchBox);
+    configureComboField(m_batchBasePointCombo);
     batchLayout->addRow(tr("基准点"), m_batchBasePointCombo);
 
     m_batchDirectionCombo = new QComboBox(batchBox);
+    configureComboField(m_batchDirectionCombo);
     m_batchDirectionCombo->addItem(tr("+X 方向 (向上)"));
     m_batchDirectionCombo->addItem(tr("-X 方向 (向下)"));
     m_batchDirectionCombo->addItem(tr("+Y 方向 (向右)"));
@@ -1522,6 +1623,7 @@ void Map::initializeUi()
     m_batchCountSpin = new QSpinBox(batchBox);
     m_batchCountSpin->setRange(1, 500);
     m_batchCountSpin->setValue(5);
+    configureSpinField(m_batchCountSpin);
     batchLayout->addRow(tr("数量"), m_batchCountSpin);
 
     m_batchSpacingSpin = new QDoubleSpinBox(batchBox);
@@ -1529,21 +1631,24 @@ void Map::initializeUi()
     m_batchSpacingSpin->setSingleStep(0.1);
     m_batchSpacingSpin->setDecimals(3);
     m_batchSpacingSpin->setValue(1.0);
+    configureSpinField(m_batchSpacingSpin);
     batchLayout->addRow(tr("间隔 (m)"), m_batchSpacingSpin);
 
     m_batchThetaSpin = new QDoubleSpinBox(batchBox);
     m_batchThetaSpin->setRange(-M_PI, M_PI);
     m_batchThetaSpin->setDecimals(4);
     m_batchThetaSpin->setSingleStep(0.1);
+    configureSpinField(m_batchThetaSpin);
     batchLayout->addRow(tr("方向角 (rad)"), m_batchThetaSpin);
 
     m_batchGenerateButton = new QPushButton(tr("生成"), batchBox);
     m_batchGenerateButton->setObjectName(QStringLiteral("mapBatchGenerateButton"));
+    m_batchGenerateButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     batchLayout->addRow(QString(), m_batchGenerateButton);
 
-    leftLayout->addWidget(batchBox);
+    leftScrollLayout->addWidget(batchBox);
 
-    auto pathBox = new QGroupBox(tr("路径管理"), leftPanel);
+    auto pathBox = new QGroupBox(tr("路径管理"), leftScrollWidget);
     pathBox->setObjectName(QStringLiteral("mapPathBox"));
     pathBox->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     auto pathLayout = new QVBoxLayout(pathBox);
@@ -1553,19 +1658,23 @@ void Map::initializeUi()
     auto pathForm = new QFormLayout();
     pathForm->setContentsMargins(0, 0, 0, 0);
     pathForm->setSpacing(4);
+    pathForm->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
 
     m_startPointCombo = new QComboBox(pathBox);
     m_startPointCombo->setObjectName(QStringLiteral("mapPathStartCombo"));
+    configureComboField(m_startPointCombo);
     pathForm->addRow(tr("起点"), m_startPointCombo);
 
     m_endPointCombo = new QComboBox(pathBox);
     m_endPointCombo->setObjectName(QStringLiteral("mapPathEndCombo"));
+    configureComboField(m_endPointCombo);
     pathForm->addRow(tr("终点"), m_endPointCombo);
 
     m_pathTypeCombo = new QComboBox(pathBox);
     m_pathTypeCombo->setObjectName(QStringLiteral("mapPathTypeCombo"));
     m_pathTypeCombo->addItem(tr("直线"));
     m_pathTypeCombo->addItem(tr("圆弧"));
+    configureComboField(m_pathTypeCombo, 90);
     pathForm->addRow(tr("类型"), m_pathTypeCombo);
 
     m_arcSagittaSpin = new QDoubleSpinBox(pathBox);
@@ -1574,6 +1683,7 @@ void Map::initializeUi()
     m_arcSagittaSpin->setDecimals(3);
     m_arcSagittaSpin->setSingleStep(0.1);
     m_arcSagittaSpin->setValue(1.0);
+    configureSpinField(m_arcSagittaSpin);
     pathForm->addRow(tr("弓高 (m)"), m_arcSagittaSpin);
 
     pathLayout->addLayout(pathForm);
@@ -1583,10 +1693,12 @@ void Map::initializeUi()
 
     m_addPathButton = new QPushButton(tr("添加"), pathBox);
     m_addPathButton->setObjectName(QStringLiteral("mapAddPathButton"));
+    m_addPathButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     pathButtonLayout->addWidget(m_addPathButton);
 
     m_removePathButton = new QPushButton(tr("删除"), pathBox);
     m_removePathButton->setObjectName(QStringLiteral("mapRemovePathButton"));
+    m_removePathButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     pathButtonLayout->addWidget(m_removePathButton);
 
     pathLayout->addLayout(pathButtonLayout);
@@ -1618,7 +1730,10 @@ void Map::initializeUi()
     m_pathTable->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     pathLayout->addWidget(m_pathTable);
 
-    leftLayout->addWidget(pathBox, 3);
+    leftScrollLayout->addWidget(pathBox, 3);
+    leftScrollLayout->addStretch();
+    leftScrollArea->setWidget(leftScrollWidget);
+    leftPanelLayout->addWidget(leftScrollArea, 1);
 
     mainSplitter->addWidget(leftPanel);
 
@@ -1634,13 +1749,13 @@ void Map::initializeUi()
 
     m_mapNameLabel = new QLabel(tr("未保存地图"), centerPanel);
     m_mapNameLabel->setObjectName(QStringLiteral("mapNameLabel"));
-    m_mapNameLabel->setMinimumWidth(160);
+    m_mapNameLabel->setMinimumWidth(90);
     topBar->addWidget(m_mapNameLabel);
 
     m_mousePositionLabel = new QLabel(tr("X: 0.000  Y: 0.000"), centerPanel);
     m_mousePositionLabel->setObjectName(QStringLiteral("mapMousePositionLabel"));
     m_mousePositionLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-    m_mousePositionLabel->setMinimumWidth(120);
+    m_mousePositionLabel->setMinimumWidth(90);
     topBar->addWidget(m_mousePositionLabel, 1);
 
     m_newMapButton = new QPushButton(tr("新建"), centerPanel);
@@ -1675,7 +1790,8 @@ void Map::initializeUi()
 
     m_view = new MapGraphicsView(centerPanel);
     m_view->setObjectName(QStringLiteral("mapGraphicsView"));
-    m_view->setMinimumSize(640, 480);
+    m_view->setMinimumSize(320, 240);
+    m_view->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     m_view->viewport()->setCursor(Qt::CrossCursor);
     m_view->viewport()->installEventFilter(this);
     centerLayout->addWidget(m_view, 1);
@@ -1695,47 +1811,53 @@ void Map::initializeUi()
     auto rightPanel = new QFrame(m_mapPage);
     rightPanel->setObjectName(QStringLiteral("mapRightPanel"));
     rightPanel->setFrameShape(QFrame::StyledPanel);
-    rightPanel->setMinimumWidth(260);
+    rightPanel->setMinimumWidth(300);
     auto rightLayout = new QVBoxLayout(rightPanel);
     rightLayout->setContentsMargins(8, 8, 8, 8);
     rightLayout->setSpacing(8);
 
-    auto routeBox = new QGroupBox(tr("路线发送"), rightPanel);
-    routeBox->setObjectName(QStringLiteral("mapRouteBox"));
-    auto routeLayout = new QVBoxLayout(routeBox);
+    auto taskTabWidget = new QTabWidget(rightPanel);
+    taskTabWidget->setObjectName(QStringLiteral("mapTaskTabWidget"));
+    taskTabWidget->setDocumentMode(true);
+    taskTabWidget->setElideMode(Qt::ElideNone);
+
+    auto routePage = new QWidget(taskTabWidget);
+    routePage->setObjectName(QStringLiteral("mapRouteTaskPage"));
+    auto routeLayout = new QVBoxLayout(routePage);
     routeLayout->setContentsMargins(8, 8, 8, 8);
-    routeLayout->setSpacing(6);
+    routeLayout->setSpacing(8);
 
     auto routeForm = new QFormLayout();
     routeForm->setContentsMargins(0, 0, 0, 0);
-    routeForm->setSpacing(4);
+    routeForm->setSpacing(6);
 
-    m_routeStartCombo = new QComboBox(routeBox);
+    m_routeStartCombo = new QComboBox(routePage);
     m_routeStartCombo->setObjectName(QStringLiteral("mapRouteStartCombo"));
     routeForm->addRow(tr("起点"), m_routeStartCombo);
 
-    m_routeEndCombo = new QComboBox(routeBox);
+    m_routeEndCombo = new QComboBox(routePage);
     m_routeEndCombo->setObjectName(QStringLiteral("mapRouteEndCombo"));
     routeForm->addRow(tr("终点"), m_routeEndCombo);
 
     routeLayout->addLayout(routeForm);
 
-    m_routeAddButton = new QPushButton(tr("添加路线"), routeBox);
+    m_routeAddButton = new QPushButton(tr("添加路线"), routePage);
     m_routeAddButton->setObjectName(QStringLiteral("mapRouteAddButton"));
     routeLayout->addWidget(m_routeAddButton);
 
-    m_routeQueueList = new QListWidget(routeBox);
+    m_routeQueueList = new QListWidget(routePage);
     m_routeQueueList->setObjectName(QStringLiteral("mapRouteQueueList"));
     m_routeQueueList->setSelectionMode(QAbstractItemView::SingleSelection);
     m_routeQueueList->setAlternatingRowColors(true);
+    m_routeQueueList->setMinimumHeight(220);
     routeLayout->addWidget(m_routeQueueList, 1);
 
     auto queueButtons = new QHBoxLayout();
     queueButtons->setSpacing(4);
-    m_routeRemoveButton = new QPushButton(tr("移除"), routeBox);
+    m_routeRemoveButton = new QPushButton(tr("移除"), routePage);
     m_routeRemoveButton->setObjectName(QStringLiteral("mapRouteRemoveButton"));
     queueButtons->addWidget(m_routeRemoveButton);
-    m_routeClearButton = new QPushButton(tr("清空"), routeBox);
+    m_routeClearButton = new QPushButton(tr("清空"), routePage);
     m_routeClearButton->setObjectName(QStringLiteral("mapRouteClearButton"));
     queueButtons->addWidget(m_routeClearButton);
     queueButtons->addStretch();
@@ -1743,26 +1865,26 @@ void Map::initializeUi()
 
     auto controlButtons = new QHBoxLayout();
     controlButtons->setSpacing(4);
-    m_routeStartButton = new QPushButton(tr("开始"), routeBox);
+    m_routeStartButton = new QPushButton(tr("开始"), routePage);
     m_routeStartButton->setObjectName(QStringLiteral("mapRouteStartButton"));
     controlButtons->addWidget(m_routeStartButton);
-    m_routePauseButton = new QPushButton(tr("暂停"), routeBox);
+    m_routePauseButton = new QPushButton(tr("暂停"), routePage);
     m_routePauseButton->setObjectName(QStringLiteral("mapRoutePauseButton"));
     controlButtons->addWidget(m_routePauseButton);
-    m_routeResumeButton = new QPushButton(tr("恢复"), routeBox);
+    m_routeResumeButton = new QPushButton(tr("恢复"), routePage);
     m_routeResumeButton->setObjectName(QStringLiteral("mapRouteResumeButton"));
     controlButtons->addWidget(m_routeResumeButton);
-    m_routeStopButton = new QPushButton(tr("停止"), routeBox);
+    m_routeStopButton = new QPushButton(tr("停止"), routePage);
     m_routeStopButton->setObjectName(QStringLiteral("mapRouteStopButton"));
     controlButtons->addWidget(m_routeStopButton);
     routeLayout->addLayout(controlButtons);
 
     auto loopLayout = new QHBoxLayout();
     loopLayout->setSpacing(4);
-    m_routeLoopCheck = new QCheckBox(tr("循环发送"), routeBox);
+    m_routeLoopCheck = new QCheckBox(tr("循环发送"), routePage);
     m_routeLoopCheck->setObjectName(QStringLiteral("mapRouteLoopCheck"));
     loopLayout->addWidget(m_routeLoopCheck);
-    m_routeLoopIntervalSpin = new QSpinBox(routeBox);
+    m_routeLoopIntervalSpin = new QSpinBox(routePage);
     m_routeLoopIntervalSpin->setObjectName(QStringLiteral("mapRouteLoopIntervalSpin"));
     m_routeLoopIntervalSpin->setRange(0, 3600);
     m_routeLoopIntervalSpin->setSuffix(tr(" 秒"));
@@ -1772,7 +1894,7 @@ void Map::initializeUi()
     loopLayout->addStretch();
     routeLayout->addLayout(loopLayout);
 
-    m_routeStatusLabel = new QLabel(tr("待命"), routeBox);
+    m_routeStatusLabel = new QLabel(tr("待命"), routePage);
     m_routeStatusLabel->setObjectName(QStringLiteral("mapRouteStatusLabel"));
     m_routeStatusLabel->setWordWrap(true);
     m_routeStatusLabel->setMinimumHeight(40);
@@ -1780,9 +1902,423 @@ void Map::initializeUi()
     statusPalette.setColor(QPalette::WindowText, QColor(55, 55, 55));
     m_routeStatusLabel->setPalette(statusPalette);
     routeLayout->addWidget(m_routeStatusLabel);
+    routeLayout->addStretch();
 
-    rightLayout->addWidget(routeBox, 1);
-    rightLayout->addStretch();
+    auto rowWorkPage = new QWidget(taskTabWidget);
+    rowWorkPage->setObjectName(QStringLiteral("mapRowWorkPage"));
+    auto rowWorkLayout = new QVBoxLayout(rowWorkPage);
+    rowWorkLayout->setContentsMargins(8, 8, 8, 8);
+    rowWorkLayout->setSpacing(8);
+
+    m_rowWorkModeTabWidget = new QTabWidget(rowWorkPage);
+    m_rowWorkModeTabWidget->setObjectName(QStringLiteral("mapRowWorkModeTabWidget"));
+    m_rowWorkModeTabWidget->setDocumentMode(true);
+    m_rowWorkModeTabWidget->setElideMode(Qt::ElideNone);
+
+    auto rowWorkPrimitiveScrollArea = new QScrollArea(m_rowWorkModeTabWidget);
+    rowWorkPrimitiveScrollArea->setObjectName(QStringLiteral("mapRowWorkPrimitiveScrollArea"));
+    rowWorkPrimitiveScrollArea->setWidgetResizable(true);
+    rowWorkPrimitiveScrollArea->setFrameShape(QFrame::NoFrame);
+
+    m_rowWorkPrimitivePage = new QWidget(rowWorkPrimitiveScrollArea);
+    m_rowWorkPrimitivePage->setObjectName(QStringLiteral("mapRowWorkPrimitivePage"));
+    auto primitiveLayout = new QVBoxLayout(m_rowWorkPrimitivePage);
+    primitiveLayout->setContentsMargins(8, 8, 8, 8);
+    primitiveLayout->setSpacing(8);
+
+    auto rowWorkTeachBox = new QGroupBox(tr("作业线示教"), m_rowWorkPrimitivePage);
+    rowWorkTeachBox->setObjectName(QStringLiteral("mapRowWorkTeachBox"));
+    auto rowWorkTeachLayout = new QFormLayout(rowWorkTeachBox);
+    rowWorkTeachLayout->setContentsMargins(8, 8, 8, 8);
+    rowWorkTeachLayout->setSpacing(6);
+
+    m_rowWorkStartLabel = new QLabel(tr("未记录"), rowWorkTeachBox);
+    m_rowWorkStartLabel->setObjectName(QStringLiteral("mapRowWorkStartLabel"));
+    rowWorkTeachLayout->addRow(tr("起点 A"), m_rowWorkStartLabel);
+
+    m_rowWorkEndLabel = new QLabel(tr("未记录"), rowWorkTeachBox);
+    m_rowWorkEndLabel->setObjectName(QStringLiteral("mapRowWorkEndLabel"));
+    rowWorkTeachLayout->addRow(tr("终点 B"), m_rowWorkEndLabel);
+
+    auto rowWorkTeachButtons = new QHBoxLayout();
+    rowWorkTeachButtons->setSpacing(4);
+    m_rowWorkCaptureStartButton = new QPushButton(tr("记录起点"), rowWorkTeachBox);
+    m_rowWorkCaptureStartButton->setObjectName(QStringLiteral("mapRowWorkCaptureStartButton"));
+    rowWorkTeachButtons->addWidget(m_rowWorkCaptureStartButton);
+    m_rowWorkCaptureEndButton = new QPushButton(tr("记录终点"), rowWorkTeachBox);
+    m_rowWorkCaptureEndButton->setObjectName(QStringLiteral("mapRowWorkCaptureEndButton"));
+    rowWorkTeachButtons->addWidget(m_rowWorkCaptureEndButton);
+    m_rowWorkClearLineButton = new QPushButton(tr("清除作业线"), rowWorkTeachBox);
+    m_rowWorkClearLineButton->setObjectName(QStringLiteral("mapRowWorkClearLineButton"));
+    rowWorkTeachButtons->addWidget(m_rowWorkClearLineButton);
+    rowWorkTeachLayout->addRow(QString(), rowWorkTeachButtons);
+
+    primitiveLayout->addWidget(rowWorkTeachBox);
+
+    auto rowWorkCheckpointBox = new QGroupBox(tr("中间点管理"), m_rowWorkPrimitivePage);
+    rowWorkCheckpointBox->setObjectName(QStringLiteral("mapRowWorkCheckpointBox"));
+    auto rowWorkCheckpointLayout = new QVBoxLayout(rowWorkCheckpointBox);
+    rowWorkCheckpointLayout->setContentsMargins(8, 8, 8, 8);
+    rowWorkCheckpointLayout->setSpacing(6);
+
+    auto rowWorkCheckpointButtons = new QHBoxLayout();
+    rowWorkCheckpointButtons->setSpacing(4);
+    m_rowWorkAddCheckpointFromVehicleButton = new QPushButton(tr("当前位置添加"), rowWorkCheckpointBox);
+    m_rowWorkAddCheckpointFromVehicleButton->setObjectName(QStringLiteral("mapRowWorkAddCheckpointFromVehicleButton"));
+    rowWorkCheckpointButtons->addWidget(m_rowWorkAddCheckpointFromVehicleButton);
+    m_rowWorkAddCheckpointFromMapButton = new QPushButton(tr("地图点击添加"), rowWorkCheckpointBox);
+    m_rowWorkAddCheckpointFromMapButton->setObjectName(QStringLiteral("mapRowWorkAddCheckpointFromMapButton"));
+    m_rowWorkAddCheckpointFromMapButton->setCheckable(true);
+    rowWorkCheckpointButtons->addWidget(m_rowWorkAddCheckpointFromMapButton);
+    rowWorkCheckpointLayout->addLayout(rowWorkCheckpointButtons);
+
+    auto rowWorkCheckpointButtons2 = new QHBoxLayout();
+    rowWorkCheckpointButtons2->setSpacing(4);
+    m_rowWorkDeleteCheckpointButton = new QPushButton(tr("删除中间点"), rowWorkCheckpointBox);
+    m_rowWorkDeleteCheckpointButton->setObjectName(QStringLiteral("mapRowWorkDeleteCheckpointButton"));
+    rowWorkCheckpointButtons2->addWidget(m_rowWorkDeleteCheckpointButton);
+    m_rowWorkClearCheckpointsButton = new QPushButton(tr("清空中间点"), rowWorkCheckpointBox);
+    m_rowWorkClearCheckpointsButton->setObjectName(QStringLiteral("mapRowWorkClearCheckpointsButton"));
+    rowWorkCheckpointButtons2->addWidget(m_rowWorkClearCheckpointsButton);
+    rowWorkCheckpointLayout->addLayout(rowWorkCheckpointButtons2);
+
+    m_rowWorkCheckpointTable = new QTableWidget(rowWorkCheckpointBox);
+    m_rowWorkCheckpointTable->setObjectName(QStringLiteral("mapRowWorkCheckpointTable"));
+    m_rowWorkCheckpointTable->setColumnCount(5);
+    m_rowWorkCheckpointTable->setHorizontalHeaderLabels(
+        {tr("名称"), tr("距起点(m)"), tr("停留(ms)"), tr("正向"), tr("反向")});
+    m_rowWorkCheckpointTable->horizontalHeader()->setDefaultAlignment(Qt::AlignCenter);
+    m_rowWorkCheckpointTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    m_rowWorkCheckpointTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    m_rowWorkCheckpointTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    m_rowWorkCheckpointTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    m_rowWorkCheckpointTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+    m_rowWorkCheckpointTable->verticalHeader()->setVisible(false);
+    m_rowWorkCheckpointTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_rowWorkCheckpointTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_rowWorkCheckpointTable->setAlternatingRowColors(true);
+    m_rowWorkCheckpointTable->setMinimumHeight(180);
+    rowWorkCheckpointLayout->addWidget(m_rowWorkCheckpointTable);
+
+    primitiveLayout->addWidget(rowWorkCheckpointBox);
+
+    auto rowWorkParamsBox = new QGroupBox(tr("作业参数"), m_rowWorkPrimitivePage);
+    rowWorkParamsBox->setObjectName(QStringLiteral("mapRowWorkParamsBox"));
+    auto rowWorkParamsLayout = new QFormLayout(rowWorkParamsBox);
+    rowWorkParamsLayout->setContentsMargins(8, 8, 8, 8);
+    rowWorkParamsLayout->setSpacing(6);
+
+    m_rowWorkBaseSpeedSpin = new QDoubleSpinBox(rowWorkParamsBox);
+    m_rowWorkBaseSpeedSpin->setObjectName(QStringLiteral("mapRowWorkBaseSpeedSpin"));
+    m_rowWorkBaseSpeedSpin->setRange(0.01, 5.0);
+    m_rowWorkBaseSpeedSpin->setDecimals(3);
+    m_rowWorkBaseSpeedSpin->setSingleStep(0.01);
+    rowWorkParamsLayout->addRow(tr("基础速度(m/s)"), m_rowWorkBaseSpeedSpin);
+
+    m_rowWorkMaxSpeedSpin = new QDoubleSpinBox(rowWorkParamsBox);
+    m_rowWorkMaxSpeedSpin->setObjectName(QStringLiteral("mapRowWorkMaxSpeedSpin"));
+    m_rowWorkMaxSpeedSpin->setRange(0.01, 5.0);
+    m_rowWorkMaxSpeedSpin->setDecimals(3);
+    m_rowWorkMaxSpeedSpin->setSingleStep(0.01);
+    rowWorkParamsLayout->addRow(tr("最大速度(m/s)"), m_rowWorkMaxSpeedSpin);
+
+    m_rowWorkEndpointSlowdownSpin = new QDoubleSpinBox(rowWorkParamsBox);
+    m_rowWorkEndpointSlowdownSpin->setObjectName(QStringLiteral("mapRowWorkEndpointSlowdownSpin"));
+    m_rowWorkEndpointSlowdownSpin->setRange(0.1, 20.0);
+    m_rowWorkEndpointSlowdownSpin->setDecimals(2);
+    m_rowWorkEndpointSlowdownSpin->setSingleStep(0.1);
+    rowWorkParamsLayout->addRow(tr("端点减速距离(m)"), m_rowWorkEndpointSlowdownSpin);
+
+    m_rowWorkEndpointArrivalSpin = new QDoubleSpinBox(rowWorkParamsBox);
+    m_rowWorkEndpointArrivalSpin->setObjectName(QStringLiteral("mapRowWorkEndpointArrivalSpin"));
+    m_rowWorkEndpointArrivalSpin->setRange(0.05, 5.0);
+    m_rowWorkEndpointArrivalSpin->setDecimals(2);
+    m_rowWorkEndpointArrivalSpin->setSingleStep(0.01);
+    rowWorkParamsLayout->addRow(tr("端点到达阈值(m)"), m_rowWorkEndpointArrivalSpin);
+
+    m_rowWorkCheckpointToleranceSpin = new QDoubleSpinBox(rowWorkParamsBox);
+    m_rowWorkCheckpointToleranceSpin->setObjectName(QStringLiteral("mapRowWorkCheckpointToleranceSpin"));
+    m_rowWorkCheckpointToleranceSpin->setRange(0.01, 5.0);
+    m_rowWorkCheckpointToleranceSpin->setDecimals(2);
+    m_rowWorkCheckpointToleranceSpin->setSingleStep(0.01);
+    rowWorkParamsLayout->addRow(tr("中间点阈值(m)"), m_rowWorkCheckpointToleranceSpin);
+
+    m_rowWorkTurnAngularSpeedSpin = new QDoubleSpinBox(rowWorkParamsBox);
+    m_rowWorkTurnAngularSpeedSpin->setObjectName(QStringLiteral("mapRowWorkTurnAngularSpeedSpin"));
+    m_rowWorkTurnAngularSpeedSpin->setRange(0.05, 5.0);
+    m_rowWorkTurnAngularSpeedSpin->setDecimals(2);
+    m_rowWorkTurnAngularSpeedSpin->setSingleStep(0.01);
+    rowWorkParamsLayout->addRow(tr("掉头角速度(rad/s)"), m_rowWorkTurnAngularSpeedSpin);
+
+    m_rowWorkLoopCheck = new QCheckBox(tr("循环往返"), rowWorkParamsBox);
+    m_rowWorkLoopCheck->setObjectName(QStringLiteral("mapRowWorkLoopCheck"));
+    rowWorkParamsLayout->addRow(QString(), m_rowWorkLoopCheck);
+
+    primitiveLayout->addWidget(rowWorkParamsBox);
+
+    auto rowWorkControlBox = new QGroupBox(tr("作业控制"), m_rowWorkPrimitivePage);
+    rowWorkControlBox->setObjectName(QStringLiteral("mapRowWorkControlBox"));
+    auto rowWorkControlLayout = new QVBoxLayout(rowWorkControlBox);
+    rowWorkControlLayout->setContentsMargins(8, 8, 8, 8);
+    rowWorkControlLayout->setSpacing(6);
+
+    auto rowWorkControlButtons1 = new QHBoxLayout();
+    rowWorkControlButtons1->setSpacing(4);
+    m_rowWorkReadPlanButton = new QPushButton(tr("回读计划"), rowWorkControlBox);
+    m_rowWorkReadPlanButton->setObjectName(QStringLiteral("mapRowWorkReadPlanButton"));
+    rowWorkControlButtons1->addWidget(m_rowWorkReadPlanButton);
+    m_rowWorkUploadPlanButton = new QPushButton(tr("下发计划"), rowWorkControlBox);
+    m_rowWorkUploadPlanButton->setObjectName(QStringLiteral("mapRowWorkUploadPlanButton"));
+    rowWorkControlButtons1->addWidget(m_rowWorkUploadPlanButton);
+    m_rowWorkStartButton = new QPushButton(tr("开始作业"), rowWorkControlBox);
+    m_rowWorkStartButton->setObjectName(QStringLiteral("mapRowWorkStartButton"));
+    rowWorkControlButtons1->addWidget(m_rowWorkStartButton);
+    rowWorkControlLayout->addLayout(rowWorkControlButtons1);
+
+    auto rowWorkControlButtons2 = new QHBoxLayout();
+    rowWorkControlButtons2->setSpacing(4);
+    m_rowWorkPauseButton = new QPushButton(tr("暂停"), rowWorkControlBox);
+    m_rowWorkPauseButton->setObjectName(QStringLiteral("mapRowWorkPauseButton"));
+    rowWorkControlButtons2->addWidget(m_rowWorkPauseButton);
+    m_rowWorkResumeButton = new QPushButton(tr("恢复"), rowWorkControlBox);
+    m_rowWorkResumeButton->setObjectName(QStringLiteral("mapRowWorkResumeButton"));
+    rowWorkControlButtons2->addWidget(m_rowWorkResumeButton);
+    m_rowWorkStopButton = new QPushButton(tr("停止"), rowWorkControlBox);
+    m_rowWorkStopButton->setObjectName(QStringLiteral("mapRowWorkStopButton"));
+    rowWorkControlButtons2->addWidget(m_rowWorkStopButton);
+    rowWorkControlLayout->addLayout(rowWorkControlButtons2);
+
+    primitiveLayout->addWidget(rowWorkControlBox);
+
+    auto rowWorkStatusBox = new QGroupBox(tr("作业状态"), m_rowWorkPrimitivePage);
+    rowWorkStatusBox->setObjectName(QStringLiteral("mapRowWorkStatusBox"));
+    auto rowWorkStatusLayout = new QVBoxLayout(rowWorkStatusBox);
+    rowWorkStatusLayout->setContentsMargins(8, 8, 8, 8);
+    rowWorkStatusLayout->setSpacing(6);
+
+    m_rowWorkPlanLabel = new QLabel(tr("计划：未配置"), rowWorkStatusBox);
+    m_rowWorkPlanLabel->setObjectName(QStringLiteral("mapRowWorkPlanLabel"));
+    m_rowWorkPlanLabel->setWordWrap(true);
+    rowWorkStatusLayout->addWidget(m_rowWorkPlanLabel);
+
+    m_rowWorkRuntimeLabel = new QLabel(tr("运行：等待工控机状态"), rowWorkStatusBox);
+    m_rowWorkRuntimeLabel->setObjectName(QStringLiteral("mapRowWorkRuntimeLabel"));
+    m_rowWorkRuntimeLabel->setWordWrap(true);
+    rowWorkStatusLayout->addWidget(m_rowWorkRuntimeLabel);
+
+    m_rowWorkProgressLabel = new QLabel(tr("进度：-"), rowWorkStatusBox);
+    m_rowWorkProgressLabel->setObjectName(QStringLiteral("mapRowWorkProgressLabel"));
+    m_rowWorkProgressLabel->setWordWrap(true);
+    rowWorkStatusLayout->addWidget(m_rowWorkProgressLabel);
+
+    m_rowWorkTargetLabel = new QLabel(tr("目标：-"), rowWorkStatusBox);
+    m_rowWorkTargetLabel->setObjectName(QStringLiteral("mapRowWorkTargetLabel"));
+    m_rowWorkTargetLabel->setWordWrap(true);
+    rowWorkStatusLayout->addWidget(m_rowWorkTargetLabel);
+
+    m_rowWorkControlLabel = new QLabel(tr("控制权：-"), rowWorkStatusBox);
+    m_rowWorkControlLabel->setObjectName(QStringLiteral("mapRowWorkControlLabel"));
+    m_rowWorkControlLabel->setWordWrap(true);
+    rowWorkStatusLayout->addWidget(m_rowWorkControlLabel);
+
+    m_rowWorkPoseLabel = new QLabel(tr("位姿：等待工控机状态"), rowWorkStatusBox);
+    m_rowWorkPoseLabel->setObjectName(QStringLiteral("mapRowWorkPoseLabel"));
+    m_rowWorkPoseLabel->setWordWrap(true);
+    rowWorkStatusLayout->addWidget(m_rowWorkPoseLabel);
+
+    m_rowWorkFaultLabel = new QLabel(tr("故障：无"), rowWorkStatusBox);
+    m_rowWorkFaultLabel->setObjectName(QStringLiteral("mapRowWorkFaultLabel"));
+    m_rowWorkFaultLabel->setWordWrap(true);
+    rowWorkStatusLayout->addWidget(m_rowWorkFaultLabel);
+
+    m_rowWorkEventLabel = new QLabel(tr("最近事件：-"), rowWorkStatusBox);
+    m_rowWorkEventLabel->setObjectName(QStringLiteral("mapRowWorkEventLabel"));
+    m_rowWorkEventLabel->setWordWrap(true);
+    rowWorkStatusLayout->addWidget(m_rowWorkEventLabel);
+
+    m_rowWorkStatusLabel = new QLabel(tr("待命"), rowWorkStatusBox);
+    m_rowWorkStatusLabel->setObjectName(QStringLiteral("mapRowWorkStatusLabel"));
+    m_rowWorkStatusLabel->setWordWrap(true);
+    m_rowWorkStatusLabel->setMinimumHeight(40);
+    QPalette rowWorkStatusPalette = m_rowWorkStatusLabel->palette();
+    rowWorkStatusPalette.setColor(QPalette::WindowText, QColor(55, 55, 55));
+    m_rowWorkStatusLabel->setPalette(rowWorkStatusPalette);
+    rowWorkStatusLayout->addWidget(m_rowWorkStatusLabel);
+
+    primitiveLayout->addWidget(rowWorkStatusBox);
+    primitiveLayout->addStretch();
+
+    rowWorkPrimitiveScrollArea->setWidget(m_rowWorkPrimitivePage);
+    m_rowWorkModeTabWidget->addTab(rowWorkPrimitiveScrollArea, tr("单垄原语"));
+
+    auto rowWorkMissionScrollArea = new QScrollArea(m_rowWorkModeTabWidget);
+    rowWorkMissionScrollArea->setObjectName(QStringLiteral("mapRowWorkMissionScrollArea"));
+    rowWorkMissionScrollArea->setWidgetResizable(true);
+    rowWorkMissionScrollArea->setFrameShape(QFrame::NoFrame);
+
+    m_rowWorkMissionPage = new QWidget(rowWorkMissionScrollArea);
+    m_rowWorkMissionPage->setObjectName(QStringLiteral("mapRowWorkMissionPage"));
+    auto missionLayout = new QVBoxLayout(m_rowWorkMissionPage);
+    missionLayout->setContentsMargins(8, 8, 8, 8);
+    missionLayout->setSpacing(8);
+
+    auto missionMetaBox = new QGroupBox(tr("多垄任务概览"), m_rowWorkMissionPage);
+    missionMetaBox->setObjectName(QStringLiteral("mapRowMissionMetaBox"));
+    auto missionMetaLayout = new QFormLayout(missionMetaBox);
+    missionMetaLayout->setContentsMargins(8, 8, 8, 8);
+    missionMetaLayout->setSpacing(6);
+
+    m_rowMissionIdLabel = new QLabel(tr("任务 ID：-"), missionMetaBox);
+    m_rowMissionIdLabel->setObjectName(QStringLiteral("mapRowMissionIdLabel"));
+    m_rowMissionIdLabel->setWordWrap(true);
+    missionMetaLayout->addRow(tr("任务标识"), m_rowMissionIdLabel);
+
+    m_rowMissionNameEdit = new QLineEdit(missionMetaBox);
+    m_rowMissionNameEdit->setObjectName(QStringLiteral("mapRowMissionNameEdit"));
+    missionMetaLayout->addRow(tr("任务名称"), m_rowMissionNameEdit);
+
+    m_rowMissionLoopCheck = new QCheckBox(tr("循环执行整套任务"), missionMetaBox);
+    m_rowMissionLoopCheck->setObjectName(QStringLiteral("mapRowMissionLoopCheck"));
+    missionMetaLayout->addRow(QString(), m_rowMissionLoopCheck);
+
+    m_rowMissionSummaryLabel = new QLabel(tr("步骤：-"), missionMetaBox);
+    m_rowMissionSummaryLabel->setObjectName(QStringLiteral("mapRowMissionSummaryLabel"));
+    m_rowMissionSummaryLabel->setWordWrap(true);
+    missionMetaLayout->addRow(tr("概览"), m_rowMissionSummaryLabel);
+
+    missionLayout->addWidget(missionMetaBox);
+
+    auto missionActionBox = new QGroupBox(tr("任务步骤"), m_rowWorkMissionPage);
+    missionActionBox->setObjectName(QStringLiteral("mapRowMissionActionBox"));
+    auto missionActionLayout = new QVBoxLayout(missionActionBox);
+    missionActionLayout->setContentsMargins(8, 8, 8, 8);
+    missionActionLayout->setSpacing(6);
+
+    auto missionAddButtons1 = new QHBoxLayout();
+    missionAddButtons1->setSpacing(4);
+    m_rowMissionAddRowLegButton = new QPushButton(tr("添加垄内段"), missionActionBox);
+    m_rowMissionAddRowLegButton->setObjectName(QStringLiteral("mapRowMissionAddRowLegButton"));
+    missionAddButtons1->addWidget(m_rowMissionAddRowLegButton);
+    m_rowMissionAddTransferButton = new QPushButton(tr("添加转场段"), missionActionBox);
+    m_rowMissionAddTransferButton->setObjectName(QStringLiteral("mapRowMissionAddTransferButton"));
+    missionAddButtons1->addWidget(m_rowMissionAddTransferButton);
+    m_rowMissionAddTurnButton = new QPushButton(tr("添加掉头"), missionActionBox);
+    m_rowMissionAddTurnButton->setObjectName(QStringLiteral("mapRowMissionAddTurnButton"));
+    missionAddButtons1->addWidget(m_rowMissionAddTurnButton);
+    missionActionLayout->addLayout(missionAddButtons1);
+
+    auto missionAddButtons2 = new QHBoxLayout();
+    missionAddButtons2->setSpacing(4);
+    m_rowMissionAddWaitButton = new QPushButton(tr("添加停留"), missionActionBox);
+    m_rowMissionAddWaitButton->setObjectName(QStringLiteral("mapRowMissionAddWaitButton"));
+    missionAddButtons2->addWidget(m_rowMissionAddWaitButton);
+    m_rowMissionImportRowWorkButton = new QPushButton(tr("从当前单垄导入"), missionActionBox);
+    m_rowMissionImportRowWorkButton->setObjectName(QStringLiteral("mapRowMissionImportRowWorkButton"));
+    missionAddButtons2->addWidget(m_rowMissionImportRowWorkButton);
+    missionAddButtons2->addStretch();
+    missionActionLayout->addLayout(missionAddButtons2);
+
+    m_rowMissionStepTable = new QTableWidget(missionActionBox);
+    m_rowMissionStepTable->setObjectName(QStringLiteral("mapRowMissionStepTable"));
+    m_rowMissionStepTable->setColumnCount(4);
+    m_rowMissionStepTable->setHorizontalHeaderLabels(
+        {tr("启用"), tr("名称"), tr("类型"), tr("摘要")});
+    m_rowMissionStepTable->horizontalHeader()->setDefaultAlignment(Qt::AlignCenter);
+    m_rowMissionStepTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    m_rowMissionStepTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    m_rowMissionStepTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    m_rowMissionStepTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
+    m_rowMissionStepTable->verticalHeader()->setVisible(false);
+    m_rowMissionStepTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_rowMissionStepTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_rowMissionStepTable->setAlternatingRowColors(true);
+    m_rowMissionStepTable->setMinimumHeight(220);
+    missionActionLayout->addWidget(m_rowMissionStepTable);
+
+    auto missionStepButtons = new QHBoxLayout();
+    missionStepButtons->setSpacing(4);
+    m_rowMissionRemoveStepButton = new QPushButton(tr("删除步骤"), missionActionBox);
+    m_rowMissionRemoveStepButton->setObjectName(QStringLiteral("mapRowMissionRemoveStepButton"));
+    missionStepButtons->addWidget(m_rowMissionRemoveStepButton);
+    m_rowMissionMoveUpButton = new QPushButton(tr("上移"), missionActionBox);
+    m_rowMissionMoveUpButton->setObjectName(QStringLiteral("mapRowMissionMoveUpButton"));
+    missionStepButtons->addWidget(m_rowMissionMoveUpButton);
+    m_rowMissionMoveDownButton = new QPushButton(tr("下移"), missionActionBox);
+    m_rowMissionMoveDownButton->setObjectName(QStringLiteral("mapRowMissionMoveDownButton"));
+    missionStepButtons->addWidget(m_rowMissionMoveDownButton);
+    m_rowMissionClearButton = new QPushButton(tr("清空步骤"), missionActionBox);
+    m_rowMissionClearButton->setObjectName(QStringLiteral("mapRowMissionClearButton"));
+    missionStepButtons->addWidget(m_rowMissionClearButton);
+    missionActionLayout->addLayout(missionStepButtons);
+
+    missionLayout->addWidget(missionActionBox);
+
+    auto missionEditorBox = new QGroupBox(tr("步骤编辑器"), m_rowWorkMissionPage);
+    missionEditorBox->setObjectName(QStringLiteral("mapRowMissionEditorBox"));
+    auto missionEditorLayout = new QFormLayout(missionEditorBox);
+    missionEditorLayout->setContentsMargins(8, 8, 8, 8);
+    missionEditorLayout->setSpacing(6);
+
+    m_rowMissionStepTypeCombo = new QComboBox(missionEditorBox);
+    m_rowMissionStepTypeCombo->setObjectName(QStringLiteral("mapRowMissionStepTypeCombo"));
+    m_rowMissionStepTypeCombo->addItem(tr("垄内段"), static_cast<int>(RowMissionStepType::RowLeg));
+    m_rowMissionStepTypeCombo->addItem(tr("转场段"), static_cast<int>(RowMissionStepType::Transfer));
+    m_rowMissionStepTypeCombo->addItem(tr("掉头"), static_cast<int>(RowMissionStepType::Turn));
+    m_rowMissionStepTypeCombo->addItem(tr("停留"), static_cast<int>(RowMissionStepType::Wait));
+    missionEditorLayout->addRow(tr("步骤类型"), m_rowMissionStepTypeCombo);
+
+    m_rowMissionStepNameEdit = new QLineEdit(missionEditorBox);
+    m_rowMissionStepNameEdit->setObjectName(QStringLiteral("mapRowMissionStepNameEdit"));
+    missionEditorLayout->addRow(tr("步骤名称"), m_rowMissionStepNameEdit);
+
+    m_rowMissionStepNoteEdit = new QLineEdit(missionEditorBox);
+    m_rowMissionStepNoteEdit->setObjectName(QStringLiteral("mapRowMissionStepNoteEdit"));
+    missionEditorLayout->addRow(tr("备注"), m_rowMissionStepNoteEdit);
+
+    m_rowMissionPrimitiveSummaryLabel = new QLabel(tr("原语：-"), missionEditorBox);
+    m_rowMissionPrimitiveSummaryLabel->setObjectName(QStringLiteral("mapRowMissionPrimitiveSummaryLabel"));
+    m_rowMissionPrimitiveSummaryLabel->setWordWrap(true);
+    missionEditorLayout->addRow(tr("原语概览"), m_rowMissionPrimitiveSummaryLabel);
+
+    m_rowMissionTargetYawSpin = new QDoubleSpinBox(missionEditorBox);
+    m_rowMissionTargetYawSpin->setObjectName(QStringLiteral("mapRowMissionTargetYawSpin"));
+    m_rowMissionTargetYawSpin->setRange(-360.0, 360.0);
+    m_rowMissionTargetYawSpin->setDecimals(1);
+    m_rowMissionTargetYawSpin->setSingleStep(1.0);
+    m_rowMissionTargetYawSpin->setSuffix(tr("°"));
+    missionEditorLayout->addRow(tr("目标航向"), m_rowMissionTargetYawSpin);
+
+    m_rowMissionDwellSpin = new QSpinBox(missionEditorBox);
+    m_rowMissionDwellSpin->setObjectName(QStringLiteral("mapRowMissionDwellSpin"));
+    m_rowMissionDwellSpin->setRange(0, 3600000);
+    m_rowMissionDwellSpin->setSingleStep(100);
+    m_rowMissionDwellSpin->setSuffix(tr(" ms"));
+    missionEditorLayout->addRow(tr("停留时间"), m_rowMissionDwellSpin);
+
+    m_rowMissionApplyStepButton = new QPushButton(tr("应用步骤修改"), missionEditorBox);
+    m_rowMissionApplyStepButton->setObjectName(QStringLiteral("mapRowMissionApplyStepButton"));
+    missionEditorLayout->addRow(QString(), m_rowMissionApplyStepButton);
+
+    missionLayout->addWidget(missionEditorBox);
+
+    m_rowMissionStatusLabel = new QLabel(tr("待命"), m_rowWorkMissionPage);
+    m_rowMissionStatusLabel->setObjectName(QStringLiteral("mapRowMissionStatusLabel"));
+    m_rowMissionStatusLabel->setWordWrap(true);
+    m_rowMissionStatusLabel->setMinimumHeight(40);
+    QPalette missionStatusPalette = m_rowMissionStatusLabel->palette();
+    missionStatusPalette.setColor(QPalette::WindowText, QColor(55, 55, 55));
+    m_rowMissionStatusLabel->setPalette(missionStatusPalette);
+    missionLayout->addWidget(m_rowMissionStatusLabel);
+    missionLayout->addStretch();
+
+    rowWorkMissionScrollArea->setWidget(m_rowWorkMissionPage);
+    m_rowWorkModeTabWidget->addTab(rowWorkMissionScrollArea, tr("多垄任务"));
+
+    rowWorkLayout->addWidget(m_rowWorkModeTabWidget, 1);
+
+    taskTabWidget->addTab(routePage, tr("常规任务"));
+    taskTabWidget->addTab(rowWorkPage, tr("直线作业"));
+    rightLayout->addWidget(taskTabWidget, 1);
 
     mainSplitter->addWidget(rightPanel);
 
@@ -1791,6 +2327,7 @@ void Map::initializeUi()
     mainSplitter->setStretchFactor(2, 0);
     mainSplitter->setCollapsible(0, true);
     mainSplitter->setCollapsible(2, true);
+    mainSplitter->setSizes({280, 1100, 340});
     connect(m_buildGridButton, &QPushButton::clicked, this, &Map::handleGenerateMap);
     connect(m_addPointFromInputButton, &QPushButton::clicked, this, &Map::handleAddPointFromInput);
     connect(m_addPointFromClickButton, &QPushButton::clicked, this, &Map::handleAddPointFromClickRequested);
@@ -1832,6 +2369,42 @@ void Map::initializeUi()
         connect(m_gridRotationSpin, static_cast<void (QDoubleSpinBox::*)(double)>(&QDoubleSpinBox::valueChanged),
                 this, &Map::handleRotationSpinChanged);
     }
+    connect(m_rowWorkCaptureStartButton, &QPushButton::clicked, this, &Map::handleRowWorkCaptureStartPoint);
+    connect(m_rowWorkCaptureEndButton, &QPushButton::clicked, this, &Map::handleRowWorkCaptureEndPoint);
+    connect(m_rowWorkClearLineButton, &QPushButton::clicked, this, &Map::handleRowWorkClearPlan);
+    connect(m_rowWorkAddCheckpointFromVehicleButton, &QPushButton::clicked, this, &Map::handleRowWorkAddCheckpointFromVehicle);
+    connect(m_rowWorkAddCheckpointFromMapButton, &QPushButton::clicked, this, &Map::handleRowWorkAddCheckpointFromMap);
+    connect(m_rowWorkDeleteCheckpointButton, &QPushButton::clicked, this, &Map::handleRowWorkDeleteCheckpoint);
+    connect(m_rowWorkClearCheckpointsButton, &QPushButton::clicked, this, &Map::handleRowWorkClearCheckpoints);
+    connect(m_rowWorkReadPlanButton, &QPushButton::clicked, this, &Map::handleRowWorkReadPlan);
+    connect(m_rowWorkUploadPlanButton, &QPushButton::clicked, this, &Map::handleRowWorkUploadPlan);
+    connect(m_rowWorkStartButton, &QPushButton::clicked, this, &Map::handleRowWorkStart);
+    connect(m_rowWorkPauseButton, &QPushButton::clicked, this, &Map::handleRowWorkPause);
+    connect(m_rowWorkResumeButton, &QPushButton::clicked, this, &Map::handleRowWorkResume);
+    connect(m_rowWorkStopButton, &QPushButton::clicked, this, &Map::handleRowWorkStop);
+    connect(m_rowWorkLoopCheck, &QCheckBox::toggled, this, &Map::handleRowWorkLoopChanged);
+    connect(m_rowWorkCheckpointTable, &QTableWidget::cellChanged, this, &Map::handleRowWorkCheckpointCellChanged);
+    connect(m_rowMissionNameEdit, &QLineEdit::editingFinished, this, &Map::handleRowMissionNameEdited);
+    connect(m_rowMissionLoopCheck, &QCheckBox::toggled, this, &Map::handleRowMissionLoopChanged);
+    connect(m_rowMissionStepTable, &QTableWidget::itemSelectionChanged, this, &Map::handleRowMissionStepSelectionChanged);
+    connect(m_rowMissionStepTable, &QTableWidget::cellChanged, this, &Map::handleRowMissionStepCellChanged);
+    connect(m_rowMissionStepTypeCombo, &QComboBox::currentIndexChanged, this, &Map::handleRowMissionTypeChanged);
+    connect(m_rowMissionStepNameEdit, &QLineEdit::editingFinished, this, &Map::handleRowMissionStepNameEdited);
+    connect(m_rowMissionStepNoteEdit, &QLineEdit::editingFinished, this, &Map::handleRowMissionStepNoteEdited);
+    connect(m_rowMissionTargetYawSpin, static_cast<void (QDoubleSpinBox::*)(double)>(&QDoubleSpinBox::valueChanged),
+            this, &Map::handleRowMissionTargetYawChanged);
+    connect(m_rowMissionDwellSpin, static_cast<void (QSpinBox::*)(int)>(&QSpinBox::valueChanged),
+            this, &Map::handleRowMissionDwellChanged);
+    connect(m_rowMissionAddRowLegButton, &QPushButton::clicked, this, &Map::handleRowMissionAddRowLegStep);
+    connect(m_rowMissionAddTransferButton, &QPushButton::clicked, this, &Map::handleRowMissionAddTransferStep);
+    connect(m_rowMissionAddTurnButton, &QPushButton::clicked, this, &Map::handleRowMissionAddTurnStep);
+    connect(m_rowMissionAddWaitButton, &QPushButton::clicked, this, &Map::handleRowMissionAddWaitStep);
+    connect(m_rowMissionRemoveStepButton, &QPushButton::clicked, this, &Map::handleRowMissionRemoveStep);
+    connect(m_rowMissionMoveUpButton, &QPushButton::clicked, this, &Map::handleRowMissionMoveStepUp);
+    connect(m_rowMissionMoveDownButton, &QPushButton::clicked, this, &Map::handleRowMissionMoveStepDown);
+    connect(m_rowMissionClearButton, &QPushButton::clicked, this, &Map::handleRowMissionClearSteps);
+    connect(m_rowMissionImportRowWorkButton, &QPushButton::clicked, this, &Map::handleRowMissionImportCurrentRowWork);
+    connect(m_rowMissionApplyStepButton, &QPushButton::clicked, this, &Map::handleRowMissionApplyStepEdits);
 
     handleEditModeToggled(m_editModeButton && m_editModeButton->isChecked());
 
@@ -1840,6 +2413,8 @@ void Map::initializeUi()
     }
     m_routeTimer->setSingleShot(true);
     connect(m_routeTimer, &QTimer::timeout, this, &Map::handleRouteTimerTick);
+
+    refreshRowWorkUi();
 }
 void Map::ensureScene()
 {
@@ -3196,15 +3771,34 @@ void Map::resetToBlankMap()
     setMapRotation(0.0);
 
     m_waitingForClickPlacement = false;
+    m_rowWorkClickPlacementMode = false;
+    m_rowWorkPendingCaptureTarget = RowWorkPendingCaptureTarget::None;
     m_pendingPointSelection.reset();
     if (m_addPointFromClickButton) {
         QSignalBlocker blocker(m_addPointFromClickButton);
         m_addPointFromClickButton->setChecked(false);
     }
+    if (m_rowWorkAddCheckpointFromMapButton) {
+        QSignalBlocker blocker(m_rowWorkAddCheckpointFromMapButton);
+        m_rowWorkAddCheckpointFromMapButton->setChecked(false);
+    }
+
+    m_rowWorkPlan = RowWorkPlan{};
+    m_rowWorkPlan.planId = RowWorkJson::generatePlanId();
+    m_rowWorkPlan.frameId = QStringLiteral("map");
+    m_rowWorkPlan.params.loopEnabled = true;
+    m_rowMissionPlan = RowMissionPlan{};
+    m_rowMissionPlan.missionId = RowMissionJson::generateMissionId();
+    m_rowMissionPlan.frameId = QStringLiteral("map");
+    m_hasRowWorkStatus = false;
+    m_rowWorkStatus = RowWorkStatus{};
+    m_rowWorkStatusDirty = true;
+    m_rowWorkPendingStartAfterUpload = false;
 
     applyPresentationUpdates(true);
     updateMapNameDisplay();
     updateVehiclePointBinding();
+    refreshRowWorkUi();
     syncCommittedMapState();
     setRouteStatusText(tr("已新建空白地图"));
 }
@@ -3282,6 +3876,14 @@ QByteArray Map::buildComparableMapState() const
     }
     root.insert(QStringLiteral("paths"), pathsArray);
 
+    if (m_rowWorkPlan.isValid() || !m_rowWorkPlan.checkpoints.isEmpty()) {
+        root.insert(QStringLiteral("rowWork"), RowWorkJson::planToJson(m_rowWorkPlan));
+    }
+
+    if (m_rowMissionPlan.isValid()) {
+        root.insert(QStringLiteral("rowMission"), RowMissionJson::planToJson(m_rowMissionPlan));
+    }
+
     return QJsonDocument(root).toJson(QJsonDocument::Compact);
 }
 
@@ -3297,6 +3899,8 @@ bool Map::hasUnsavedMapChanges() const
 
 void Map::clearMapData()
 {
+    clearRowWorkGraphics();
+
     while (!m_paths.isEmpty()) {
         removePathInternal(m_paths.begin().key());
     }
@@ -3313,11 +3917,27 @@ void Map::clearMapData()
     m_routeQueue.clear();
     resetRouteProgress();
 
+    m_rowWorkPlan = RowWorkPlan{};
+    m_rowWorkPlan.planId = RowWorkJson::generatePlanId();
+    m_rowWorkPlan.frameId = QStringLiteral("map");
+    m_rowWorkPlan.params.loopEnabled = true;
+    m_rowMissionPlan = RowMissionPlan{};
+    m_rowMissionPlan.missionId = RowMissionJson::generateMissionId();
+    m_rowMissionPlan.frameId = QStringLiteral("map");
+    m_hasRowWorkStatus = false;
+    m_rowWorkStatus = RowWorkStatus{};
+    m_rowWorkStatusDirty = false;
+    m_rowWorkCheckpointTableUpdating = false;
+    m_rowWorkClickPlacementMode = false;
+    m_rowWorkPendingCaptureTarget = RowWorkPendingCaptureTarget::None;
+    m_rowWorkPendingStartAfterUpload = false;
+
     refreshPointUi();
     refreshPathUi();
     refreshSelectors();
     refreshRouteQueueUi();
     updateRouteControlState();
+    refreshRowWorkUi();
 }
 
 bool Map::saveMapToFile(const QString &filePath) const
@@ -3415,6 +4035,16 @@ QJsonObject Map::serializeMap() const
         doc.paths.append(record);
     }
 
+    if (m_rowWorkPlan.isValid() || !m_rowWorkPlan.checkpoints.isEmpty()) {
+        doc.hasRowWorkPlan = true;
+        doc.rowWorkPlan = m_rowWorkPlan;
+    }
+
+    if (m_rowMissionPlan.isValid()) {
+        doc.hasRowMissionPlan = true;
+        doc.rowMissionPlan = m_rowMissionPlan;
+    }
+
     return MapDocumentCodec::toJson(doc);
 }
 
@@ -3464,14 +4094,1531 @@ bool Map::deserializeMap(const QJsonObject &object)
     m_nextPointId = maxPointId + 1;
     m_nextPathId = maxPathId + 1;
 
+    if (doc.hasRowWorkPlan) {
+        m_rowWorkPlan = doc.rowWorkPlan;
+    } else {
+        m_rowWorkPlan = RowWorkPlan{};
+        m_rowWorkPlan.planId = RowWorkJson::generatePlanId();
+        m_rowWorkPlan.frameId = QStringLiteral("map");
+        m_rowWorkPlan.params.loopEnabled = true;
+    }
+    if (doc.hasRowMissionPlan) {
+        m_rowMissionPlan = doc.rowMissionPlan;
+    } else {
+        m_rowMissionPlan = RowMissionPlan{};
+        m_rowMissionPlan.missionId = RowMissionJson::generateMissionId();
+        m_rowMissionPlan.frameId = QStringLiteral("map");
+    }
+    m_rowWorkStatusDirty = doc.hasRowWorkPlan;
+    m_rowWorkClickPlacementMode = false;
+    m_rowWorkPendingCaptureTarget = RowWorkPendingCaptureTarget::None;
+    m_rowWorkPendingStartAfterUpload = false;
+    if (m_rowWorkAddCheckpointFromMapButton) {
+        QSignalBlocker blocker(m_rowWorkAddCheckpointFromMapButton);
+        m_rowWorkAddCheckpointFromMapButton->setChecked(false);
+    }
+
     applyPresentationUpdates(true);
     refreshPointUi();
     refreshPathUi();
     refreshSelectors();
     refreshRouteQueueUi();
     updateRouteControlState();
+    refreshRowWorkUi();
 
     return true;
+}
+
+void Map::ensureRowWorkClient()
+{
+    const auto &rowWorkCfg = ConfigManager::instance().rowWork();
+    if (!rowWorkCfg.enabled) {
+        return;
+    }
+
+    if (!m_rowWorkClient) {
+        m_rowWorkClient = new RowWorkClient(this);
+        connectRowWorkClientSignals();
+    }
+
+    m_rowWorkClient->setBaseUrl(QUrl(rowWorkCfg.gatewayBaseUrl));
+    m_rowWorkClient->setAuthorizationToken(ConfigManager::instance().network().authToken);
+    m_rowWorkClient->setStatusPollIntervalMs(rowWorkCfg.statusPollIntervalMs);
+    m_rowWorkClient->setCommandTimeoutMs(rowWorkCfg.commandTimeoutMs);
+    if (rowWorkCfg.autoRefreshPlanStatus) {
+        m_rowWorkClient->startStatusPolling();
+    }
+}
+
+void Map::connectRowWorkClientSignals()
+{
+    if (!m_rowWorkClient) {
+        return;
+    }
+
+    connect(m_rowWorkClient, &RowWorkClient::statusReceived, this, &Map::handleRowWorkStatusUpdate);
+    connect(m_rowWorkClient, &RowWorkClient::poseCaptured, this, [this](const RowWorkPose &pose,
+                                                                        int sampleDurationMs,
+                                                                        int sampleCount,
+                                                                        const QString &message) {
+        Q_UNUSED(sampleDurationMs);
+        Q_UNUSED(sampleCount);
+
+        switch (m_rowWorkPendingCaptureTarget) {
+        case RowWorkPendingCaptureTarget::StartPose:
+            m_rowWorkPlan.hasStartPose = true;
+            m_rowWorkPlan.startPose = pose;
+            updateRowWorkPlanVersion();
+            setRowWorkStatusText(message.isEmpty()
+                                     ? tr("已记录起点 A")
+                                     : tr("%1（起点）").arg(message));
+            break;
+        case RowWorkPendingCaptureTarget::EndPose:
+            m_rowWorkPlan.hasEndPose = true;
+            m_rowWorkPlan.endPose = pose;
+            updateRowWorkPlanVersion();
+            setRowWorkStatusText(message.isEmpty()
+                                     ? tr("已记录终点 B")
+                                     : tr("%1（终点）").arg(message));
+            break;
+        case RowWorkPendingCaptureTarget::CheckpointFromVehicle:
+            addRowWorkCheckpoint(pose.toPointF());
+            setRowWorkStatusText(message.isEmpty()
+                                     ? tr("已添加当前位置中间点")
+                                     : tr("%1（中间点）").arg(message));
+            break;
+        case RowWorkPendingCaptureTarget::None:
+            break;
+        }
+        m_rowWorkPendingCaptureTarget = RowWorkPendingCaptureTarget::None;
+        refreshRowWorkUi();
+    });
+    connect(m_rowWorkClient, &RowWorkClient::planReceived, this, [this](const RowWorkPlan &plan) {
+        m_rowWorkPlan = plan;
+        m_rowWorkStatusDirty = false;
+        refreshRowWorkUi();
+        setRowWorkStatusText(tr("已同步工控机上的作业计划"));
+    });
+    connect(m_rowWorkClient, &RowWorkClient::planUploaded, this, [this](const QString &message) {
+        m_rowWorkStatusDirty = false;
+        setRowWorkStatusText(message.isEmpty() ? tr("作业计划已下发") : message);
+        refreshRowWorkUi();
+        if (m_rowWorkPendingStartAfterUpload && m_rowWorkClient) {
+            m_rowWorkPendingStartAfterUpload = false;
+            m_rowWorkClient->startRowWork();
+        }
+    });
+    connect(m_rowWorkClient, &RowWorkClient::actionSucceeded, this, [this](const QString &action, const QString &message) {
+        if (action == QStringLiteral("start")) {
+            emit rowWorkAutoStartRequested();
+        } else if (action == QStringLiteral("stop")) {
+            emit rowWorkAutoStopRequested();
+        }
+        const QString text = message.isEmpty() ? tr("直线作业操作成功：%1").arg(action) : message;
+        setRowWorkStatusText(text);
+        if (m_rowWorkClient) {
+            m_rowWorkClient->requestStatus();
+        }
+    });
+    connect(m_rowWorkClient, &RowWorkClient::requestFailed, this, [this](const QString &operation, const QString &message) {
+        m_rowWorkPendingCaptureTarget = RowWorkPendingCaptureTarget::None;
+        m_rowWorkPendingStartAfterUpload = false;
+        setRowWorkStatusText(tr("直线作业操作失败（%1）：%2").arg(operation, message), true);
+        refreshRowWorkUi();
+    });
+    connect(m_rowWorkClient, &RowWorkClient::busyChanged, this, [this](bool) {
+        refreshRowWorkControlState();
+    });
+}
+
+void Map::handleRowWorkStatusUpdate(const RowWorkStatus &status)
+{
+    m_rowWorkStatus = status;
+    m_hasRowWorkStatus = true;
+    refreshRowWorkUi();
+}
+
+void Map::refreshRowWorkUi()
+{
+    refreshRowWorkPlanSummary();
+    refreshRowWorkCheckpointTable();
+    refreshRowWorkControlState();
+    refreshRowWorkGraphics();
+    refreshRowMissionUi();
+}
+
+void Map::refreshRowWorkPlanSummary()
+{
+    const auto checkpointNameAt = [this](int index) -> QString {
+        if (index < 0 || index >= m_rowWorkPlan.checkpoints.size()) {
+            return QString();
+        }
+        const QString name = m_rowWorkPlan.checkpoints.at(index).name.trimmed();
+        return name.isEmpty() ? QStringLiteral("P%1").arg(index + 1) : name;
+    };
+
+    if (m_rowWorkStartLabel) {
+        m_rowWorkStartLabel->setText(m_rowWorkPlan.hasStartPose
+                                         ? tr("X=%1, Y=%2, Yaw=%3")
+                                               .arg(m_rowWorkPlan.startPose.x, 0, 'f', 2)
+                                               .arg(m_rowWorkPlan.startPose.y, 0, 'f', 2)
+                                               .arg(m_rowWorkPlan.startPose.yaw, 0, 'f', 2)
+                                         : tr("未记录"));
+    }
+    if (m_rowWorkEndLabel) {
+        m_rowWorkEndLabel->setText(m_rowWorkPlan.hasEndPose
+                                       ? tr("X=%1, Y=%2, Yaw=%3")
+                                             .arg(m_rowWorkPlan.endPose.x, 0, 'f', 2)
+                                             .arg(m_rowWorkPlan.endPose.y, 0, 'f', 2)
+                                             .arg(m_rowWorkPlan.endPose.yaw, 0, 'f', 2)
+                                       : tr("未记录"));
+    }
+    if (m_rowWorkBaseSpeedSpin) {
+        QSignalBlocker blocker(m_rowWorkBaseSpeedSpin);
+        m_rowWorkBaseSpeedSpin->setValue(m_rowWorkPlan.params.baseLinearSpeed);
+    }
+    if (m_rowWorkMaxSpeedSpin) {
+        QSignalBlocker blocker(m_rowWorkMaxSpeedSpin);
+        m_rowWorkMaxSpeedSpin->setValue(m_rowWorkPlan.params.maxLinearSpeed);
+    }
+    if (m_rowWorkEndpointSlowdownSpin) {
+        QSignalBlocker blocker(m_rowWorkEndpointSlowdownSpin);
+        m_rowWorkEndpointSlowdownSpin->setValue(m_rowWorkPlan.params.endpointSlowdownDistance);
+    }
+    if (m_rowWorkEndpointArrivalSpin) {
+        QSignalBlocker blocker(m_rowWorkEndpointArrivalSpin);
+        m_rowWorkEndpointArrivalSpin->setValue(m_rowWorkPlan.params.endpointArrivalDistance);
+    }
+    if (m_rowWorkCheckpointToleranceSpin) {
+        QSignalBlocker blocker(m_rowWorkCheckpointToleranceSpin);
+        m_rowWorkCheckpointToleranceSpin->setValue(m_rowWorkPlan.params.checkpointArrivalTolerance);
+    }
+    if (m_rowWorkTurnAngularSpeedSpin) {
+        QSignalBlocker blocker(m_rowWorkTurnAngularSpeedSpin);
+        m_rowWorkTurnAngularSpeedSpin->setValue(m_rowWorkPlan.params.turnAngularSpeed);
+    }
+    if (m_rowWorkLoopCheck) {
+        QSignalBlocker blocker(m_rowWorkLoopCheck);
+        m_rowWorkLoopCheck->setChecked(m_rowWorkPlan.params.loopEnabled);
+    }
+    if (m_rowWorkPlanLabel) {
+        const QString lineText = hasRowWorkLine()
+                                     ? tr("计划：长度 %1 m，中间点 %2 个，版本 %3，循环=%4")
+                                           .arg(m_rowWorkPlan.lineLength(), 0, 'f', 2)
+                                           .arg(m_rowWorkPlan.checkpoints.size())
+                                           .arg(m_rowWorkPlan.version)
+                                           .arg(m_rowWorkPlan.params.loopEnabled ? tr("开") : tr("关"))
+                                     : tr("计划：未完成 A/B 示教");
+        m_rowWorkPlanLabel->setText(lineText);
+    }
+    if (m_rowWorkRuntimeLabel) {
+        if (m_hasRowWorkStatus) {
+            m_rowWorkRuntimeLabel->setText(
+                tr("运行：状态=%1，方向=%2")
+                    .arg(m_rowWorkStatus.state.isEmpty() ? tr("未知") : m_rowWorkStatus.state)
+                    .arg(m_rowWorkStatus.currentDirection.isEmpty() ? tr("-") : m_rowWorkStatus.currentDirection));
+        } else {
+            m_rowWorkRuntimeLabel->setText(tr("运行：等待工控机状态"));
+        }
+    }
+    if (m_rowWorkProgressLabel) {
+        if (m_hasRowWorkStatus) {
+            QString progressText = tr("进度：%1 / %2 m，横向误差=%3 m，航向误差=%4°")
+                                       .arg(m_rowWorkStatus.progress, 0, 'f', 2)
+                                       .arg(m_rowWorkStatus.lineLength, 0, 'f', 2)
+                                       .arg(m_rowWorkStatus.lateralError, 0, 'f', 3)
+                                       .arg(m_rowWorkStatus.headingErrorDeg, 0, 'f', 2);
+            if (m_rowWorkStatus.pauseRemainingMs > 0) {
+                progressText += tr("，剩余停留=%1 ms").arg(m_rowWorkStatus.pauseRemainingMs);
+            }
+            m_rowWorkProgressLabel->setText(progressText);
+        } else {
+            m_rowWorkProgressLabel->setText(tr("进度：等待工控机状态"));
+        }
+    }
+    if (m_rowWorkTargetLabel) {
+        if (m_hasRowWorkStatus) {
+            const QString currentCheckpointName = checkpointNameAt(m_rowWorkStatus.currentCheckpointIndex);
+            QString targetText = tr("目标：当前中间点=%1")
+                                     .arg(currentCheckpointName.isEmpty() ? tr("无") : currentCheckpointName);
+            if (m_rowWorkStatus.currentDirection.compare(QStringLiteral("forward"), Qt::CaseInsensitive) == 0) {
+                targetText += tr("，终点=B");
+            } else if (m_rowWorkStatus.currentDirection.compare(QStringLiteral("backward"), Qt::CaseInsensitive) == 0) {
+                targetText += tr("，终点=A");
+            }
+            m_rowWorkTargetLabel->setText(targetText);
+        } else {
+            m_rowWorkTargetLabel->setText(tr("目标：等待工控机状态"));
+        }
+    }
+    if (m_rowWorkControlLabel) {
+        if (m_hasRowWorkStatus) {
+            m_rowWorkControlLabel->setText(
+                tr("控制权：owner=%1，模式=%2")
+                    .arg(m_rowWorkStatus.controlOwner.isEmpty() ? tr("-") : m_rowWorkStatus.controlOwner)
+                    .arg(m_rowWorkStatus.mode.isEmpty() ? tr("-") : m_rowWorkStatus.mode));
+        } else {
+            m_rowWorkControlLabel->setText(tr("控制权：等待工控机状态"));
+        }
+    }
+    if (m_rowWorkPoseLabel) {
+        if (m_hasRowWorkStatus) {
+            m_rowWorkPoseLabel->setText(
+                tr("位姿：%1，年龄=%2 ms")
+                    .arg(m_rowWorkStatus.poseFresh ? tr("新鲜") : tr("过期"))
+                    .arg(m_rowWorkStatus.poseAgeMs));
+        } else {
+            m_rowWorkPoseLabel->setText(tr("位姿：等待工控机状态"));
+        }
+    }
+    if (m_rowWorkFaultLabel) {
+        if (m_hasRowWorkStatus && m_rowWorkStatus.isFaulted()) {
+            const QString code = m_rowWorkStatus.faultCode.trimmed().isEmpty() ? tr("未提供") : m_rowWorkStatus.faultCode;
+            const QString message = m_rowWorkStatus.faultMessage.trimmed().isEmpty() ? tr("未提供") : m_rowWorkStatus.faultMessage;
+            m_rowWorkFaultLabel->setText(tr("故障：%1 | %2").arg(code, message));
+            QPalette faultPalette = m_rowWorkFaultLabel->palette();
+            faultPalette.setColor(QPalette::WindowText, QColor(220, 80, 60));
+            m_rowWorkFaultLabel->setPalette(faultPalette);
+        } else if (m_hasRowWorkStatus && m_rowWorkStatus.state == QStringLiteral("ManualOverride")) {
+            m_rowWorkFaultLabel->setText(tr("故障：无，当前为人工接管"));
+            QPalette overridePalette = m_rowWorkFaultLabel->palette();
+            overridePalette.setColor(QPalette::WindowText, QColor(180, 110, 20));
+            m_rowWorkFaultLabel->setPalette(overridePalette);
+        } else {
+            m_rowWorkFaultLabel->setText(tr("故障：无"));
+            QPalette normalPalette = m_rowWorkFaultLabel->palette();
+            normalPalette.setColor(QPalette::WindowText, QColor(55, 55, 55));
+            m_rowWorkFaultLabel->setPalette(normalPalette);
+        }
+    }
+    if (m_rowWorkEventLabel) {
+        if (m_hasRowWorkStatus) {
+            m_rowWorkEventLabel->setText(
+                tr("最近事件：%1")
+                    .arg(m_rowWorkStatus.lastEvent.isEmpty() ? tr("-") : m_rowWorkStatus.lastEvent));
+        } else {
+            m_rowWorkEventLabel->setText(tr("最近事件：等待工控机状态"));
+        }
+    }
+}
+
+void Map::refreshRowWorkCheckpointTable()
+{
+    if (!m_rowWorkCheckpointTable) {
+        return;
+    }
+
+    m_rowWorkCheckpointTableUpdating = true;
+    QSignalBlocker blocker(m_rowWorkCheckpointTable);
+    m_rowWorkCheckpointTable->setRowCount(m_rowWorkPlan.checkpoints.size());
+    for (int row = 0; row < m_rowWorkPlan.checkpoints.size(); ++row) {
+        const RowCheckpoint &checkpoint = m_rowWorkPlan.checkpoints.at(row);
+
+        auto *nameItem = new QTableWidgetItem(checkpoint.name.trimmed());
+        nameItem->setTextAlignment(Qt::AlignCenter);
+        m_rowWorkCheckpointTable->setItem(row, kRowWorkCheckpointTableNameColumn, nameItem);
+
+        auto *progressItem = new QTableWidgetItem(QString::number(checkpoint.progress, 'f', 2));
+        progressItem->setTextAlignment(Qt::AlignCenter);
+        m_rowWorkCheckpointTable->setItem(row, kRowWorkCheckpointTableProgressColumn, progressItem);
+
+        auto *dwellItem = new QTableWidgetItem(QString::number(checkpoint.dwellMs));
+        dwellItem->setTextAlignment(Qt::AlignCenter);
+        m_rowWorkCheckpointTable->setItem(row, kRowWorkCheckpointTableDwellColumn, dwellItem);
+
+        auto *forwardItem = new QTableWidgetItem();
+        forwardItem->setFlags((forwardItem->flags() | Qt::ItemIsUserCheckable | Qt::ItemIsEnabled | Qt::ItemIsSelectable)
+                              & ~Qt::ItemIsEditable);
+        forwardItem->setCheckState(checkpoint.triggerOnForward ? Qt::Checked : Qt::Unchecked);
+        m_rowWorkCheckpointTable->setItem(row, kRowWorkCheckpointTableForwardColumn, forwardItem);
+
+        auto *backwardItem = new QTableWidgetItem();
+        backwardItem->setFlags((backwardItem->flags() | Qt::ItemIsUserCheckable | Qt::ItemIsEnabled | Qt::ItemIsSelectable)
+                               & ~Qt::ItemIsEditable);
+        backwardItem->setCheckState(checkpoint.triggerOnBackward ? Qt::Checked : Qt::Unchecked);
+        m_rowWorkCheckpointTable->setItem(row, kRowWorkCheckpointTableBackwardColumn, backwardItem);
+    }
+    m_rowWorkCheckpointTable->resizeRowsToContents();
+    m_rowWorkCheckpointTableUpdating = false;
+}
+
+void Map::refreshRowWorkControlState()
+{
+    const bool clientReady = m_rowWorkClient && m_rowWorkClient->isConfigured();
+    const bool busy = m_rowWorkClient && m_rowWorkClient->isBusy();
+    const bool hasLine = hasRowWorkLine();
+    const bool isRunning = m_hasRowWorkStatus && m_rowWorkStatus.isActive()
+                           && m_rowWorkStatus.state != QStringLiteral("Paused")
+                           && m_rowWorkStatus.state != QStringLiteral("PlanReady");
+    const bool isPaused = m_hasRowWorkStatus && m_rowWorkStatus.state == QStringLiteral("Paused");
+    const bool editable = canEditRowWorkPlan() && !busy;
+    const bool mapEditingAllowed = !isRunning && !isPaused;
+
+    if (m_addPointFromInputButton) {
+        m_addPointFromInputButton->setEnabled(mapEditingAllowed);
+    }
+    if (m_addPointFromClickButton) {
+        m_addPointFromClickButton->setEnabled(mapEditingAllowed);
+    }
+    if (m_updatePointButton) {
+        m_updatePointButton->setEnabled(mapEditingAllowed);
+    }
+    if (m_removePointButton) {
+        m_removePointButton->setEnabled(mapEditingAllowed);
+    }
+    if (m_batchGenerateButton) {
+        m_batchGenerateButton->setEnabled(mapEditingAllowed);
+    }
+    if (m_addPathButton) {
+        m_addPathButton->setEnabled(mapEditingAllowed);
+    }
+    if (m_removePathButton) {
+        m_removePathButton->setEnabled(mapEditingAllowed);
+    }
+
+    if (m_rowWorkCaptureStartButton) {
+        m_rowWorkCaptureStartButton->setEnabled(clientReady && !busy);
+    }
+    if (m_rowWorkCaptureEndButton) {
+        m_rowWorkCaptureEndButton->setEnabled(clientReady && !busy);
+    }
+    if (m_rowWorkAddCheckpointFromVehicleButton) {
+        m_rowWorkAddCheckpointFromVehicleButton->setEnabled(clientReady && hasLine && !busy);
+    }
+    if (m_rowWorkAddCheckpointFromMapButton) {
+        m_rowWorkAddCheckpointFromMapButton->setEnabled(hasLine && editable);
+    }
+    if (m_rowWorkDeleteCheckpointButton) {
+        m_rowWorkDeleteCheckpointButton->setEnabled(editable && m_rowWorkCheckpointTable
+                                                    && m_rowWorkCheckpointTable->currentRow() >= 0);
+    }
+    if (m_rowWorkClearCheckpointsButton) {
+        m_rowWorkClearCheckpointsButton->setEnabled(editable && !m_rowWorkPlan.checkpoints.isEmpty());
+    }
+    if (m_rowWorkClearLineButton) {
+        m_rowWorkClearLineButton->setEnabled(editable && (m_rowWorkPlan.hasStartPose || m_rowWorkPlan.hasEndPose
+                                                          || !m_rowWorkPlan.checkpoints.isEmpty()));
+    }
+    if (m_rowWorkUploadPlanButton) {
+        m_rowWorkUploadPlanButton->setEnabled(clientReady && hasLine && !busy);
+    }
+    if (m_rowWorkReadPlanButton) {
+        m_rowWorkReadPlanButton->setEnabled(clientReady && !busy);
+    }
+    if (m_rowWorkStartButton) {
+        m_rowWorkStartButton->setEnabled(clientReady && hasLine && !busy && !isRunning);
+    }
+    if (m_rowWorkPauseButton) {
+        m_rowWorkPauseButton->setEnabled(clientReady && isRunning && !busy);
+    }
+    if (m_rowWorkResumeButton) {
+        m_rowWorkResumeButton->setEnabled(clientReady && isPaused && !busy);
+    }
+    if (m_rowWorkStopButton) {
+        m_rowWorkStopButton->setEnabled(clientReady && (isRunning || isPaused) && !busy);
+    }
+}
+
+void Map::refreshRowWorkGraphics()
+{
+    clearRowWorkGraphics();
+
+    if (!m_scene || !hasRowWorkLine()) {
+        return;
+    }
+
+    const QPointF start = m_rowWorkPlan.startPose.toPointF();
+    const QPointF end = m_rowWorkPlan.endPose.toPointF();
+    const QPointF sceneStart = mapToScene(start);
+    const QPointF sceneEnd = mapToScene(end);
+
+    QPainterPath linePath;
+    linePath.moveTo(sceneStart);
+    linePath.lineTo(sceneEnd);
+    m_rowWorkLineItem = m_scene->addPath(linePath, QPen(QColor(40, 120, 210), 2.5, Qt::DashLine));
+    m_rowWorkLineItem->setZValue(-3.5);
+
+    m_rowWorkStartMarker = m_scene->addEllipse(-6.0, -6.0, 12.0, 12.0,
+                                               QPen(QColor(20, 120, 60)),
+                                               QBrush(QColor(70, 180, 90)));
+    m_rowWorkStartMarker->setPos(sceneStart);
+    m_rowWorkStartMarker->setZValue(6.0);
+
+    m_rowWorkEndMarker = m_scene->addEllipse(-6.0, -6.0, 12.0, 12.0,
+                                             QPen(QColor(170, 80, 20)),
+                                             QBrush(QColor(230, 150, 70)));
+    m_rowWorkEndMarker->setPos(sceneEnd);
+    m_rowWorkEndMarker->setZValue(6.0);
+
+    const QPointF arrowPoint = RowWorkGeometry::pointAtProgress(m_rowWorkPlan, m_rowWorkPlan.lineLength() * 0.5);
+    const QPointF arrowScene = mapToScene(arrowPoint);
+    const double headingDeg = qRadiansToDegrees(std::atan2(end.y() - start.y(), end.x() - start.x()));
+    m_rowWorkDirectionArrowItem = m_scene->addPath(makeDirectionArrowPath(), QPen(QColor(40, 120, 210), 2.0));
+    m_rowWorkDirectionArrowItem->setPos(arrowScene);
+    m_rowWorkDirectionArrowItem->setRotation(headingDeg);
+    m_rowWorkDirectionArrowItem->setZValue(6.0);
+
+    for (int i = 0; i < m_rowWorkPlan.checkpoints.size(); ++i) {
+        const RowCheckpoint &checkpoint = m_rowWorkPlan.checkpoints.at(i);
+        const QPointF checkpointMapPos = RowWorkGeometry::pointAtProgress(m_rowWorkPlan, checkpoint.progress);
+        const QPointF checkpointScenePos = mapToScene(checkpointMapPos);
+        const bool isActiveCheckpoint = m_hasRowWorkStatus && m_rowWorkStatus.currentCheckpointIndex == i;
+
+        auto *group = new QGraphicsItemGroup();
+        auto *circle = new QGraphicsEllipseItem(-5.0, -5.0, 10.0, 10.0);
+        circle->setPen(QPen(isActiveCheckpoint ? QColor(200, 70, 20) : QColor(120, 50, 160), isActiveCheckpoint ? 2.0 : 1.0));
+        circle->setBrush(QBrush(isActiveCheckpoint ? QColor(255, 190, 120) : QColor(185, 110, 220)));
+        auto *label = new QGraphicsTextItem(QStringLiteral("P%1").arg(i + 1));
+        label->setDefaultTextColor(isActiveCheckpoint ? QColor(180, 80, 20) : QColor(100, 40, 140));
+        const QRectF labelRect = label->boundingRect();
+        label->setPos(-labelRect.width() / 2.0, -labelRect.height() - 8.0);
+        group->addToGroup(circle);
+        group->addToGroup(label);
+        group->setPos(checkpointScenePos);
+        group->setZValue(6.0);
+        m_scene->addItem(group);
+        m_rowWorkCheckpointMarkers.append(group);
+    }
+}
+
+void Map::clearRowWorkGraphics()
+{
+    if (m_rowWorkLineItem) {
+        delete m_rowWorkLineItem;
+        m_rowWorkLineItem = nullptr;
+    }
+    if (m_rowWorkDirectionArrowItem) {
+        delete m_rowWorkDirectionArrowItem;
+        m_rowWorkDirectionArrowItem = nullptr;
+    }
+    if (m_rowWorkStartMarker) {
+        delete m_rowWorkStartMarker;
+        m_rowWorkStartMarker = nullptr;
+    }
+    if (m_rowWorkEndMarker) {
+        delete m_rowWorkEndMarker;
+        m_rowWorkEndMarker = nullptr;
+    }
+    qDeleteAll(m_rowWorkCheckpointMarkers);
+    m_rowWorkCheckpointMarkers.clear();
+}
+
+void Map::setRowWorkStatusText(const QString &text, bool warning)
+{
+    if (!m_rowWorkStatusLabel) {
+        return;
+    }
+    m_rowWorkStatusLabel->setText(text);
+    QPalette palette = m_rowWorkStatusLabel->palette();
+    palette.setColor(QPalette::WindowText, warning ? QColor(220, 80, 60) : QColor(55, 55, 55));
+    m_rowWorkStatusLabel->setPalette(palette);
+}
+
+void Map::updateRowWorkPlanVersion()
+{
+    m_rowWorkPlan.version = qMax(1, m_rowWorkPlan.version + 1);
+    if (m_rowWorkPlan.planId.trimmed().isEmpty()) {
+        m_rowWorkPlan.planId = RowWorkJson::generatePlanId();
+    }
+    if (m_rowWorkPlan.frameId.trimmed().isEmpty()) {
+        m_rowWorkPlan.frameId = QStringLiteral("map");
+    }
+    m_rowWorkStatusDirty = true;
+}
+
+bool Map::hasRowWorkLine() const
+{
+    return m_rowWorkPlan.isValid();
+}
+
+void Map::clearRowWorkPlanInternal(bool keepStatusMessage)
+{
+    m_rowWorkPlan = RowWorkPlan{};
+    m_rowWorkPlan.planId = RowWorkJson::generatePlanId();
+    m_rowWorkPlan.frameId = QStringLiteral("map");
+    m_rowWorkPlan.params.loopEnabled = true;
+    m_rowWorkStatusDirty = true;
+    m_rowWorkClickPlacementMode = false;
+    m_rowWorkPendingCaptureTarget = RowWorkPendingCaptureTarget::None;
+    m_rowWorkPendingStartAfterUpload = false;
+    if (m_rowWorkAddCheckpointFromMapButton) {
+        QSignalBlocker blocker(m_rowWorkAddCheckpointFromMapButton);
+        m_rowWorkAddCheckpointFromMapButton->setChecked(false);
+    }
+    refreshRowWorkUi();
+    if (!keepStatusMessage) {
+        setRowWorkStatusText(tr("已清除作业线与中间点"));
+    }
+}
+
+void Map::addRowWorkCheckpoint(const QPointF &mapPos)
+{
+    if (!hasRowWorkLine()) {
+        setRowWorkStatusText(tr("请先完成 A/B 示教后再添加中间点"), true);
+        return;
+    }
+
+    RowCheckpoint checkpoint;
+    checkpoint.name = nextCheckpointName();
+    checkpoint.progress = RowWorkGeometry::projectPointToProgress(m_rowWorkPlan, mapPos);
+    checkpoint.dwellMs = 2000;
+    checkpoint.enabled = true;
+    checkpoint.triggerOnForward = true;
+    checkpoint.triggerOnBackward = true;
+
+    m_rowWorkPlan.checkpoints.append(checkpoint);
+    sortRowWorkCheckpoints();
+    updateCheckpointRowNames();
+    updateRowWorkPlanVersion();
+    refreshRowWorkUi();
+}
+
+void Map::sortRowWorkCheckpoints()
+{
+    std::sort(m_rowWorkPlan.checkpoints.begin(), m_rowWorkPlan.checkpoints.end(), [](const RowCheckpoint &lhs, const RowCheckpoint &rhs) {
+        return lhs.progress < rhs.progress;
+    });
+}
+
+QString Map::nextCheckpointName() const
+{
+    return QStringLiteral("P%1").arg(m_rowWorkPlan.checkpoints.size() + 1);
+}
+
+RowCheckpoint Map::checkpointFromRow(int row) const
+{
+    RowCheckpoint checkpoint;
+    if (!m_rowWorkCheckpointTable || row < 0 || row >= m_rowWorkCheckpointTable->rowCount()) {
+        return checkpoint;
+    }
+
+    if (const auto *nameItem = m_rowWorkCheckpointTable->item(row, kRowWorkCheckpointTableNameColumn)) {
+        checkpoint.name = nameItem->text().trimmed();
+    }
+    if (const auto *progressItem = m_rowWorkCheckpointTable->item(row, kRowWorkCheckpointTableProgressColumn)) {
+        checkpoint.progress = progressItem->text().toDouble();
+    }
+    if (const auto *dwellItem = m_rowWorkCheckpointTable->item(row, kRowWorkCheckpointTableDwellColumn)) {
+        checkpoint.dwellMs = dwellItem->text().toInt();
+    }
+    if (const auto *forwardItem = m_rowWorkCheckpointTable->item(row, kRowWorkCheckpointTableForwardColumn)) {
+        checkpoint.triggerOnForward = forwardItem->checkState() == Qt::Checked;
+    }
+    if (const auto *backwardItem = m_rowWorkCheckpointTable->item(row, kRowWorkCheckpointTableBackwardColumn)) {
+        checkpoint.triggerOnBackward = backwardItem->checkState() == Qt::Checked;
+    }
+    checkpoint.enabled = true;
+    return checkpoint;
+}
+
+void Map::updateCheckpointRowNames()
+{
+    for (int i = 0; i < m_rowWorkPlan.checkpoints.size(); ++i) {
+        if (m_rowWorkPlan.checkpoints[i].name.trimmed().isEmpty()) {
+            m_rowWorkPlan.checkpoints[i].name = QStringLiteral("P%1").arg(i + 1);
+        }
+    }
+}
+
+bool Map::canEditRowWorkPlan() const
+{
+    const bool running = m_hasRowWorkStatus && m_rowWorkStatus.isActive() && m_rowWorkStatus.state != QStringLiteral("PlanReady");
+    return !running;
+}
+
+bool Map::uploadRowWorkPlanIfNeeded(bool forceUpload)
+{
+    if (!m_rowWorkClient || !m_rowWorkClient->isConfigured()) {
+        setRowWorkStatusText(tr("未配置直线作业服务地址"), true);
+        return false;
+    }
+    if (!hasRowWorkLine()) {
+        setRowWorkStatusText(tr("请先完成 A/B 示教"), true);
+        return false;
+    }
+
+    m_rowWorkPlan.params.baseLinearSpeed = m_rowWorkBaseSpeedSpin ? m_rowWorkBaseSpeedSpin->value() : m_rowWorkPlan.params.baseLinearSpeed;
+    m_rowWorkPlan.params.maxLinearSpeed = m_rowWorkMaxSpeedSpin ? m_rowWorkMaxSpeedSpin->value() : m_rowWorkPlan.params.maxLinearSpeed;
+    m_rowWorkPlan.params.endpointSlowdownDistance =
+        m_rowWorkEndpointSlowdownSpin ? m_rowWorkEndpointSlowdownSpin->value() : m_rowWorkPlan.params.endpointSlowdownDistance;
+    m_rowWorkPlan.params.endpointArrivalDistance =
+        m_rowWorkEndpointArrivalSpin ? m_rowWorkEndpointArrivalSpin->value() : m_rowWorkPlan.params.endpointArrivalDistance;
+    m_rowWorkPlan.params.checkpointArrivalTolerance =
+        m_rowWorkCheckpointToleranceSpin ? m_rowWorkCheckpointToleranceSpin->value() : m_rowWorkPlan.params.checkpointArrivalTolerance;
+    m_rowWorkPlan.params.turnAngularSpeed =
+        m_rowWorkTurnAngularSpeedSpin ? m_rowWorkTurnAngularSpeedSpin->value() : m_rowWorkPlan.params.turnAngularSpeed;
+    m_rowWorkPlan.params.loopEnabled = m_rowWorkLoopCheck ? m_rowWorkLoopCheck->isChecked() : m_rowWorkPlan.params.loopEnabled;
+
+    if (!forceUpload && !m_rowWorkStatusDirty && rowWorkPlanMatchesStatus()) {
+        return true;
+    }
+
+    if (m_rowWorkPlan.planId.trimmed().isEmpty()) {
+        m_rowWorkPlan.planId = RowWorkJson::generatePlanId();
+    }
+    if (m_rowWorkPlan.frameId.trimmed().isEmpty()) {
+        m_rowWorkPlan.frameId = QStringLiteral("map");
+    }
+
+    m_rowWorkClient->uploadPlan(m_rowWorkPlan);
+    return false;
+}
+
+bool Map::rowWorkPlanMatchesStatus() const
+{
+    if (!m_hasRowWorkStatus) {
+        return false;
+    }
+    return m_rowWorkStatus.planId.trimmed() == m_rowWorkPlan.planId.trimmed()
+           && m_rowWorkStatus.planVersion == m_rowWorkPlan.version;
+}
+
+void Map::refreshRowMissionUi()
+{
+    refreshRowMissionSummary();
+    refreshRowMissionStepTable();
+    refreshRowMissionStepEditor();
+    refreshRowMissionControlState();
+}
+
+void Map::refreshRowMissionSummary()
+{
+    if (m_rowMissionIdLabel) {
+        const QString missionId = m_rowMissionPlan.missionId.trimmed().isEmpty()
+                                      ? tr("-")
+                                      : m_rowMissionPlan.missionId.trimmed();
+        m_rowMissionIdLabel->setText(missionId);
+    }
+    if (m_rowMissionNameEdit) {
+        QSignalBlocker blocker(m_rowMissionNameEdit);
+        m_rowMissionNameEdit->setText(m_rowMissionPlan.name.trimmed());
+    }
+    if (m_rowMissionLoopCheck) {
+        QSignalBlocker blocker(m_rowMissionLoopCheck);
+        m_rowMissionLoopCheck->setChecked(m_rowMissionPlan.loopEnabled);
+    }
+    if (m_rowMissionSummaryLabel) {
+        int rowLegCount = 0;
+        int transferCount = 0;
+        int turnCount = 0;
+        int waitCount = 0;
+        for (const RowMissionStep &step : m_rowMissionPlan.steps) {
+            switch (step.type) {
+            case RowMissionStepType::RowLeg:
+                ++rowLegCount;
+                break;
+            case RowMissionStepType::Transfer:
+                ++transferCount;
+                break;
+            case RowMissionStepType::Turn:
+                ++turnCount;
+                break;
+            case RowMissionStepType::Wait:
+                ++waitCount;
+                break;
+            }
+        }
+
+        const QString summary = tr("步骤总数 %1，启用 %2，垄内 %3，转场 %4，掉头 %5，停留 %6，循环=%7")
+                                    .arg(m_rowMissionPlan.steps.size())
+                                    .arg(m_rowMissionPlan.enabledStepCount())
+                                    .arg(rowLegCount)
+                                    .arg(transferCount)
+                                    .arg(turnCount)
+                                    .arg(waitCount)
+                                    .arg(m_rowMissionPlan.loopEnabled ? tr("开") : tr("关"));
+        m_rowMissionSummaryLabel->setText(summary);
+    }
+}
+
+void Map::refreshRowMissionStepTable()
+{
+    if (!m_rowMissionStepTable) {
+        return;
+    }
+
+    m_rowMissionStepTableUpdating = true;
+    QSignalBlocker blocker(m_rowMissionStepTable);
+    m_rowMissionStepTable->setRowCount(m_rowMissionPlan.steps.size());
+    for (int row = 0; row < m_rowMissionPlan.steps.size(); ++row) {
+        const RowMissionStep &step = m_rowMissionPlan.steps.at(row);
+
+        auto *enabledItem = new QTableWidgetItem();
+        enabledItem->setFlags((enabledItem->flags() | Qt::ItemIsUserCheckable | Qt::ItemIsEnabled | Qt::ItemIsSelectable)
+                              & ~Qt::ItemIsEditable);
+        enabledItem->setCheckState(step.enabled ? Qt::Checked : Qt::Unchecked);
+        enabledItem->setTextAlignment(Qt::AlignCenter);
+        m_rowMissionStepTable->setItem(row, kRowMissionStepEnabledColumn, enabledItem);
+
+        auto *nameItem = new QTableWidgetItem(step.name.trimmed());
+        nameItem->setTextAlignment(Qt::AlignCenter);
+        m_rowMissionStepTable->setItem(row, kRowMissionStepNameColumn, nameItem);
+
+        auto *typeItem = new QTableWidgetItem(rowMissionStepTypeText(step.type));
+        typeItem->setFlags((typeItem->flags() | Qt::ItemIsEnabled | Qt::ItemIsSelectable) & ~Qt::ItemIsEditable);
+        typeItem->setTextAlignment(Qt::AlignCenter);
+        m_rowMissionStepTable->setItem(row, kRowMissionStepTypeColumn, typeItem);
+
+        auto *summaryItem = new QTableWidgetItem(rowMissionStepSummaryText(step));
+        summaryItem->setFlags((summaryItem->flags() | Qt::ItemIsEnabled | Qt::ItemIsSelectable) & ~Qt::ItemIsEditable);
+        summaryItem->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        m_rowMissionStepTable->setItem(row, kRowMissionStepSummaryColumn, summaryItem);
+    }
+    m_rowMissionStepTable->resizeRowsToContents();
+    m_rowMissionStepTableUpdating = false;
+
+    if (m_rowMissionPlan.steps.isEmpty()) {
+        m_rowMissionSelectedStepRow = -1;
+        return;
+    }
+
+    if (m_rowMissionSelectedStepRow < 0 || m_rowMissionSelectedStepRow >= m_rowMissionPlan.steps.size()) {
+        m_rowMissionSelectedStepRow = 0;
+    }
+    selectRowMissionStep(m_rowMissionSelectedStepRow);
+}
+
+void Map::refreshRowMissionControlState()
+{
+    const bool editable = canEditRowMissionPlan();
+    const int selectedRow = rowMissionSelectedStepRow();
+    const bool hasSelection = selectedRow >= 0 && selectedRow < m_rowMissionPlan.steps.size();
+
+    if (m_rowMissionNameEdit) {
+        m_rowMissionNameEdit->setEnabled(editable);
+    }
+    if (m_rowMissionLoopCheck) {
+        m_rowMissionLoopCheck->setEnabled(editable);
+    }
+    if (m_rowMissionAddRowLegButton) {
+        m_rowMissionAddRowLegButton->setEnabled(editable && hasRowWorkLine());
+    }
+    if (m_rowMissionAddTransferButton) {
+        m_rowMissionAddTransferButton->setEnabled(editable && hasRowWorkLine());
+    }
+    if (m_rowMissionAddTurnButton) {
+        m_rowMissionAddTurnButton->setEnabled(editable);
+    }
+    if (m_rowMissionAddWaitButton) {
+        m_rowMissionAddWaitButton->setEnabled(editable);
+    }
+    if (m_rowMissionImportRowWorkButton) {
+        m_rowMissionImportRowWorkButton->setEnabled(editable && hasRowWorkLine());
+    }
+    if (m_rowMissionRemoveStepButton) {
+        m_rowMissionRemoveStepButton->setEnabled(editable && hasSelection);
+    }
+    if (m_rowMissionMoveUpButton) {
+        m_rowMissionMoveUpButton->setEnabled(editable && hasSelection && selectedRow > 0);
+    }
+    if (m_rowMissionMoveDownButton) {
+        m_rowMissionMoveDownButton->setEnabled(editable && hasSelection && selectedRow < m_rowMissionPlan.steps.size() - 1);
+    }
+    if (m_rowMissionClearButton) {
+        m_rowMissionClearButton->setEnabled(editable && !m_rowMissionPlan.steps.isEmpty());
+    }
+    if (m_rowMissionApplyStepButton) {
+        m_rowMissionApplyStepButton->setEnabled(editable && hasSelection);
+    }
+    if (m_rowMissionStepTable) {
+        m_rowMissionStepTable->setEnabled(editable || !m_rowMissionPlan.steps.isEmpty());
+    }
+}
+
+void Map::refreshRowMissionStepEditor()
+{
+    loadRowMissionStepEditor(rowMissionSelectedStepRow());
+}
+
+void Map::setRowMissionStatusText(const QString &text, bool warning)
+{
+    if (!m_rowMissionStatusLabel) {
+        return;
+    }
+    m_rowMissionStatusLabel->setText(text);
+    QPalette palette = m_rowMissionStatusLabel->palette();
+    palette.setColor(QPalette::WindowText, warning ? QColor(220, 80, 60) : QColor(55, 55, 55));
+    m_rowMissionStatusLabel->setPalette(palette);
+}
+
+void Map::updateRowMissionPlanVersion()
+{
+    m_rowMissionPlan.version = qMax(1, m_rowMissionPlan.version + 1);
+    if (m_rowMissionPlan.missionId.trimmed().isEmpty()) {
+        m_rowMissionPlan.missionId = RowMissionJson::generateMissionId();
+    }
+    if (m_rowMissionPlan.frameId.trimmed().isEmpty()) {
+        m_rowMissionPlan.frameId = QStringLiteral("map");
+    }
+}
+
+bool Map::canEditRowMissionPlan() const
+{
+    return canEditRowWorkPlan();
+}
+
+RowMissionStep *Map::rowMissionStepAt(int row)
+{
+    if (row < 0 || row >= m_rowMissionPlan.steps.size()) {
+        return nullptr;
+    }
+    return &m_rowMissionPlan.steps[row];
+}
+
+const RowMissionStep *Map::rowMissionStepAt(int row) const
+{
+    if (row < 0 || row >= m_rowMissionPlan.steps.size()) {
+        return nullptr;
+    }
+    return &m_rowMissionPlan.steps[row];
+}
+
+int Map::rowMissionSelectedStepRow() const
+{
+    if (m_rowMissionStepTable) {
+        const int currentRow = m_rowMissionStepTable->currentRow();
+        if (currentRow >= 0 && currentRow < m_rowMissionPlan.steps.size()) {
+            return currentRow;
+        }
+    }
+    return m_rowMissionSelectedStepRow;
+}
+
+QString Map::rowMissionStepTypeText(RowMissionStepType type) const
+{
+    switch (type) {
+    case RowMissionStepType::RowLeg:
+        return tr("垄内段");
+    case RowMissionStepType::Transfer:
+        return tr("转场段");
+    case RowMissionStepType::Turn:
+        return tr("掉头");
+    case RowMissionStepType::Wait:
+        return tr("停留");
+    }
+    return tr("垄内段");
+}
+
+QString Map::rowMissionStepSummaryText(const RowMissionStep &step) const
+{
+    switch (step.type) {
+    case RowMissionStepType::RowLeg:
+    case RowMissionStepType::Transfer:
+        if (!step.primitivePlan.isValid()) {
+            return tr("未配置原语");
+        }
+        return tr("长度 %1 m，中间点 %2，循环=%3")
+            .arg(step.primitivePlan.lineLength(), 0, 'f', 2)
+            .arg(step.primitivePlan.checkpoints.size())
+            .arg(step.primitivePlan.params.loopEnabled ? tr("开") : tr("关"));
+    case RowMissionStepType::Turn:
+        return tr("目标航向 %1°").arg(qRadiansToDegrees(step.targetYawRad), 0, 'f', 1);
+    case RowMissionStepType::Wait:
+        return tr("停留 %1 ms").arg(step.dwellMs);
+    }
+    return QString();
+}
+
+RowMissionStep Map::buildMissionStepFromCurrentRowWork(RowMissionStepType type) const
+{
+    RowMissionStep step;
+    step.stepId = RowMissionJson::generateStepId(m_rowMissionPlan.steps.size());
+    step.type = type;
+    step.enabled = true;
+    step.targetYawRad = m_vehiclePoseTheta;
+
+    switch (type) {
+    case RowMissionStepType::RowLeg:
+        step.name = tr("垄段%1").arg(m_rowMissionPlan.steps.size() + 1);
+        step.note = tr("使用当前单垄原语");
+        step.primitivePlan = m_rowWorkPlan;
+        break;
+    case RowMissionStepType::Transfer:
+        step.name = tr("转场%1").arg(m_rowMissionPlan.steps.size() + 1);
+        step.note = tr("使用当前单垄原语作为短转场模板");
+        step.primitivePlan = m_rowWorkPlan;
+        break;
+    case RowMissionStepType::Turn:
+        step.name = tr("掉头%1").arg(m_rowMissionPlan.steps.size() + 1);
+        step.note = tr("原地转向步骤");
+        step.targetYawRad = m_hasVehiclePose ? m_vehiclePoseTheta : 0.0;
+        break;
+    case RowMissionStepType::Wait:
+        step.name = tr("停留%1").arg(m_rowMissionPlan.steps.size() + 1);
+        step.note = tr("任务内停留步骤");
+        step.dwellMs = 2000;
+        break;
+    }
+    return step;
+}
+
+void Map::insertRowMissionStep(const RowMissionStep &step, int row)
+{
+    RowMissionStep normalizedStep = step;
+    if (normalizedStep.stepId.trimmed().isEmpty()) {
+        normalizedStep.stepId = RowMissionJson::generateStepId(row >= 0 ? row : m_rowMissionPlan.steps.size());
+    }
+    if (normalizedStep.name.trimmed().isEmpty()) {
+        normalizedStep.name = normalizedStep.stepId;
+    }
+
+    if (row < 0 || row > m_rowMissionPlan.steps.size()) {
+        m_rowMissionPlan.steps.append(normalizedStep);
+        m_rowMissionSelectedStepRow = m_rowMissionPlan.steps.size() - 1;
+    } else {
+        m_rowMissionPlan.steps.insert(row, normalizedStep);
+        m_rowMissionSelectedStepRow = row;
+    }
+
+    updateRowMissionStepNames();
+    updateRowMissionPlanVersion();
+    refreshRowMissionUi();
+}
+
+void Map::moveRowMissionStep(int fromRow, int toRow)
+{
+    if (fromRow < 0 || fromRow >= m_rowMissionPlan.steps.size()) {
+        return;
+    }
+    if (toRow < 0 || toRow >= m_rowMissionPlan.steps.size() || fromRow == toRow) {
+        return;
+    }
+
+    m_rowMissionPlan.steps.move(fromRow, toRow);
+    m_rowMissionSelectedStepRow = toRow;
+    updateRowMissionStepNames();
+    updateRowMissionPlanVersion();
+    refreshRowMissionUi();
+}
+
+void Map::updateRowMissionStepNames()
+{
+    for (int i = 0; i < m_rowMissionPlan.steps.size(); ++i) {
+        RowMissionStep &step = m_rowMissionPlan.steps[i];
+        if (step.stepId.trimmed().isEmpty()) {
+            step.stepId = RowMissionJson::generateStepId(i);
+        }
+        if (step.name.trimmed().isEmpty()) {
+            step.name = QStringLiteral("%1 %2").arg(rowMissionStepTypeText(step.type)).arg(i + 1);
+        }
+    }
+}
+
+void Map::loadRowMissionStepEditor(int row)
+{
+    m_rowMissionEditorUpdating = true;
+    const RowMissionStep *step = rowMissionStepAt(row);
+    if (!step) {
+        if (m_rowMissionStepTypeCombo) {
+            QSignalBlocker blocker(m_rowMissionStepTypeCombo);
+            m_rowMissionStepTypeCombo->setCurrentIndex(0);
+            m_rowMissionStepTypeCombo->setEnabled(false);
+        }
+        if (m_rowMissionStepNameEdit) {
+            QSignalBlocker blocker(m_rowMissionStepNameEdit);
+            m_rowMissionStepNameEdit->clear();
+            m_rowMissionStepNameEdit->setEnabled(false);
+        }
+        if (m_rowMissionStepNoteEdit) {
+            QSignalBlocker blocker(m_rowMissionStepNoteEdit);
+            m_rowMissionStepNoteEdit->clear();
+            m_rowMissionStepNoteEdit->setEnabled(false);
+        }
+        if (m_rowMissionTargetYawSpin) {
+            QSignalBlocker blocker(m_rowMissionTargetYawSpin);
+            m_rowMissionTargetYawSpin->setValue(0.0);
+            m_rowMissionTargetYawSpin->setEnabled(false);
+        }
+        if (m_rowMissionDwellSpin) {
+            QSignalBlocker blocker(m_rowMissionDwellSpin);
+            m_rowMissionDwellSpin->setValue(0);
+            m_rowMissionDwellSpin->setEnabled(false);
+        }
+        if (m_rowMissionPrimitiveSummaryLabel) {
+            m_rowMissionPrimitiveSummaryLabel->setText(tr("原语：未选择步骤"));
+        }
+        m_rowMissionEditorUpdating = false;
+        return;
+    }
+
+    if (m_rowMissionStepTypeCombo) {
+        QSignalBlocker blocker(m_rowMissionStepTypeCombo);
+        const int index = m_rowMissionStepTypeCombo->findData(static_cast<int>(step->type));
+        m_rowMissionStepTypeCombo->setCurrentIndex(index >= 0 ? index : 0);
+        m_rowMissionStepTypeCombo->setEnabled(canEditRowMissionPlan());
+    }
+    if (m_rowMissionStepNameEdit) {
+        QSignalBlocker blocker(m_rowMissionStepNameEdit);
+        m_rowMissionStepNameEdit->setText(step->name);
+        m_rowMissionStepNameEdit->setEnabled(canEditRowMissionPlan());
+    }
+    if (m_rowMissionStepNoteEdit) {
+        QSignalBlocker blocker(m_rowMissionStepNoteEdit);
+        m_rowMissionStepNoteEdit->setText(step->note);
+        m_rowMissionStepNoteEdit->setEnabled(canEditRowMissionPlan());
+    }
+    if (m_rowMissionTargetYawSpin) {
+        QSignalBlocker blocker(m_rowMissionTargetYawSpin);
+        m_rowMissionTargetYawSpin->setValue(qRadiansToDegrees(step->targetYawRad));
+        m_rowMissionTargetYawSpin->setEnabled(canEditRowMissionPlan() && step->type == RowMissionStepType::Turn);
+    }
+    if (m_rowMissionDwellSpin) {
+        QSignalBlocker blocker(m_rowMissionDwellSpin);
+        m_rowMissionDwellSpin->setValue(step->dwellMs);
+        m_rowMissionDwellSpin->setEnabled(canEditRowMissionPlan() && step->type == RowMissionStepType::Wait);
+    }
+    if (m_rowMissionPrimitiveSummaryLabel) {
+        if (step->type == RowMissionStepType::RowLeg || step->type == RowMissionStepType::Transfer) {
+            if (step->primitivePlan.isValid()) {
+                m_rowMissionPrimitiveSummaryLabel->setText(
+                    tr("原语：长度 %1 m，中间点 %2，版本 %3")
+                        .arg(step->primitivePlan.lineLength(), 0, 'f', 2)
+                        .arg(step->primitivePlan.checkpoints.size())
+                        .arg(step->primitivePlan.version));
+            } else {
+                m_rowMissionPrimitiveSummaryLabel->setText(tr("原语：未配置有效的单垄计划"));
+            }
+        } else {
+            m_rowMissionPrimitiveSummaryLabel->setText(tr("原语：当前步骤不使用单垄原语"));
+        }
+    }
+    m_rowMissionEditorUpdating = false;
+}
+
+void Map::applyRowMissionStepEditor(int row)
+{
+    if (m_rowMissionEditorUpdating) {
+        return;
+    }
+    RowMissionStep *step = rowMissionStepAt(row);
+    if (!step) {
+        return;
+    }
+
+    if (m_rowMissionStepTypeCombo) {
+        const QVariant data = m_rowMissionStepTypeCombo->currentData();
+        step->type = static_cast<RowMissionStepType>(data.toInt());
+    }
+    if (m_rowMissionStepNameEdit) {
+        step->name = m_rowMissionStepNameEdit->text().trimmed();
+    }
+    if (m_rowMissionStepNoteEdit) {
+        step->note = m_rowMissionStepNoteEdit->text().trimmed();
+    }
+    if (m_rowMissionTargetYawSpin) {
+        step->targetYawRad = qDegreesToRadians(m_rowMissionTargetYawSpin->value());
+    }
+    if (m_rowMissionDwellSpin) {
+        step->dwellMs = m_rowMissionDwellSpin->value();
+    }
+    if ((step->type == RowMissionStepType::RowLeg || step->type == RowMissionStepType::Transfer)
+        && !step->primitivePlan.isValid() && hasRowWorkLine()) {
+        step->primitivePlan = m_rowWorkPlan;
+    }
+
+    if (step->name.trimmed().isEmpty()) {
+        step->name = QStringLiteral("%1 %2").arg(rowMissionStepTypeText(step->type)).arg(row + 1);
+    }
+
+    updateRowMissionPlanVersion();
+    refreshRowMissionUi();
+}
+
+void Map::syncRowMissionEditorWidgets()
+{
+    applyRowMissionStepEditor(rowMissionSelectedStepRow());
+}
+
+void Map::selectRowMissionStep(int row)
+{
+    if (!m_rowMissionStepTable || row < 0 || row >= m_rowMissionStepTable->rowCount()) {
+        return;
+    }
+    m_rowMissionSelectedStepRow = row;
+    QSignalBlocker blocker(m_rowMissionStepTable);
+    m_rowMissionStepTable->setCurrentCell(row, kRowMissionStepNameColumn);
+}
+
+void Map::handleRowWorkCaptureStartPoint()
+{
+    if (!m_rowWorkClient || !m_rowWorkClient->isConfigured()) {
+        setRowWorkStatusText(tr("未配置直线作业服务地址"), true);
+        return;
+    }
+    m_rowWorkPendingCaptureTarget = RowWorkPendingCaptureTarget::StartPose;
+    m_rowWorkClient->capturePose();
+}
+
+void Map::handleRowWorkCaptureEndPoint()
+{
+    if (!m_rowWorkClient || !m_rowWorkClient->isConfigured()) {
+        setRowWorkStatusText(tr("未配置直线作业服务地址"), true);
+        return;
+    }
+    m_rowWorkPendingCaptureTarget = RowWorkPendingCaptureTarget::EndPose;
+    m_rowWorkClient->capturePose();
+}
+
+void Map::handleRowWorkAddCheckpointFromVehicle()
+{
+    if (!hasRowWorkLine()) {
+        setRowWorkStatusText(tr("请先完成 A/B 示教后再添加中间点"), true);
+        return;
+    }
+    if (!m_rowWorkClient || !m_rowWorkClient->isConfigured()) {
+        setRowWorkStatusText(tr("未配置直线作业服务地址"), true);
+        return;
+    }
+    m_rowWorkPendingCaptureTarget = RowWorkPendingCaptureTarget::CheckpointFromVehicle;
+    m_rowWorkClient->capturePose();
+}
+
+void Map::handleRowWorkAddCheckpointFromMap()
+{
+    if (!hasRowWorkLine()) {
+        setRowWorkStatusText(tr("请先完成 A/B 示教后再添加中间点"), true);
+        if (m_rowWorkAddCheckpointFromMapButton) {
+            QSignalBlocker blocker(m_rowWorkAddCheckpointFromMapButton);
+            m_rowWorkAddCheckpointFromMapButton->setChecked(false);
+        }
+        return;
+    }
+
+    m_rowWorkClickPlacementMode = m_rowWorkAddCheckpointFromMapButton && m_rowWorkAddCheckpointFromMapButton->isChecked();
+    setRowWorkStatusText(m_rowWorkClickPlacementMode ? tr("请在地图上点击添加中间点") : tr("已取消地图点击添加中间点"));
+}
+
+void Map::handleRowWorkDeleteCheckpoint()
+{
+    if (!m_rowWorkCheckpointTable) {
+        return;
+    }
+    const int row = m_rowWorkCheckpointTable->currentRow();
+    if (row < 0 || row >= m_rowWorkPlan.checkpoints.size()) {
+        return;
+    }
+    m_rowWorkPlan.checkpoints.removeAt(row);
+    updateCheckpointRowNames();
+    updateRowWorkPlanVersion();
+    refreshRowWorkUi();
+    setRowWorkStatusText(tr("已删除中间点"));
+}
+
+void Map::handleRowWorkClearCheckpoints()
+{
+    if (m_rowWorkPlan.checkpoints.isEmpty()) {
+        return;
+    }
+    m_rowWorkPlan.checkpoints.clear();
+    updateRowWorkPlanVersion();
+    refreshRowWorkUi();
+    setRowWorkStatusText(tr("已清空中间点"));
+}
+
+void Map::handleRowWorkClearPlan()
+{
+    clearRowWorkPlanInternal();
+}
+
+void Map::handleRowWorkReadPlan()
+{
+    if (!m_rowWorkClient || !m_rowWorkClient->isConfigured()) {
+        setRowWorkStatusText(tr("未配置直线作业服务地址"), true);
+        return;
+    }
+
+    const bool hasLocalPlanContent =
+        m_rowWorkPlan.hasStartPose || m_rowWorkPlan.hasEndPose || !m_rowWorkPlan.checkpoints.isEmpty();
+    if (m_rowWorkStatusDirty && hasLocalPlanContent) {
+        const QMessageBox::StandardButton answer =
+            QMessageBox::question(m_mapPage,
+                                  tr("回读计划"),
+                                  tr("当前本地直线作业计划可能与工控机不一致，继续将使用工控机计划覆盖当前编辑内容。是否继续？"),
+                                  QMessageBox::Yes | QMessageBox::No,
+                                  QMessageBox::No);
+        if (answer != QMessageBox::Yes) {
+            return;
+        }
+    }
+
+    m_rowWorkClient->requestPlan();
+}
+
+void Map::handleRowWorkUploadPlan()
+{
+    uploadRowWorkPlanIfNeeded(true);
+}
+
+void Map::handleRowWorkStart()
+{
+    if (!m_rowWorkClient || !m_rowWorkClient->isConfigured()) {
+        setRowWorkStatusText(tr("未配置直线作业服务地址"), true);
+        return;
+    }
+    emit rowWorkAutoStartRequested();
+    m_rowWorkPendingStartAfterUpload = true;
+    if (uploadRowWorkPlanIfNeeded(false)) {
+        m_rowWorkPendingStartAfterUpload = false;
+        m_rowWorkClient->startRowWork();
+    }
+}
+
+void Map::handleRowWorkPause()
+{
+    if (m_rowWorkClient) {
+        m_rowWorkClient->pauseRowWork();
+    }
+}
+
+void Map::handleRowWorkResume()
+{
+    if (m_rowWorkClient) {
+        m_rowWorkClient->resumeRowWork();
+    }
+}
+
+void Map::handleRowWorkStop()
+{
+    if (m_rowWorkClient) {
+        m_rowWorkClient->stopRowWork();
+    }
+    emit rowWorkAutoStopRequested();
+}
+
+void Map::handleRowWorkLoopChanged(bool checked)
+{
+    if (m_rowWorkPlan.params.loopEnabled == checked) {
+        return;
+    }
+    m_rowWorkPlan.params.loopEnabled = checked;
+    updateRowWorkPlanVersion();
+    refreshRowWorkUi();
+}
+
+void Map::handleRowWorkCheckpointCellChanged(int row, int column)
+{
+    Q_UNUSED(column);
+    if (m_rowWorkCheckpointTableUpdating || row < 0 || row >= m_rowWorkPlan.checkpoints.size()) {
+        return;
+    }
+
+    RowCheckpoint checkpoint = checkpointFromRow(row);
+    checkpoint.progress = RowWorkGeometry::clampProgress(m_rowWorkPlan, checkpoint.progress);
+    checkpoint.dwellMs = qMax(0, checkpoint.dwellMs);
+    if (checkpoint.name.trimmed().isEmpty()) {
+        checkpoint.name = QStringLiteral("P%1").arg(row + 1);
+    }
+    m_rowWorkPlan.checkpoints[row] = checkpoint;
+    sortRowWorkCheckpoints();
+    updateCheckpointRowNames();
+    updateRowWorkPlanVersion();
+    refreshRowWorkUi();
+}
+
+void Map::handleRowMissionNameEdited()
+{
+    if (m_rowMissionEditorUpdating) {
+        return;
+    }
+    const QString name = m_rowMissionNameEdit ? m_rowMissionNameEdit->text().trimmed() : QString();
+    if (m_rowMissionPlan.name == name) {
+        return;
+    }
+    m_rowMissionPlan.name = name;
+    updateRowMissionPlanVersion();
+    refreshRowMissionUi();
+}
+
+void Map::handleRowMissionLoopChanged(bool checked)
+{
+    if (m_rowMissionPlan.loopEnabled == checked) {
+        return;
+    }
+    m_rowMissionPlan.loopEnabled = checked;
+    updateRowMissionPlanVersion();
+    refreshRowMissionUi();
+}
+
+void Map::handleRowMissionStepSelectionChanged()
+{
+    if (!m_rowMissionStepTable) {
+        return;
+    }
+    m_rowMissionSelectedStepRow = m_rowMissionStepTable->currentRow();
+    loadRowMissionStepEditor(m_rowMissionSelectedStepRow);
+    refreshRowMissionControlState();
+}
+
+void Map::handleRowMissionStepCellChanged(int row, int column)
+{
+    if (m_rowMissionStepTableUpdating || row < 0 || row >= m_rowMissionPlan.steps.size()) {
+        return;
+    }
+
+    RowMissionStep &step = m_rowMissionPlan.steps[row];
+    if (column == kRowMissionStepEnabledColumn) {
+        if (const auto *item = m_rowMissionStepTable->item(row, column)) {
+            step.enabled = item->checkState() == Qt::Checked;
+        }
+    } else if (column == kRowMissionStepNameColumn) {
+        if (const auto *item = m_rowMissionStepTable->item(row, column)) {
+            step.name = item->text().trimmed();
+        }
+    }
+
+    updateRowMissionStepNames();
+    updateRowMissionPlanVersion();
+    refreshRowMissionUi();
+}
+
+void Map::handleRowMissionTypeChanged(int index)
+{
+    Q_UNUSED(index);
+    if (m_rowMissionEditorUpdating) {
+        return;
+    }
+    applyRowMissionStepEditor(rowMissionSelectedStepRow());
+}
+
+void Map::handleRowMissionStepNameEdited()
+{
+    applyRowMissionStepEditor(rowMissionSelectedStepRow());
+}
+
+void Map::handleRowMissionStepNoteEdited()
+{
+    applyRowMissionStepEditor(rowMissionSelectedStepRow());
+}
+
+void Map::handleRowMissionTargetYawChanged(double value)
+{
+    Q_UNUSED(value);
+    if (m_rowMissionEditorUpdating) {
+        return;
+    }
+    applyRowMissionStepEditor(rowMissionSelectedStepRow());
+}
+
+void Map::handleRowMissionDwellChanged(int value)
+{
+    Q_UNUSED(value);
+    if (m_rowMissionEditorUpdating) {
+        return;
+    }
+    applyRowMissionStepEditor(rowMissionSelectedStepRow());
+}
+
+void Map::handleRowMissionAddRowLegStep()
+{
+    if (!canEditRowMissionPlan()) {
+        return;
+    }
+    insertRowMissionStep(buildMissionStepFromCurrentRowWork(RowMissionStepType::RowLeg));
+    setRowMissionStatusText(tr("已添加垄内段步骤"));
+}
+
+void Map::handleRowMissionAddTransferStep()
+{
+    if (!canEditRowMissionPlan()) {
+        return;
+    }
+    insertRowMissionStep(buildMissionStepFromCurrentRowWork(RowMissionStepType::Transfer));
+    setRowMissionStatusText(tr("已添加转场段步骤"));
+}
+
+void Map::handleRowMissionAddTurnStep()
+{
+    if (!canEditRowMissionPlan()) {
+        return;
+    }
+    insertRowMissionStep(buildMissionStepFromCurrentRowWork(RowMissionStepType::Turn));
+    setRowMissionStatusText(tr("已添加掉头步骤"));
+}
+
+void Map::handleRowMissionAddWaitStep()
+{
+    if (!canEditRowMissionPlan()) {
+        return;
+    }
+    insertRowMissionStep(buildMissionStepFromCurrentRowWork(RowMissionStepType::Wait));
+    setRowMissionStatusText(tr("已添加停留步骤"));
+}
+
+void Map::handleRowMissionRemoveStep()
+{
+    const int row = rowMissionSelectedStepRow();
+    if (!canEditRowMissionPlan() || row < 0 || row >= m_rowMissionPlan.steps.size()) {
+        return;
+    }
+    m_rowMissionPlan.steps.removeAt(row);
+    updateRowMissionStepNames();
+    m_rowMissionSelectedStepRow = m_rowMissionPlan.steps.isEmpty() ? -1 : qMin(row, m_rowMissionPlan.steps.size() - 1);
+    updateRowMissionPlanVersion();
+    refreshRowMissionUi();
+    setRowMissionStatusText(tr("已删除步骤"));
+}
+
+void Map::handleRowMissionMoveStepUp()
+{
+    const int row = rowMissionSelectedStepRow();
+    if (!canEditRowMissionPlan() || row <= 0) {
+        return;
+    }
+    moveRowMissionStep(row, row - 1);
+}
+
+void Map::handleRowMissionMoveStepDown()
+{
+    const int row = rowMissionSelectedStepRow();
+    if (!canEditRowMissionPlan() || row < 0 || row >= m_rowMissionPlan.steps.size() - 1) {
+        return;
+    }
+    moveRowMissionStep(row, row + 1);
+}
+
+void Map::handleRowMissionClearSteps()
+{
+    if (!canEditRowMissionPlan() || m_rowMissionPlan.steps.isEmpty()) {
+        return;
+    }
+    m_rowMissionPlan.steps.clear();
+    m_rowMissionSelectedStepRow = -1;
+    updateRowMissionPlanVersion();
+    refreshRowMissionUi();
+    setRowMissionStatusText(tr("已清空步骤"));
+}
+
+void Map::handleRowMissionImportCurrentRowWork()
+{
+    if (!canEditRowMissionPlan()) {
+        return;
+    }
+    if (!hasRowWorkLine()) {
+        setRowMissionStatusText(tr("请先完成当前单垄原语示教"), true);
+        return;
+    }
+
+    m_rowMissionPlan.steps.clear();
+    RowMissionStep rowLeg = buildMissionStepFromCurrentRowWork(RowMissionStepType::RowLeg);
+    rowLeg.name = tr("单垄往返");
+    rowLeg.note = tr("从当前单垄原语导入");
+    m_rowMissionPlan.steps.append(rowLeg);
+
+    RowMissionStep turn = buildMissionStepFromCurrentRowWork(RowMissionStepType::Turn);
+    turn.name = tr("掉头");
+    turn.note = tr("导入后继续补充转场/停留步骤");
+    m_rowMissionPlan.steps.append(turn);
+
+    m_rowMissionSelectedStepRow = 0;
+    updateRowMissionStepNames();
+    updateRowMissionPlanVersion();
+    refreshRowMissionUi();
+    setRowMissionStatusText(tr("已从当前单垄导入任务模板"));
+}
+
+void Map::handleRowMissionApplyStepEdits()
+{
+    applyRowMissionStepEditor(rowMissionSelectedStepRow());
 }
 
 
