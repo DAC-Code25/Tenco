@@ -48,6 +48,8 @@ qt_add_executable(Tenco
 
     cameracontrolclient.h
     cameracontrolclient.cpp
+    gimbalcontrolclient.h
+    gimbalcontrolclient.cpp
     rowworktypes.h
     rowworktypes.cpp
     rowmissiontypes.h

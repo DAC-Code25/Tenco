@@ -61,5 +61,24 @@
     "statusPollIntervalMs": 300,
     "commandTimeoutMs": 3000,
     "autoRefreshPlanStatus": true
+  },
+  "gimbal": {
+    "enabled": true,
+    "plcHost": "192.168.31.120",
+    "plcPort": 502,
+    "unitId": 255,
+    "requestTimeoutMs": 1000,
+    "statusPollIntervalMs": 300,
+    "heightControlAddress": 0,
+    "pitchControlAddress": 1,
+    "yawControlAddress": 2,
+    "statusStartAddress": 100,
+    "statusRegisterCount": 7,
+    "minHeight": -1900,
+    "maxHeight": 6000,
+    "minYaw": 5,
+    "maxYaw": 175,
+    "minPitch": 95,
+    "maxPitch": 265
   }
 }

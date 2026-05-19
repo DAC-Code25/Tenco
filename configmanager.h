@@ -80,6 +80,26 @@ public:
         bool autoRefreshPlanStatus = true;
     };
 
+    struct GimbalConfig {
+        bool enabled = false;
+        QString plcHost;
+        int plcPort = 502;
+        int unitId = 255;
+        int requestTimeoutMs = 1000;
+        int statusPollIntervalMs = 300;
+        int heightControlAddress = 0;
+        int pitchControlAddress = 1;
+        int yawControlAddress = 2;
+        int statusStartAddress = 100;
+        int statusRegisterCount = 7;
+        int minHeight = -1900;
+        int maxHeight = 6000;
+        int minYaw = 5;
+        int maxYaw = 175;
+        int minPitch = 95;
+        int maxPitch = 265;
+    };
+
     static ConfigManager &instance();
 
     void reload();
@@ -91,6 +111,7 @@ public:
     const VideoConfig &video() const { return m_video; }
     const NetworkConfig &network() const { return m_network; }
     const RowWorkConfig &rowWork() const { return m_rowWork; }
+    const GimbalConfig &gimbal() const { return m_gimbal; }
 
     QPointF geoToLocal(double latitudeDeg, double longitudeDeg) const;
     void localToGeo(const QPointF &localPoint, double &latitudeDeg, double &longitudeDeg) const;
@@ -113,6 +134,7 @@ private:
     VideoConfig m_video;
     NetworkConfig m_network;
     RowWorkConfig m_rowWork;
+    GimbalConfig m_gimbal;
     double m_metersPerDegLat = 0.0;
     double m_metersPerDegLon = 0.0;
     QString m_configPath;
