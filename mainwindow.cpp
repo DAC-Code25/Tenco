@@ -7,10 +7,13 @@
 #include "about.h" // 关于页业务逻辑封装
 
 #include <QIcon> //  按钮图标所需
+#include <QApplication>
 #include <QPoint> //
 #include <QRect> // 自定义拖动区域判断 右键菜单槽函数参数类型
 #include <QSize> // 控件尺寸定义
 #include <QTextStream> // 读取样式文件时使用
+#include <QEvent>
+#include <QWidget>
 #include <QKeyEvent> // 捕获键盘事件
 #include <QFile> // 文件操作
 #include <QMouseEvent>
@@ -25,7 +28,6 @@ MainWindow::MainWindow(QWidget *parent) // 主窗口构造函数
 
     ui->setupUi(this); // 将 UI 绑定到当前窗口
     initUIComponents(); // 调用样式初始化函数
-
    /*导航栏 */
     //按钮指针
     homeButton = ui->homeButton; // 首页按钮指针
@@ -58,6 +60,12 @@ MainWindow::MainWindow(QWidget *parent) // 主窗口构造函数
     helpButton->setAutoExclusive(true); //  帮助按钮互斥
     aboutButton->setAutoExclusive(true); //  关于按钮互斥
 
+    homeButton->setFocusPolicy(Qt::NoFocus);
+    mapButton->setFocusPolicy(Qt::NoFocus);
+    maintenanceButton->setFocusPolicy(Qt::NoFocus);
+    helpButton->setFocusPolicy(Qt::NoFocus);
+    aboutButton->setFocusPolicy(Qt::NoFocus);
+
     homeButton->setChecked(true); // 默认选中首页按钮
 
     homePage = new Home(ui, this); // 初始化首页控制对象
@@ -65,6 +73,8 @@ MainWindow::MainWindow(QWidget *parent) // 主窗口构造函数
     maintenancePage = new Maintenance(ui, this); // 初始化维护页控制对象
     helpPage = new Help(ui, this); // 初始化帮助页控制对象
     aboutPage = new About(ui, this); // 初始化关于页控制对象
+
+    qApp->installEventFilter(this);
 
     if (homePage && mapPage) {
         //建立信号槽连接（发送者，绑定符号，接收者，绑定符号）
@@ -241,6 +251,53 @@ void MainWindow::changeEvent(QEvent *event) //监听窗口状态变化 同步改
     }
 }
 
+bool MainWindow::eventFilter(QObject *watched, QEvent *event)
+{
+    if (!homePage || !stackedWidget || stackedWidget->currentIndex() != 0) {
+        return QMainWindow::eventFilter(watched, event);
+    }
+
+    auto *watchedWidget = qobject_cast<QWidget *>(watched);
+    if (!watchedWidget) {
+        return QMainWindow::eventFilter(watched, event);
+    }
+    if (watchedWidget->window() != this) {
+        return QMainWindow::eventFilter(watched, event);
+    }
+
+    if (event->type() != QEvent::ShortcutOverride &&
+        event->type() != QEvent::KeyPress &&
+        event->type() != QEvent::KeyRelease) {
+        return QMainWindow::eventFilter(watched, event);
+    }
+
+    auto *keyEvent = static_cast<QKeyEvent *>(event);
+    const int key = keyEvent->key();
+    const bool isGimbalKey =
+        key == Qt::Key_Up ||
+        key == Qt::Key_Down ||
+        key == Qt::Key_Left ||
+        key == Qt::Key_Right ||
+        key == Qt::Key_Control;
+    if (!isGimbalKey) {
+        return QMainWindow::eventFilter(watched, event);
+    }
+
+    if (event->type() == QEvent::ShortcutOverride) {
+        keyEvent->accept();
+        return true;
+    }
+
+    if (event->type() == QEvent::KeyPress) {
+        homePage->handleKeyPress(keyEvent->key(), keyEvent->modifiers(), keyEvent->isAutoRepeat());
+    } else if (event->type() == QEvent::KeyRelease) {
+        homePage->handleKeyRelease(keyEvent->key(), keyEvent->modifiers(), keyEvent->isAutoRepeat());
+    }
+
+    keyEvent->accept();
+    return true;
+}
+
 void MainWindow::mousePressEvent(QMouseEvent *event) //鼠标点击事件
 {
     if (event->button() == Qt::LeftButton) {
@@ -286,9 +343,11 @@ void MainWindow::mouseReleaseEvent(QMouseEvent *event) //鼠标释放事件
 
 void MainWindow::keyPressEvent(QKeyEvent *event) //键盘按下事件
 {
-    if (homePage && homePage->handleKeyPress(event->key(), event->isAutoRepeat())) {
-        event->accept();
-        return;
+    if (homePage && stackedWidget && stackedWidget->currentIndex() == 0) {
+        if (homePage->handleKeyPress(event->key(), event->modifiers(), event->isAutoRepeat())) {
+            event->accept();
+            return;
+        }
     }
 
     QMainWindow::keyPressEvent(event);
@@ -296,9 +355,11 @@ void MainWindow::keyPressEvent(QKeyEvent *event) //键盘按下事件
 
 void MainWindow::keyReleaseEvent(QKeyEvent *event) //键盘松开事件
 {
-    if (homePage && homePage->handleKeyRelease(event->key(), event->isAutoRepeat())) {
-        event->accept();
-        return;
+    if (homePage && stackedWidget && stackedWidget->currentIndex() == 0) {
+        if (homePage->handleKeyRelease(event->key(), event->modifiers(), event->isAutoRepeat())) {
+            event->accept();
+            return;
+        }
     }
 
     QMainWindow::keyReleaseEvent(event);

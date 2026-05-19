@@ -425,7 +425,7 @@ QPushButton:hover {
                <number>0</number>
               </property>
               <property name="bottomMargin">
-               <number>0</number>
+               <number>4</number>
               </property>
               <item>
                <widget class="QPushButton" name="pushButton_3">

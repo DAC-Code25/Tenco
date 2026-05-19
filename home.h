@@ -12,6 +12,8 @@
 
 #include <memory>
 
+#include "gimbalcontrolclient.h"
+
 class QProgressDialog;
 class AbstractVideoSource;
 class CameraControlClient;
@@ -32,8 +34,8 @@ public:
     explicit Home(Ui::MainWindow *ui, QObject *parent = nullptr);
     ~Home() override;
 
-    bool handleKeyPress(int key, bool isAutoRepeat);
-    bool handleKeyRelease(int key, bool isAutoRepeat);
+    bool handleKeyPress(int key, Qt::KeyboardModifiers modifiers, bool isAutoRepeat);
+    bool handleKeyRelease(int key, Qt::KeyboardModifiers modifiers, bool isAutoRepeat);
 
 signals:
     void vehiclePoseUpdated(double x, double y, double theta);
@@ -66,6 +68,13 @@ private slots:
     void handleTurnRightButtonPressed();
     void handleTurnRightButtonReleased();
     void handleStopButtonClicked();
+    void handleGimbalUpPressed();
+    void handleGimbalDownPressed();
+    void handleGimbalLeftPressed();
+    void handleGimbalRightPressed();
+    void handleGimbalPitchUpPressed();
+    void handleGimbalPitchDownPressed();
+    void handleGimbalButtonReleased();
 
     void handleChassisConnected();
     void handleChassisDisconnected();
@@ -117,6 +126,16 @@ private:
     void updateRemoteCameraUiState();
     void requestRemoteCameraStatus();
     void logCameraStatusChange(const QString &message);
+    void initializeGimbalControl();
+    void updateGimbalStatus(const GimbalStatus &status);
+    void jogGimbal(GimbalControlClient::Axis axis, GimbalControlClient::Direction direction, const QString &actionText);
+    void stopGimbal();
+    void stopGimbalKeyboardMotion();
+    bool canJogGimbal(GimbalControlClient::Axis axis, GimbalControlClient::Direction direction, QString *reason) const;
+    void updateGimbalButtonState();
+    bool handleGimbalKeyPress(int key, Qt::KeyboardModifiers modifiers);
+    bool handleGimbalKeyRelease(int key, Qt::KeyboardModifiers modifiers);
+    void updateGimbalKeyboardMotion();
 
     QTimer *restartCheckTimer;
     QTimer *forwardRepeatTimer;
@@ -125,6 +144,7 @@ private:
     QTimer *turnRightRepeatTimer;
     QTimer *rebootCountdownTimer;
     QTimer *cameraStatusTimer;
+    QTimer *gimbalSafetyStopTimer;
 
     QProgressDialog *rebootProgressDialog;
 
@@ -132,6 +152,7 @@ private:
     ChassisClient *m_chassisClient = nullptr;
     AbstractVideoSource *m_videoSource = nullptr;
     CameraControlClient *m_cameraControlClient = nullptr;
+    GimbalControlClient *m_gimbalControlClient = nullptr;
     RouteFollower *m_routeFollower = nullptr;
     std::unique_ptr<HomeStatusPresenter> m_statusPresenter;
 
@@ -149,6 +170,12 @@ private:
     bool m_hasLoggedRemoteCameraStatus = false;
     QHash<QString, QString> m_videoStreamOptions;
     QString m_lastHomeLogMessage;
+    GimbalStatus m_lastGimbalStatus;
+    bool m_hasGimbalStatus = false;
+    bool m_gimbalMoving = false;
+    GimbalControlClient::Axis m_activeGimbalAxis = GimbalControlClient::Axis::Height;
+    GimbalControlClient::Direction m_activeGimbalDirection = GimbalControlClient::Direction::Value1;
+    QString m_activeGimbalAction;
 
     bool forwardButtonHeld;
     bool forwardKeyHeld;
@@ -158,6 +185,14 @@ private:
     bool turnLeftKeyHeld;
     bool turnRightButtonHeld;
     bool turnRightKeyHeld;
+    bool gimbalKeyUpHeld = false;
+    bool gimbalKeyDownHeld = false;
+    bool gimbalKeyLeftHeld = false;
+    bool gimbalKeyRightHeld = false;
+    bool gimbalLeftCtrlHeld = false;
+    bool gimbalKeyboardMotionActive = false;
+    GimbalControlClient::Axis m_activeGimbalKeyboardAxis = GimbalControlClient::Axis::Height;
+    GimbalControlClient::Direction m_activeGimbalKeyboardDirection = GimbalControlClient::Direction::Value1;
     int rebootRemainingSeconds;
 };
 

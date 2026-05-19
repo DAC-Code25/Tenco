@@ -36,6 +36,11 @@ constexpr int kMinRowWorkStatusPollIntervalMs = 100;
 constexpr int kMaxRowWorkStatusPollIntervalMs = 10000;
 constexpr int kMinRowWorkCommandTimeoutMs = 1000;
 constexpr int kMaxRowWorkCommandTimeoutMs = 20000;
+constexpr const char *kDefaultGimbalPlcHost = "192.168.31.120";
+constexpr int kDefaultGimbalPlcPort = 502;
+constexpr int kDefaultGimbalUnitId = 255;
+constexpr int kDefaultGimbalRequestTimeoutMs = 1000;
+constexpr int kDefaultGimbalStatusPollIntervalMs = 300;
 
 QString defaultConfigPath()
 {
@@ -215,6 +220,31 @@ void ConfigManager::loadFromFile(const QString &path)
         m_rowWork.autoRefreshPlanStatus =
             rowWorkObj.value(QStringLiteral("autoRefreshPlanStatus")).toBool(m_rowWork.autoRefreshPlanStatus);
     }
+
+    if (const QJsonObject gimbalObj = root.value(QStringLiteral("gimbal")).toObject(); !gimbalObj.isEmpty()) {
+        m_gimbal.enabled = gimbalObj.value(QStringLiteral("enabled")).toBool(m_gimbal.enabled);
+        m_gimbal.plcHost = gimbalObj.value(QStringLiteral("plcHost")).toString(m_gimbal.plcHost).trimmed();
+        m_gimbal.plcPort = gimbalObj.value(QStringLiteral("plcPort")).toInt(m_gimbal.plcPort);
+        m_gimbal.unitId = gimbalObj.value(QStringLiteral("unitId")).toInt(m_gimbal.unitId);
+        m_gimbal.requestTimeoutMs = gimbalObj.value(QStringLiteral("requestTimeoutMs")).toInt(m_gimbal.requestTimeoutMs);
+        m_gimbal.statusPollIntervalMs = gimbalObj.value(QStringLiteral("statusPollIntervalMs")).toInt(m_gimbal.statusPollIntervalMs);
+        m_gimbal.heightControlAddress =
+            gimbalObj.value(QStringLiteral("heightControlAddress")).toInt(m_gimbal.heightControlAddress);
+        m_gimbal.pitchControlAddress =
+            gimbalObj.value(QStringLiteral("pitchControlAddress")).toInt(m_gimbal.pitchControlAddress);
+        m_gimbal.yawControlAddress =
+            gimbalObj.value(QStringLiteral("yawControlAddress")).toInt(m_gimbal.yawControlAddress);
+        m_gimbal.statusStartAddress =
+            gimbalObj.value(QStringLiteral("statusStartAddress")).toInt(m_gimbal.statusStartAddress);
+        m_gimbal.statusRegisterCount =
+            gimbalObj.value(QStringLiteral("statusRegisterCount")).toInt(m_gimbal.statusRegisterCount);
+        m_gimbal.minHeight = gimbalObj.value(QStringLiteral("minHeight")).toInt(m_gimbal.minHeight);
+        m_gimbal.maxHeight = gimbalObj.value(QStringLiteral("maxHeight")).toInt(m_gimbal.maxHeight);
+        m_gimbal.minYaw = gimbalObj.value(QStringLiteral("minYaw")).toInt(m_gimbal.minYaw);
+        m_gimbal.maxYaw = gimbalObj.value(QStringLiteral("maxYaw")).toInt(m_gimbal.maxYaw);
+        m_gimbal.minPitch = gimbalObj.value(QStringLiteral("minPitch")).toInt(m_gimbal.minPitch);
+        m_gimbal.maxPitch = gimbalObj.value(QStringLiteral("maxPitch")).toInt(m_gimbal.maxPitch);
+    }
 }
 
 void ConfigManager::loadDefaults()
@@ -237,6 +267,12 @@ void ConfigManager::loadDefaults()
     m_rowWork.gatewayBaseUrl = QString::fromUtf8(kDefaultRowWorkGatewayBaseUrl);
     m_rowWork.statusPollIntervalMs = kDefaultRowWorkStatusPollIntervalMs;
     m_rowWork.commandTimeoutMs = kDefaultRowWorkCommandTimeoutMs;
+    m_gimbal = GimbalConfig{};
+    m_gimbal.plcHost = QString::fromUtf8(kDefaultGimbalPlcHost);
+    m_gimbal.plcPort = kDefaultGimbalPlcPort;
+    m_gimbal.unitId = kDefaultGimbalUnitId;
+    m_gimbal.requestTimeoutMs = kDefaultGimbalRequestTimeoutMs;
+    m_gimbal.statusPollIntervalMs = kDefaultGimbalStatusPollIntervalMs;
 }
 
 void ConfigManager::sanitizeConfig()
@@ -321,6 +357,26 @@ void ConfigManager::sanitizeConfig()
         qBound(kMinRowWorkStatusPollIntervalMs, m_rowWork.statusPollIntervalMs, kMaxRowWorkStatusPollIntervalMs);
     m_rowWork.commandTimeoutMs =
         qBound(kMinRowWorkCommandTimeoutMs, m_rowWork.commandTimeoutMs, kMaxRowWorkCommandTimeoutMs);
+
+    m_gimbal.plcHost = m_gimbal.plcHost.trimmed();
+    m_gimbal.plcPort = qBound(1, m_gimbal.plcPort, 65535);
+    m_gimbal.unitId = qBound(1, m_gimbal.unitId, 255);
+    m_gimbal.requestTimeoutMs = qBound(200, m_gimbal.requestTimeoutMs, 10000);
+    m_gimbal.statusPollIntervalMs = qBound(100, m_gimbal.statusPollIntervalMs, 10000);
+    m_gimbal.heightControlAddress = qMax(0, m_gimbal.heightControlAddress);
+    m_gimbal.pitchControlAddress = qMax(0, m_gimbal.pitchControlAddress);
+    m_gimbal.yawControlAddress = qMax(0, m_gimbal.yawControlAddress);
+    m_gimbal.statusStartAddress = qMax(0, m_gimbal.statusStartAddress);
+    m_gimbal.statusRegisterCount = qMax(7, m_gimbal.statusRegisterCount);
+    if (m_gimbal.minHeight > m_gimbal.maxHeight) {
+        std::swap(m_gimbal.minHeight, m_gimbal.maxHeight);
+    }
+    if (m_gimbal.minYaw > m_gimbal.maxYaw) {
+        std::swap(m_gimbal.minYaw, m_gimbal.maxYaw);
+    }
+    if (m_gimbal.minPitch > m_gimbal.maxPitch) {
+        std::swap(m_gimbal.minPitch, m_gimbal.maxPitch);
+    }
 }
 
 void ConfigManager::updateCachedScales()

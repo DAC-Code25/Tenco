@@ -2,6 +2,7 @@
 #include "statusclient.h"
 #include "chassisclient.h"
 #include "cameracontrolclient.h"
+#include "gimbalcontrolclient.h"
 #include "abstractvideosource.h"
 #include "mjpegvideosource.h"
 #include "oakcameravideosource.h"
@@ -53,6 +54,7 @@ Home::Home(Ui::MainWindow *ui, QObject *parent)
     , turnRightRepeatTimer(new QTimer(this))
     , rebootCountdownTimer(new QTimer(this))
     , cameraStatusTimer(new QTimer(this))
+    , gimbalSafetyStopTimer(new QTimer(this))
     , rebootProgressDialog(nullptr)
     , m_statusClient(new StatusClient(this))
     , m_chassisClient(new ChassisClient(this))
@@ -135,6 +137,13 @@ Home::Home(Ui::MainWindow *ui, QObject *parent)
     rebootCountdownTimer->setInterval(1000);
     rebootCountdownTimer->setSingleShot(false);
     connect(rebootCountdownTimer, &QTimer::timeout, this, &Home::updateRebootProgress);
+    gimbalSafetyStopTimer->setSingleShot(true);
+    connect(gimbalSafetyStopTimer, &QTimer::timeout, this, [this]() {
+        if (m_gimbalMoving) {
+            logMessage(tr("云台点动超时，已自动停止"));
+            stopGimbal();
+        }
+    });
 }
 Home::~Home()
 {
@@ -168,9 +177,22 @@ void Home::initialize()
     connect(ui->rightButton, &QPushButton::pressed, this, &Home::handleTurnRightButtonPressed);
     connect(ui->rightButton, &QPushButton::released, this, &Home::handleTurnRightButtonReleased);
     connect(ui->stopButton, &QPushButton::clicked, this, &Home::handleStopButtonClicked);
+    connect(ui->pushButton_3, &QPushButton::pressed, this, &Home::handleGimbalUpPressed);
+    connect(ui->pushButton_3, &QPushButton::released, this, &Home::handleGimbalButtonReleased);
+    connect(ui->pushButton_4, &QPushButton::pressed, this, &Home::handleGimbalDownPressed);
+    connect(ui->pushButton_4, &QPushButton::released, this, &Home::handleGimbalButtonReleased);
+    connect(ui->pushButton_5, &QPushButton::pressed, this, &Home::handleGimbalLeftPressed);
+    connect(ui->pushButton_5, &QPushButton::released, this, &Home::handleGimbalButtonReleased);
+    connect(ui->pushButton_6, &QPushButton::pressed, this, &Home::handleGimbalRightPressed);
+    connect(ui->pushButton_6, &QPushButton::released, this, &Home::handleGimbalButtonReleased);
+    connect(ui->pushButton_7, &QPushButton::pressed, this, &Home::handleGimbalPitchUpPressed);
+    connect(ui->pushButton_7, &QPushButton::released, this, &Home::handleGimbalButtonReleased);
+    connect(ui->pushButton_8, &QPushButton::pressed, this, &Home::handleGimbalPitchDownPressed);
+    connect(ui->pushButton_8, &QPushButton::released, this, &Home::handleGimbalButtonReleased);
     initializeVideoDisplay();
     initializeCameraControl();
     initializeCameraStatusPolling();
+    initializeGimbalControl();
     logMessage(tr("首页模块已初始化，等待操作…"));
 }
 void Home::setupImageSwitches()
@@ -274,6 +296,72 @@ void Home::initializeCameraStatusPolling()
     connect(cameraStatusTimer, &QTimer::timeout, this, &Home::requestRemoteCameraStatus);
     if (usesRemoteCameraControl()) {
         cameraStatusTimer->start();
+    }
+}
+
+void Home::initializeGimbalControl()
+{
+    const auto &gimbalCfg = ConfigManager::instance().gimbal();
+    if (!m_gimbalControlClient) {
+        m_gimbalControlClient = new GimbalControlClient(this);
+    }
+
+    GimbalControlClient::Settings settings;
+    settings.enabled = gimbalCfg.enabled;
+    settings.host = gimbalCfg.plcHost;
+    settings.port = gimbalCfg.plcPort;
+    settings.unitId = gimbalCfg.unitId;
+    settings.requestTimeoutMs = gimbalCfg.requestTimeoutMs;
+    settings.statusPollIntervalMs = gimbalCfg.statusPollIntervalMs;
+    settings.heightControlAddress = gimbalCfg.heightControlAddress;
+    settings.pitchControlAddress = gimbalCfg.pitchControlAddress;
+    settings.yawControlAddress = gimbalCfg.yawControlAddress;
+    settings.statusStartAddress = gimbalCfg.statusStartAddress;
+    settings.statusRegisterCount = gimbalCfg.statusRegisterCount;
+    m_gimbalControlClient->configure(settings);
+
+    connect(m_gimbalControlClient, &GimbalControlClient::connectionStateChanged, this, [this](bool connected) {
+        logMessage(connected ? tr("云台 PLC 已连接") : tr("云台 PLC 已断开"));
+    });
+    connect(m_gimbalControlClient, &GimbalControlClient::statusReceived, this, &Home::updateGimbalStatus);
+    connect(m_gimbalControlClient, &GimbalControlClient::commandSucceeded, this, [this](const QString &operation) {
+        if (operation == QStringLiteral("gimbal_status")) {
+            return;
+        }
+        if (!m_activeGimbalAction.isEmpty()) {
+            logMessage(tr("%1 成功").arg(m_activeGimbalAction));
+            m_activeGimbalAction.clear();
+        } else if (operation != QStringLiteral("gimbal_stop_all")) {
+            logMessage(tr("%1 成功").arg(operation));
+        }
+    });
+    connect(m_gimbalControlClient, &GimbalControlClient::commandFailed, this, [this](const QString &operation, const QString &message) {
+        if (operation == QStringLiteral("gimbal_status")) {
+            const QString text = message.isEmpty() ? tr("云台状态暂不可用") : tr("云台状态暂不可用：%1").arg(message);
+            logMessage(text);
+            if (m_gimbalMoving) {
+                logMessage(tr("云台运动中状态反馈中断，已请求停止"));
+                stopGimbal();
+            }
+            updateGimbalButtonState();
+            return;
+        }
+        m_gimbalMoving = false;
+        if (gimbalSafetyStopTimer) {
+            gimbalSafetyStopTimer->stop();
+        }
+        const QString text = message.isEmpty() ? tr("%1 失败").arg(operation) : tr("%1 失败：%2").arg(operation, message);
+        logMessage(text);
+        m_activeGimbalAction.clear();
+        updateGimbalButtonState();
+    });
+
+    updateGimbalButtonState();
+    if (gimbalCfg.enabled) {
+        logMessage(tr("云台控制已启用：%1:%2").arg(gimbalCfg.plcHost).arg(gimbalCfg.plcPort));
+        m_gimbalControlClient->startStatusPolling();
+    } else {
+        logMessage(tr("云台控制未启用"));
     }
 }
 
@@ -553,6 +641,136 @@ void Home::logCameraStatusChange(const QString &message)
     m_lastLoggedRemoteCameraRecording = m_remoteCameraRecording;
     m_lastRemoteCameraStatusMessage = normalizedMessage;
     m_hasLoggedRemoteCameraStatus = true;
+}
+
+void Home::updateGimbalStatus(const GimbalStatus &status)
+{
+    if (!status.valid) {
+        return;
+    }
+    m_lastGimbalStatus = status;
+    m_hasGimbalStatus = true;
+    if (m_gimbalMoving && m_gimbalControlClient) {
+        QString reason;
+        const QString activeAction = m_activeGimbalAction;
+        if (!canJogGimbal(m_activeGimbalAxis, m_activeGimbalDirection, &reason)) {
+            logMessage(activeAction.isEmpty() ? reason : tr("%1 已停止：%2").arg(activeAction, reason));
+            stopGimbal();
+        }
+    }
+    updateGimbalButtonState();
+}
+
+void Home::jogGimbal(GimbalControlClient::Axis axis, GimbalControlClient::Direction direction, const QString &actionText)
+{
+    if (!m_gimbalControlClient || !m_gimbalControlClient->isConfigured()) {
+        logMessage(tr("云台控制未启用或未配置"));
+        return;
+    }
+
+    QString reason;
+    if (!canJogGimbal(axis, direction, &reason)) {
+        logMessage(reason);
+        stopGimbal();
+        return;
+    }
+
+    m_gimbalMoving = true;
+    m_activeGimbalAxis = axis;
+    m_activeGimbalDirection = direction;
+    m_activeGimbalAction = actionText;
+    m_gimbalControlClient->jog(axis, direction);
+    if (gimbalSafetyStopTimer) {
+        if (axis == GimbalControlClient::Axis::Height) {
+            gimbalSafetyStopTimer->stop();
+        } else {
+            gimbalSafetyStopTimer->start(1500);
+        }
+    }
+    updateGimbalButtonState();
+}
+
+void Home::stopGimbal()
+{
+    m_gimbalMoving = false;
+    gimbalKeyboardMotionActive = false;
+    m_activeGimbalAction.clear();
+    if (gimbalSafetyStopTimer) {
+        gimbalSafetyStopTimer->stop();
+    }
+    if (m_gimbalControlClient && m_gimbalControlClient->isConfigured()) {
+        m_gimbalControlClient->stopAll();
+    }
+    updateGimbalButtonState();
+}
+
+bool Home::canJogGimbal(GimbalControlClient::Axis axis, GimbalControlClient::Direction direction, QString *reason) const
+{
+    const auto &cfg = ConfigManager::instance().gimbal();
+    if (!cfg.enabled) {
+        if (reason) {
+            *reason = tr("云台控制未启用");
+        }
+        return false;
+    }
+    if (!m_hasGimbalStatus) {
+        if (reason) {
+            *reason = tr("尚未获取云台状态，拒绝动作");
+        }
+        return false;
+    }
+
+    auto reject = [&](const QString &text) {
+        if (reason) {
+            *reason = text;
+        }
+        return false;
+    };
+
+    switch (axis) {
+    case GimbalControlClient::Axis::Height:
+        if (direction == GimbalControlClient::Direction::Value1 && m_lastGimbalStatus.height >= cfg.maxHeight) {
+            return reject(tr("云台已接近上升软限位：%1").arg(m_lastGimbalStatus.height));
+        }
+        if (direction == GimbalControlClient::Direction::Value2 && m_lastGimbalStatus.height <= cfg.minHeight) {
+            return reject(tr("云台已接近下降软限位：%1").arg(m_lastGimbalStatus.height));
+        }
+        break;
+    case GimbalControlClient::Axis::Pitch:
+        if (direction == GimbalControlClient::Direction::Value1 && m_lastGimbalStatus.pitch >= cfg.maxPitch) {
+            return reject(tr("云台已接近俯向软限位：%1").arg(m_lastGimbalStatus.pitch));
+        }
+        if (direction == GimbalControlClient::Direction::Value2 && m_lastGimbalStatus.pitch <= cfg.minPitch) {
+            return reject(tr("云台已接近仰向软限位：%1").arg(m_lastGimbalStatus.pitch));
+        }
+        break;
+    case GimbalControlClient::Axis::Yaw:
+        if (direction == GimbalControlClient::Direction::Value1 && m_lastGimbalStatus.yaw <= cfg.minYaw) {
+            return reject(tr("云台已接近右旋软限位：%1").arg(m_lastGimbalStatus.yaw));
+        }
+        if (direction == GimbalControlClient::Direction::Value2 && m_lastGimbalStatus.yaw >= cfg.maxYaw) {
+            return reject(tr("云台已接近左旋软限位：%1").arg(m_lastGimbalStatus.yaw));
+        }
+        break;
+    }
+    return true;
+}
+
+void Home::updateGimbalButtonState()
+{
+    if (!ui) {
+        return;
+    }
+
+    const bool configured = m_gimbalControlClient && m_gimbalControlClient->isConfigured();
+    const bool enabled = configured;
+
+    ui->pushButton_3->setEnabled(enabled);
+    ui->pushButton_4->setEnabled(enabled);
+    ui->pushButton_5->setEnabled(enabled);
+    ui->pushButton_6->setEnabled(enabled);
+    ui->pushButton_7->setEnabled(enabled);
+    ui->pushButton_8->setEnabled(enabled);
 }
 
 void Home::logMessage(const QString &text)
@@ -1025,13 +1243,65 @@ void Home::handleStopButtonClicked()
     if (isManualControlEnabledForButtons() || isManualControlEnabledForKeys()) {  // 允许手动控制时发送停驶指令
         sendVelocityCommand(0.0, 0.0);  // 确保底盘停下来
     }
+    stopGimbal();
     logMessage(tr("急停"));
 }
+
+void Home::handleGimbalUpPressed()
+{
+    jogGimbal(GimbalControlClient::Axis::Height,
+              GimbalControlClient::Direction::Value1,
+              tr("云台上升"));
+}
+
+void Home::handleGimbalDownPressed()
+{
+    jogGimbal(GimbalControlClient::Axis::Height,
+              GimbalControlClient::Direction::Value2,
+              tr("云台下降"));
+}
+
+void Home::handleGimbalLeftPressed()
+{
+    jogGimbal(GimbalControlClient::Axis::Yaw,
+              GimbalControlClient::Direction::Value2,
+              tr("云台左旋"));
+}
+
+void Home::handleGimbalRightPressed()
+{
+    jogGimbal(GimbalControlClient::Axis::Yaw,
+              GimbalControlClient::Direction::Value1,
+              tr("云台右旋"));
+}
+
+void Home::handleGimbalPitchUpPressed()
+{
+    jogGimbal(GimbalControlClient::Axis::Pitch,
+              GimbalControlClient::Direction::Value2,
+              tr("云台上仰"));
+}
+
+void Home::handleGimbalPitchDownPressed()
+{
+    jogGimbal(GimbalControlClient::Axis::Pitch,
+              GimbalControlClient::Direction::Value1,
+              tr("云台下俯"));
+}
+
+void Home::handleGimbalButtonReleased()
+{
+    stopGimbal();
+}
+
 // 处理 W/A/S/D 键按下，触发对应的运动指令
-bool Home::handleKeyPress(int key, bool isAutoRepeat)
+bool Home::handleKeyPress(int key, Qt::KeyboardModifiers modifiers, bool isAutoRepeat)
 {
     if (isAutoRepeat) {  // 忽略长按产生的重复事件
         return false;
+    }
+    if (handleGimbalKeyPress(key, modifiers)) {
+        return true;
     }
     // 未开启键盘控制时不处理也不记录
     if (!isManualControlEnabledForKeys()) {
@@ -1067,10 +1337,13 @@ bool Home::handleKeyPress(int key, bool isAutoRepeat)
     }
 }
 // 处理 W/A/S/D 键释放，关闭对应定时器
-bool Home::handleKeyRelease(int key, bool isAutoRepeat)
+bool Home::handleKeyRelease(int key, Qt::KeyboardModifiers modifiers, bool isAutoRepeat)
 {
     if (isAutoRepeat) {  // 忽略长按重复事件
         return false;
+    }
+    if (handleGimbalKeyRelease(key, modifiers)) {
+        return true;
     }
     // 未开启键盘控制时不处理也不记录
     if (!isManualControlEnabledForKeys()) {
@@ -1099,6 +1372,142 @@ bool Home::handleKeyRelease(int key, bool isAutoRepeat)
         return true;
     default:  // 其它按键交由基类处理
         return false;
+    }
+}
+
+bool Home::handleGimbalKeyPress(int key, Qt::KeyboardModifiers modifiers)
+{
+    if (key == Qt::Key_Control) {
+        gimbalLeftCtrlHeld = true;
+        updateGimbalKeyboardMotion();
+        return true;
+    }
+
+    if (modifiers.testFlag(Qt::ControlModifier)) {
+        gimbalLeftCtrlHeld = true;
+    }
+
+    switch (key) {
+    case Qt::Key_Up:
+        gimbalKeyUpHeld = true;
+        updateGimbalKeyboardMotion();
+        return true;
+    case Qt::Key_Down:
+        gimbalKeyDownHeld = true;
+        updateGimbalKeyboardMotion();
+        return true;
+    case Qt::Key_Left:
+        gimbalKeyLeftHeld = true;
+        updateGimbalKeyboardMotion();
+        return true;
+    case Qt::Key_Right:
+        gimbalKeyRightHeld = true;
+        updateGimbalKeyboardMotion();
+        return true;
+    default:
+        break;
+    }
+    return false;
+}
+
+bool Home::handleGimbalKeyRelease(int key, Qt::KeyboardModifiers modifiers)
+{
+    Q_UNUSED(modifiers);
+    switch (key) {
+    case Qt::Key_Control:
+        gimbalLeftCtrlHeld = false;
+        updateGimbalKeyboardMotion();
+        return true;
+    case Qt::Key_Up:
+        gimbalKeyUpHeld = false;
+        updateGimbalKeyboardMotion();
+        return true;
+    case Qt::Key_Down:
+        gimbalKeyDownHeld = false;
+        updateGimbalKeyboardMotion();
+        return true;
+    case Qt::Key_Left:
+        gimbalKeyLeftHeld = false;
+        updateGimbalKeyboardMotion();
+        return true;
+    case Qt::Key_Right:
+        gimbalKeyRightHeld = false;
+        updateGimbalKeyboardMotion();
+        return true;
+    default:
+        break;
+    }
+    return false;
+}
+
+void Home::updateGimbalKeyboardMotion()
+{
+    if (!m_gimbalControlClient || !m_gimbalControlClient->isConfigured()) {
+        return;
+    }
+
+    const auto applyKeyboardMotion = [this](GimbalControlClient::Axis axis,
+                                            GimbalControlClient::Direction direction,
+                                            const QString &actionText) {
+        const bool motionChanged = gimbalKeyboardMotionActive &&
+                                   (m_activeGimbalKeyboardAxis != axis || m_activeGimbalKeyboardDirection != direction);
+        if (motionChanged) {
+            stopGimbal();
+        }
+        m_activeGimbalKeyboardAxis = axis;
+        m_activeGimbalKeyboardDirection = direction;
+        gimbalKeyboardMotionActive = true;
+        jogGimbal(axis, direction, actionText);
+    };
+
+    if (gimbalLeftCtrlHeld && gimbalKeyUpHeld && !gimbalKeyDownHeld) {
+        applyKeyboardMotion(GimbalControlClient::Axis::Pitch,
+                            GimbalControlClient::Direction::Value2,
+                            tr("云台上仰"));
+        return;
+    }
+    if (gimbalLeftCtrlHeld && gimbalKeyDownHeld && !gimbalKeyUpHeld) {
+        applyKeyboardMotion(GimbalControlClient::Axis::Pitch,
+                            GimbalControlClient::Direction::Value1,
+                            tr("云台下俯"));
+        return;
+    }
+    if (!gimbalLeftCtrlHeld && gimbalKeyUpHeld && !gimbalKeyDownHeld) {
+        applyKeyboardMotion(GimbalControlClient::Axis::Height,
+                            GimbalControlClient::Direction::Value1,
+                            tr("云台上升"));
+        return;
+    }
+    if (!gimbalLeftCtrlHeld && gimbalKeyDownHeld && !gimbalKeyUpHeld) {
+        applyKeyboardMotion(GimbalControlClient::Axis::Height,
+                            GimbalControlClient::Direction::Value2,
+                            tr("云台下降"));
+        return;
+    }
+    if (gimbalKeyLeftHeld && !gimbalKeyRightHeld) {
+        applyKeyboardMotion(GimbalControlClient::Axis::Yaw,
+                            GimbalControlClient::Direction::Value2,
+                            tr("云台左旋"));
+        return;
+    }
+    if (gimbalKeyRightHeld && !gimbalKeyLeftHeld) {
+        applyKeyboardMotion(GimbalControlClient::Axis::Yaw,
+                            GimbalControlClient::Direction::Value1,
+                            tr("云台右旋"));
+        return;
+    }
+
+    stopGimbalKeyboardMotion();
+}
+
+void Home::stopGimbalKeyboardMotion()
+{
+    if (!gimbalKeyboardMotionActive) {
+        return;
+    }
+    gimbalKeyboardMotionActive = false;
+    if (m_gimbalMoving) {
+        stopGimbal();
     }
 }
 // 录像按钮占位实现：后续可接入实际录像逻辑

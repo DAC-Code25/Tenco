@@ -34,6 +34,7 @@ public:
     ~MainWindow() override; //重写基类析构逻辑
 
 protected:
+    bool eventFilter(QObject *watched, QEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override; //重写键盘按下事件入口
     void keyReleaseEvent(QKeyEvent *event) override; //重写键盘释放事件入口
     void mousePressEvent(QMouseEvent *event) override;
