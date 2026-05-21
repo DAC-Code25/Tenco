@@ -21,6 +21,7 @@ public:
     QUrl baseUrl() const { return m_baseUrl; }
 
     void setAuthorizationToken(const QString &token);
+    void setRequestTimeoutMs(int timeoutMs);
 
     bool isConfigured() const;
     bool isBusy() const;
@@ -63,6 +64,7 @@ private:
     QTimer *m_timeoutTimer = nullptr;
     QUrl m_baseUrl;
     QString m_authToken;
+    int m_requestTimeoutMs = 5000;
     bool m_isRecording = false;
     bool m_requestTimedOut = false;
     Operation m_pendingOperation = Operation::None;

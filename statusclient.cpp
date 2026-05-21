@@ -19,11 +19,18 @@ StatusClient::~StatusClient()
     teardownWorker();
 }
 
-void StatusClient::configure(const QUrl &url, const QJsonArray &requests, int intervalMs, const QString &authToken)
+void StatusClient::configure(const QUrl &url,
+                             const QJsonArray &requests,
+                             int intervalMs,
+                             const QString &authToken,
+                             int requestTimeoutMs,
+                             int maxBackoffMs)
 {
     m_url = url;
     m_requests = requests;
     m_intervalMs = intervalMs;
+    m_requestTimeoutMs = requestTimeoutMs;
+    m_maxBackoffMs = maxBackoffMs;
     m_authToken = authToken.trimmed();
 
     // HomeNetworkWorker::configure is not a slot; rebuild to apply config safely.
@@ -74,7 +81,7 @@ void StatusClient::rebuildWorker(bool restartAfterwards)
     }
 
     m_worker = new HomeNetworkWorker();
-    m_worker->configure(m_url, m_requests, m_intervalMs, m_authToken);
+    m_worker->configure(m_url, m_requests, m_intervalMs, m_authToken, m_requestTimeoutMs, m_maxBackoffMs);
 
     m_thread = new QThread(this);
     m_worker->moveToThread(m_thread);

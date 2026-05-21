@@ -3,10 +3,13 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
+#include <QSaveFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLoggingCategory>
+#include <QDateTime>
 #include <QStringList>
 #include <QtGlobal>
 #include <QtMath>
@@ -27,6 +30,10 @@ constexpr const char *kDefaultVideoBackend = "mjpeg_http";
 constexpr const char *kDefaultVideoRecordMode = "host_opencv";
 constexpr const char *kDefaultVideoRecordCodec = "MJPG";
 constexpr int kDefaultStatusPollIntervalMs = 100;
+constexpr int kDefaultStatusRequestTimeoutMs = 3000;
+constexpr int kDefaultStatusMaxBackoffMs = 5000;
+constexpr int kDefaultChassisReconnectIntervalMs = 1000;
+constexpr int kDefaultChassisReconnectMaxIntervalMs = 15000;
 constexpr int kMinStatusPollIntervalMs = 50;
 constexpr int kMaxStatusPollIntervalMs = 5000;
 constexpr const char *kDefaultRowWorkGatewayBaseUrl = "http://192.168.31.13:18120";
@@ -41,6 +48,11 @@ constexpr int kDefaultGimbalPlcPort = 502;
 constexpr int kDefaultGimbalUnitId = 255;
 constexpr int kDefaultGimbalRequestTimeoutMs = 1000;
 constexpr int kDefaultGimbalStatusPollIntervalMs = 300;
+constexpr int kDefaultCameraRequestTimeoutMs = 5000;
+constexpr int kDefaultRouteFollowerUpdateIntervalMs = 100;
+constexpr int kDefaultManualMotionRepeatIntervalMs = 40;
+constexpr int kDefaultGimbalSafetyStopTimeoutMs = 1500;
+constexpr int kMaxConfigBackups = 10;
 
 QString defaultConfigPath()
 {
@@ -80,12 +92,225 @@ void ConfigManager::reload()
 {
     m_loaded = false;
     load();
+    emit configChanged();
 }
 
 void ConfigManager::setConfigFilePath(const QString &path)
 {
     m_configPathOverride = path.trimmed();
     reload();
+}
+
+ConfigManager::ConfigSnapshot ConfigManager::snapshot() const
+{
+    ConfigSnapshot snap;
+    snap.geo = m_geo;
+    snap.control = m_control;
+    snap.vehicle = m_vehicle;
+    snap.video = m_video;
+    snap.network = m_network;
+    snap.rowWork = m_rowWork;
+    snap.gimbal = m_gimbal;
+    return snap;
+}
+
+bool ConfigManager::saveSnapshot(const ConfigSnapshot &snapshot, QString *errorMessage, bool applyAfterSave)
+{
+    const ConfigSnapshot oldSnapshot = this->snapshot();
+    const QString oldPath = m_configPath;
+    const bool oldLoaded = m_loaded;
+    const bool oldLoadedFromFile = m_loadedFromFile;
+    const double oldMetersPerDegLat = m_metersPerDegLat;
+    const double oldMetersPerDegLon = m_metersPerDegLon;
+
+    m_geo = snapshot.geo;
+    m_control = snapshot.control;
+    m_vehicle = snapshot.vehicle;
+    m_video = snapshot.video;
+    m_network = snapshot.network;
+    m_rowWork = snapshot.rowWork;
+    m_gimbal = snapshot.gimbal;
+    sanitizeConfig();
+    updateCachedScales();
+
+    const QString targetPath = m_configPath.isEmpty()
+                                   ? (m_configPathOverride.isEmpty() ? defaultConfigPath() : m_configPathOverride)
+                                   : m_configPath;
+    if (!saveToFile(targetPath, errorMessage)) {
+        m_geo = oldSnapshot.geo;
+        m_control = oldSnapshot.control;
+        m_vehicle = oldSnapshot.vehicle;
+        m_video = oldSnapshot.video;
+        m_network = oldSnapshot.network;
+        m_rowWork = oldSnapshot.rowWork;
+        m_gimbal = oldSnapshot.gimbal;
+        m_configPath = oldPath;
+        m_loaded = oldLoaded;
+        m_loadedFromFile = oldLoadedFromFile;
+        m_metersPerDegLat = oldMetersPerDegLat;
+        m_metersPerDegLon = oldMetersPerDegLon;
+        return false;
+    }
+
+    if (applyAfterSave) {
+        m_configPath = targetPath;
+        m_loaded = true;
+        m_loadedFromFile = true;
+        emit configChanged();
+    } else {
+        m_geo = oldSnapshot.geo;
+        m_control = oldSnapshot.control;
+        m_vehicle = oldSnapshot.vehicle;
+        m_video = oldSnapshot.video;
+        m_network = oldSnapshot.network;
+        m_rowWork = oldSnapshot.rowWork;
+        m_gimbal = oldSnapshot.gimbal;
+        m_configPath = oldPath;
+        m_loaded = oldLoaded;
+        m_loadedFromFile = oldLoadedFromFile;
+        m_metersPerDegLat = oldMetersPerDegLat;
+        m_metersPerDegLon = oldMetersPerDegLon;
+    }
+
+    return true;
+}
+
+bool ConfigManager::createStartupBackup(QString *errorMessage)
+{
+    ensureLoaded();
+    if (m_startupBackupCreated) {
+        return true;
+    }
+    if (!QFile::exists(m_configPath)) {
+        m_startupBackupCreated = true;
+        return true;
+    }
+
+    const QDir backupDir(backupDirectoryPath());
+    if (!backupDir.exists() && !QDir().mkpath(backupDir.absolutePath())) {
+        if (errorMessage) {
+            *errorMessage = tr("无法创建配置备份目录：%1").arg(backupDir.absolutePath());
+        }
+        return false;
+    }
+
+    pruneBackups(kMaxConfigBackups - 1);
+
+    const QString timestamp = QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_HHmmss_zzz"));
+    const QString targetPath = backupDir.filePath(QStringLiteral("config_%1.json").arg(timestamp));
+    if (!copyFileAtomically(m_configPath, targetPath, errorMessage)) {
+        return false;
+    }
+
+    m_startupBackupCreated = true;
+    pruneBackups(kMaxConfigBackups);
+    return true;
+}
+
+QString ConfigManager::backupDirectoryPath() const
+{
+    const QFileInfo configInfo(m_configPath.isEmpty() ? defaultConfigPath() : m_configPath);
+    return configInfo.absoluteDir().filePath(QStringLiteral("config_backups"));
+}
+
+QStringList ConfigManager::backupFilePaths() const
+{
+    const QDir dir(backupDirectoryPath());
+    const QFileInfoList entries = dir.entryInfoList(QStringList{QStringLiteral("config_*.json")},
+                                                    QDir::Files,
+                                                    QDir::Time);
+    QStringList paths;
+    for (const QFileInfo &info : entries) {
+        paths.push_back(info.absoluteFilePath());
+    }
+    return paths;
+}
+
+QString ConfigManager::latestBackupFilePath() const
+{
+    const QStringList paths = backupFilePaths();
+    return paths.isEmpty() ? QString() : paths.first();
+}
+
+bool ConfigManager::currentConfigMatchesLatestBackup() const
+{
+    const QString latestPath = latestBackupFilePath();
+    if (latestPath.isEmpty() || m_configPath.isEmpty()) {
+        return false;
+    }
+    QFile currentFile(m_configPath);
+    QFile backupFile(latestPath);
+    if (!currentFile.open(QIODevice::ReadOnly) || !backupFile.open(QIODevice::ReadOnly)) {
+        return false;
+    }
+    return currentFile.readAll() == backupFile.readAll();
+}
+
+bool ConfigManager::loadSnapshotFromFile(const QString &path, ConfigSnapshot *snapshot, QString *errorMessage)
+{
+    if (!snapshot) {
+        if (errorMessage) {
+            *errorMessage = tr("配置快照输出为空");
+        }
+        return false;
+    }
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        if (errorMessage) {
+            *errorMessage = tr("无法读取配置文件：%1").arg(file.errorString());
+        }
+        return false;
+    }
+
+    const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+    if (!doc.isObject()) {
+        if (errorMessage) {
+            *errorMessage = tr("配置文件不是合法 JSON 对象：%1").arg(path);
+        }
+        return false;
+    }
+
+    const ConfigSnapshot oldSnapshot = this->snapshot();
+    const double oldMetersPerDegLat = m_metersPerDegLat;
+    const double oldMetersPerDegLon = m_metersPerDegLon;
+
+    loadDefaults();
+    applyJsonObjectToCurrentConfig(doc.object());
+    sanitizeConfig();
+    updateCachedScales();
+    *snapshot = this->snapshot();
+
+    m_geo = oldSnapshot.geo;
+    m_control = oldSnapshot.control;
+    m_vehicle = oldSnapshot.vehicle;
+    m_video = oldSnapshot.video;
+    m_network = oldSnapshot.network;
+    m_rowWork = oldSnapshot.rowWork;
+    m_gimbal = oldSnapshot.gimbal;
+    m_metersPerDegLat = oldMetersPerDegLat;
+    m_metersPerDegLon = oldMetersPerDegLon;
+    return true;
+}
+
+bool ConfigManager::restoreLatestBackup(QString *errorMessage, bool applyAfterRestore)
+{
+    ensureLoaded();
+    const QString latestPath = latestBackupFilePath();
+    if (latestPath.isEmpty()) {
+        if (errorMessage) {
+            *errorMessage = tr("没有可恢复的配置备份");
+        }
+        return false;
+    }
+
+    if (!copyFileAtomically(latestPath, m_configPath, errorMessage)) {
+        return false;
+    }
+
+    if (applyAfterRestore) {
+        reload();
+    }
+    return true;
 }
 
 ConfigManager::ConfigManager(QObject *parent)
@@ -136,8 +361,11 @@ void ConfigManager::loadFromFile(const QString &path)
         return;
     }
 
-    const QJsonObject root = doc.object();
+    applyJsonObjectToCurrentConfig(doc.object());
+}
 
+void ConfigManager::applyJsonObjectToCurrentConfig(const QJsonObject &root)
+{
     if (const QJsonObject geoObj = root.value(QStringLiteral("geo")).toObject(); !geoObj.isEmpty()) {
         m_geo.baseLatitudeDeg = geoObj.value(QStringLiteral("baseLatitudeDeg")).toDouble(kDefaultLatDeg);
         m_geo.baseLongitudeDeg = geoObj.value(QStringLiteral("baseLongitudeDeg")).toDouble(kDefaultLonDeg);
@@ -163,6 +391,10 @@ void ConfigManager::loadFromFile(const QString &path)
         m_control.angularDecelerationLimit = ctrlObj.value(QStringLiteral("angularDecelerationLimit")).toDouble(m_control.angularDecelerationLimit);
         m_control.finalAdjustLinearSpeed = ctrlObj.value(QStringLiteral("finalAdjustLinearSpeed")).toDouble(m_control.finalAdjustLinearSpeed);
         m_control.finalAdjustAngularSpeed = ctrlObj.value(QStringLiteral("finalAdjustAngularSpeed")).toDouble(m_control.finalAdjustAngularSpeed);
+        m_control.routeFollowerUpdateIntervalMs =
+            ctrlObj.value(QStringLiteral("routeFollowerUpdateIntervalMs")).toInt(m_control.routeFollowerUpdateIntervalMs);
+        m_control.manualMotionRepeatIntervalMs =
+            ctrlObj.value(QStringLiteral("manualMotionRepeatIntervalMs")).toInt(m_control.manualMotionRepeatIntervalMs);
     }
 
     if (const QJsonObject vehicleObj = root.value(QStringLiteral("vehicle")).toObject(); !vehicleObj.isEmpty()) {
@@ -195,6 +427,8 @@ void ConfigManager::loadFromFile(const QString &path)
         m_video.recordCodec = videoObj.value(QStringLiteral("recordCodec")).toString(m_video.recordCodec).trimmed();
         m_video.reconnectIntervalMs = videoObj.value(QStringLiteral("reconnectIntervalMs")).toInt(m_video.reconnectIntervalMs);
         m_video.reconnectIntervalMs = qMax(200, m_video.reconnectIntervalMs);
+        m_video.cameraRequestTimeoutMs =
+            videoObj.value(QStringLiteral("cameraRequestTimeoutMs")).toInt(m_video.cameraRequestTimeoutMs);
         m_video.autoStart = videoObj.value(QStringLiteral("autoStart")).toBool(m_video.autoStart);
         m_video.scaleContents = videoObj.value(QStringLiteral("scaleContents")).toBool(m_video.scaleContents);
     }
@@ -208,6 +442,16 @@ void ConfigManager::loadFromFile(const QString &path)
         m_network.statusPollIntervalMs =
             networkObj.value(QStringLiteral("statusPollIntervalMs")).toInt(m_network.statusPollIntervalMs);
         m_network.statusPollIntervalMs = qBound(kMinStatusPollIntervalMs, m_network.statusPollIntervalMs, kMaxStatusPollIntervalMs);
+        m_network.statusRequestTimeoutMs =
+            networkObj.value(QStringLiteral("statusRequestTimeoutMs")).toInt(m_network.statusRequestTimeoutMs);
+        m_network.statusMaxBackoffMs =
+            networkObj.value(QStringLiteral("statusMaxBackoffMs")).toInt(m_network.statusMaxBackoffMs);
+        m_network.chassisAutoReconnect =
+            networkObj.value(QStringLiteral("chassisAutoReconnect")).toBool(m_network.chassisAutoReconnect);
+        m_network.chassisReconnectIntervalMs =
+            networkObj.value(QStringLiteral("chassisReconnectIntervalMs")).toInt(m_network.chassisReconnectIntervalMs);
+        m_network.chassisReconnectMaxIntervalMs =
+            networkObj.value(QStringLiteral("chassisReconnectMaxIntervalMs")).toInt(m_network.chassisReconnectMaxIntervalMs);
     }
 
     if (const QJsonObject rowWorkObj = root.value(QStringLiteral("rowWork")).toObject(); !rowWorkObj.isEmpty()) {
@@ -244,7 +488,206 @@ void ConfigManager::loadFromFile(const QString &path)
         m_gimbal.maxYaw = gimbalObj.value(QStringLiteral("maxYaw")).toInt(m_gimbal.maxYaw);
         m_gimbal.minPitch = gimbalObj.value(QStringLiteral("minPitch")).toInt(m_gimbal.minPitch);
         m_gimbal.maxPitch = gimbalObj.value(QStringLiteral("maxPitch")).toInt(m_gimbal.maxPitch);
+        m_gimbal.safetyStopTimeoutMs =
+            gimbalObj.value(QStringLiteral("safetyStopTimeoutMs")).toInt(m_gimbal.safetyStopTimeoutMs);
     }
+}
+
+bool ConfigManager::saveToFile(const QString &path, QString *errorMessage) const
+{
+    if (path.trimmed().isEmpty()) {
+        if (errorMessage) {
+            *errorMessage = tr("配置文件路径为空");
+        }
+        return false;
+    }
+
+    const QFileInfo fileInfo(path);
+    const QDir dir = fileInfo.absoluteDir();
+    if (!dir.exists() && !QDir().mkpath(dir.absolutePath())) {
+        if (errorMessage) {
+            *errorMessage = tr("无法创建配置目录：%1").arg(dir.absolutePath());
+        }
+        return false;
+    }
+
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        if (errorMessage) {
+            *errorMessage = tr("无法写入配置文件：%1").arg(file.errorString());
+        }
+        return false;
+    }
+
+    const QJsonDocument doc(toJsonObject());
+    file.write(doc.toJson(QJsonDocument::Indented));
+    if (!file.commit()) {
+        if (errorMessage) {
+            *errorMessage = tr("保存配置文件失败：%1").arg(file.errorString());
+        }
+        return false;
+    }
+
+    return true;
+}
+
+bool ConfigManager::copyFileAtomically(const QString &sourcePath, const QString &targetPath, QString *errorMessage) const
+{
+    QFile source(sourcePath);
+    if (!source.open(QIODevice::ReadOnly)) {
+        if (errorMessage) {
+            *errorMessage = tr("无法读取源配置文件：%1").arg(source.errorString());
+        }
+        return false;
+    }
+
+    const QFileInfo targetInfo(targetPath);
+    const QDir targetDir = targetInfo.absoluteDir();
+    if (!targetDir.exists() && !QDir().mkpath(targetDir.absolutePath())) {
+        if (errorMessage) {
+            *errorMessage = tr("无法创建目标配置目录：%1").arg(targetDir.absolutePath());
+        }
+        return false;
+    }
+
+    QSaveFile target(targetPath);
+    if (!target.open(QIODevice::WriteOnly)) {
+        if (errorMessage) {
+            *errorMessage = tr("无法写入目标配置文件：%1").arg(target.errorString());
+        }
+        return false;
+    }
+    target.write(source.readAll());
+    if (!target.commit()) {
+        if (errorMessage) {
+            *errorMessage = tr("保存目标配置文件失败：%1").arg(target.errorString());
+        }
+        return false;
+    }
+    return true;
+}
+
+void ConfigManager::pruneBackups(int keepCount)
+{
+    const QDir dir(backupDirectoryPath());
+    const QFileInfoList entries = dir.entryInfoList(QStringList{QStringLiteral("config_*.json")},
+                                                    QDir::Files,
+                                                    QDir::Time);
+    for (int i = qMax(keepCount, 0); i < entries.size(); ++i) {
+        QFile::remove(entries.at(i).absoluteFilePath());
+    }
+}
+
+QJsonObject ConfigManager::toJsonObject() const
+{
+    QJsonObject root;
+    root.insert(QStringLiteral("geo"), QJsonObject{
+                                           {QStringLiteral("baseLatitudeDeg"), m_geo.baseLatitudeDeg},
+                                           {QStringLiteral("baseLongitudeDeg"), m_geo.baseLongitudeDeg},
+                                       });
+
+    root.insert(QStringLiteral("control"),
+                QJsonObject{
+                    {QStringLiteral("arrivalDistanceThreshold"), m_control.arrivalDistanceThreshold},
+                    {QStringLiteral("arrivalAngleThresholdDeg"), m_control.arrivalAngleThresholdDeg},
+                    {QStringLiteral("maxLinearSpeed"), m_control.maxLinearSpeed},
+                    {QStringLiteral("maxAngularSpeed"), m_control.maxAngularSpeed},
+                    {QStringLiteral("linearGain"), m_control.linearGain},
+                    {QStringLiteral("angularGain"), m_control.angularGain},
+                    {QStringLiteral("headingStopThresholdDeg"), m_control.headingStopThresholdDeg},
+                    {QStringLiteral("headingSlowdownThresholdDeg"), m_control.headingSlowdownThresholdDeg},
+                    {QStringLiteral("headingSlowdownFactor"), m_control.headingSlowdownFactor},
+                    {QStringLiteral("nearTargetDistanceMultiplier"), m_control.nearTargetDistanceMultiplier},
+                    {QStringLiteral("nearTargetSpeedMultiplier"), m_control.nearTargetSpeedMultiplier},
+                    {QStringLiteral("linearAccelerationLimit"), m_control.linearAccelerationLimit},
+                    {QStringLiteral("linearDecelerationLimit"), m_control.linearDecelerationLimit},
+                    {QStringLiteral("angularAccelerationLimit"), m_control.angularAccelerationLimit},
+                    {QStringLiteral("angularDecelerationLimit"), m_control.angularDecelerationLimit},
+                    {QStringLiteral("finalAdjustLinearSpeed"), m_control.finalAdjustLinearSpeed},
+                    {QStringLiteral("finalAdjustAngularSpeed"), m_control.finalAdjustAngularSpeed},
+                    {QStringLiteral("routeFollowerUpdateIntervalMs"), m_control.routeFollowerUpdateIntervalMs},
+                    {QStringLiteral("manualMotionRepeatIntervalMs"), m_control.manualMotionRepeatIntervalMs},
+                });
+
+    root.insert(QStringLiteral("vehicle"),
+                QJsonObject{
+                    {QStringLiteral("wheelBaseMeters"), m_vehicle.wheelBaseMeters},
+                    {QStringLiteral("wheelDiameterMeters"), m_vehicle.wheelDiameterMeters},
+                    {QStringLiteral("gearReduction"), m_vehicle.gearReduction},
+                });
+
+    QJsonArray streamOptions;
+    for (const VideoConfig::StreamOption &option : m_video.streamOptions) {
+        streamOptions.append(QJsonObject{
+            {QStringLiteral("name"), option.name},
+            {QStringLiteral("url"), option.url},
+        });
+    }
+    root.insert(QStringLiteral("video"),
+                QJsonObject{
+                    {QStringLiteral("backend"), m_video.backend},
+                    {QStringLiteral("streamUrl"), m_video.streamUrl},
+                    {QStringLiteral("controlBaseUrl"), m_video.controlBaseUrl},
+                    {QStringLiteral("streamOptions"), streamOptions},
+                    {QStringLiteral("deviceId"), m_video.deviceId},
+                    {QStringLiteral("previewWidth"), m_video.previewWidth},
+                    {QStringLiteral("previewHeight"), m_video.previewHeight},
+                    {QStringLiteral("previewFps"), m_video.previewFps},
+                    {QStringLiteral("recordMode"), m_video.recordMode},
+                    {QStringLiteral("recordCodec"), m_video.recordCodec},
+                    {QStringLiteral("reconnectIntervalMs"), m_video.reconnectIntervalMs},
+                    {QStringLiteral("cameraRequestTimeoutMs"), m_video.cameraRequestTimeoutMs},
+                    {QStringLiteral("autoStart"), m_video.autoStart},
+                    {QStringLiteral("scaleContents"), m_video.scaleContents},
+                });
+
+    root.insert(QStringLiteral("network"),
+                QJsonObject{
+                    {QStringLiteral("websocketUrl"), m_network.websocketUrl},
+                    {QStringLiteral("statusReadUrl"), m_network.statusReadUrl},
+                    {QStringLiteral("writeInsUrl"), m_network.writeInsUrl},
+                    {QStringLiteral("saveFileUrl"), m_network.saveFileUrl},
+                    {QStringLiteral("authToken"), m_network.authToken},
+                    {QStringLiteral("statusPollIntervalMs"), m_network.statusPollIntervalMs},
+                    {QStringLiteral("statusRequestTimeoutMs"), m_network.statusRequestTimeoutMs},
+                    {QStringLiteral("statusMaxBackoffMs"), m_network.statusMaxBackoffMs},
+                    {QStringLiteral("chassisAutoReconnect"), m_network.chassisAutoReconnect},
+                    {QStringLiteral("chassisReconnectIntervalMs"), m_network.chassisReconnectIntervalMs},
+                    {QStringLiteral("chassisReconnectMaxIntervalMs"), m_network.chassisReconnectMaxIntervalMs},
+                });
+
+    root.insert(QStringLiteral("rowWork"),
+                QJsonObject{
+                    {QStringLiteral("enabled"), m_rowWork.enabled},
+                    {QStringLiteral("gatewayBaseUrl"), m_rowWork.gatewayBaseUrl},
+                    {QStringLiteral("statusPollIntervalMs"), m_rowWork.statusPollIntervalMs},
+                    {QStringLiteral("commandTimeoutMs"), m_rowWork.commandTimeoutMs},
+                    {QStringLiteral("autoRefreshPlanStatus"), m_rowWork.autoRefreshPlanStatus},
+                });
+
+    root.insert(QStringLiteral("gimbal"),
+                QJsonObject{
+                    {QStringLiteral("enabled"), m_gimbal.enabled},
+                    {QStringLiteral("plcHost"), m_gimbal.plcHost},
+                    {QStringLiteral("plcPort"), m_gimbal.plcPort},
+                    {QStringLiteral("unitId"), m_gimbal.unitId},
+                    {QStringLiteral("requestTimeoutMs"), m_gimbal.requestTimeoutMs},
+                    {QStringLiteral("statusPollIntervalMs"), m_gimbal.statusPollIntervalMs},
+                    {QStringLiteral("heightControlAddress"), m_gimbal.heightControlAddress},
+                    {QStringLiteral("pitchControlAddress"), m_gimbal.pitchControlAddress},
+                    {QStringLiteral("yawControlAddress"), m_gimbal.yawControlAddress},
+                    {QStringLiteral("statusStartAddress"), m_gimbal.statusStartAddress},
+                    {QStringLiteral("statusRegisterCount"), m_gimbal.statusRegisterCount},
+                    {QStringLiteral("minHeight"), m_gimbal.minHeight},
+                    {QStringLiteral("maxHeight"), m_gimbal.maxHeight},
+                    {QStringLiteral("minYaw"), m_gimbal.minYaw},
+                    {QStringLiteral("maxYaw"), m_gimbal.maxYaw},
+                    {QStringLiteral("minPitch"), m_gimbal.minPitch},
+                    {QStringLiteral("maxPitch"), m_gimbal.maxPitch},
+                    {QStringLiteral("safetyStopTimeoutMs"), m_gimbal.safetyStopTimeoutMs},
+                });
+
+    return root;
 }
 
 void ConfigManager::loadDefaults()
@@ -252,17 +695,24 @@ void ConfigManager::loadDefaults()
     m_geo.baseLatitudeDeg = kDefaultLatDeg;
     m_geo.baseLongitudeDeg = kDefaultLonDeg;
     m_control = ControlConfig{};
+    m_control.routeFollowerUpdateIntervalMs = kDefaultRouteFollowerUpdateIntervalMs;
+    m_control.manualMotionRepeatIntervalMs = kDefaultManualMotionRepeatIntervalMs;
     m_vehicle = VehicleConfig{};
     m_video = VideoConfig{};
     m_video.backend = QString::fromUtf8(kDefaultVideoBackend);
     m_video.recordMode = QString::fromUtf8(kDefaultVideoRecordMode);
     m_video.recordCodec = QString::fromUtf8(kDefaultVideoRecordCodec);
+    m_video.cameraRequestTimeoutMs = kDefaultCameraRequestTimeoutMs;
     m_network = NetworkConfig{};
     m_network.websocketUrl = QString::fromUtf8(kDefaultWebSocketUrl);
     m_network.statusReadUrl = QString::fromUtf8(kDefaultStatusReadUrl);
     m_network.writeInsUrl = QString::fromUtf8(kDefaultWriteInsUrl);
     m_network.saveFileUrl = QString::fromUtf8(kDefaultSaveFileUrl);
     m_network.statusPollIntervalMs = kDefaultStatusPollIntervalMs;
+    m_network.statusRequestTimeoutMs = kDefaultStatusRequestTimeoutMs;
+    m_network.statusMaxBackoffMs = kDefaultStatusMaxBackoffMs;
+    m_network.chassisReconnectIntervalMs = kDefaultChassisReconnectIntervalMs;
+    m_network.chassisReconnectMaxIntervalMs = kDefaultChassisReconnectMaxIntervalMs;
     m_rowWork = RowWorkConfig{};
     m_rowWork.gatewayBaseUrl = QString::fromUtf8(kDefaultRowWorkGatewayBaseUrl);
     m_rowWork.statusPollIntervalMs = kDefaultRowWorkStatusPollIntervalMs;
@@ -273,6 +723,7 @@ void ConfigManager::loadDefaults()
     m_gimbal.unitId = kDefaultGimbalUnitId;
     m_gimbal.requestTimeoutMs = kDefaultGimbalRequestTimeoutMs;
     m_gimbal.statusPollIntervalMs = kDefaultGimbalStatusPollIntervalMs;
+    m_gimbal.safetyStopTimeoutMs = kDefaultGimbalSafetyStopTimeoutMs;
 }
 
 void ConfigManager::sanitizeConfig()
@@ -294,12 +745,16 @@ void ConfigManager::sanitizeConfig()
     m_control.angularDecelerationLimit = qMax(0.0, m_control.angularDecelerationLimit);
     m_control.finalAdjustLinearSpeed = qMax(0.0, m_control.finalAdjustLinearSpeed);
     m_control.finalAdjustAngularSpeed = qMax(0.0, m_control.finalAdjustAngularSpeed);
+    m_control.routeFollowerUpdateIntervalMs = qBound(20, m_control.routeFollowerUpdateIntervalMs, 1000);
+    m_control.manualMotionRepeatIntervalMs = qBound(20, m_control.manualMotionRepeatIntervalMs, 1000);
 
     m_vehicle.wheelBaseMeters = qMax(0.01, m_vehicle.wheelBaseMeters);
     m_vehicle.wheelDiameterMeters = qMax(0.01, m_vehicle.wheelDiameterMeters);
     m_vehicle.gearReduction = qMax(0.01, m_vehicle.gearReduction);
 
     m_video.reconnectIntervalMs = qMax(200, m_video.reconnectIntervalMs);
+    m_video.cameraRequestTimeoutMs = qBound(1000, m_video.cameraRequestTimeoutMs, 30000);
+    m_video.deviceId = m_video.deviceId.trimmed();
     if (m_video.backend.isEmpty()) {
         m_video.backend = QString::fromUtf8(kDefaultVideoBackend);
     }
@@ -351,6 +806,11 @@ void ConfigManager::sanitizeConfig()
         m_video.recordCodec = QString::fromUtf8(kDefaultVideoRecordCodec);
     }
     m_network.statusPollIntervalMs = qBound(kMinStatusPollIntervalMs, m_network.statusPollIntervalMs, kMaxStatusPollIntervalMs);
+    m_network.statusRequestTimeoutMs = qBound(500, m_network.statusRequestTimeoutMs, 30000);
+    m_network.statusMaxBackoffMs = qBound(m_network.statusPollIntervalMs, m_network.statusMaxBackoffMs, 60000);
+    m_network.chassisReconnectIntervalMs = qBound(200, m_network.chassisReconnectIntervalMs, 60000);
+    m_network.chassisReconnectMaxIntervalMs =
+        qBound(m_network.chassisReconnectIntervalMs, m_network.chassisReconnectMaxIntervalMs, 120000);
 
     m_rowWork.gatewayBaseUrl = m_rowWork.gatewayBaseUrl.trimmed();
     m_rowWork.statusPollIntervalMs =
@@ -368,6 +828,7 @@ void ConfigManager::sanitizeConfig()
     m_gimbal.yawControlAddress = qMax(0, m_gimbal.yawControlAddress);
     m_gimbal.statusStartAddress = qMax(0, m_gimbal.statusStartAddress);
     m_gimbal.statusRegisterCount = qMax(7, m_gimbal.statusRegisterCount);
+    m_gimbal.safetyStopTimeoutMs = qBound(300, m_gimbal.safetyStopTimeoutMs, 30000);
     if (m_gimbal.minHeight > m_gimbal.maxHeight) {
         std::swap(m_gimbal.minHeight, m_gimbal.maxHeight);
     }

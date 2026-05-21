@@ -8,6 +8,7 @@
 #include <QTimer>
 #include <QMetaObject>
 #include <QLoggingCategory>
+#include <QtGlobal>
 
 Q_LOGGING_CATEGORY(lcHomeNetworkWorker, "tenco.net.status")
 
@@ -20,12 +21,19 @@ HomeNetworkWorker::HomeNetworkWorker(QObject *parent)
     connect(m_timer, &QTimer::timeout, this, &HomeNetworkWorker::triggerFetch);
 }
 
-void HomeNetworkWorker::configure(const QUrl &url, const QJsonArray &requests, int intervalMs, const QString &authToken)
+void HomeNetworkWorker::configure(const QUrl &url,
+                                  const QJsonArray &requests,
+                                  int intervalMs,
+                                  const QString &authToken,
+                                  int requestTimeoutMs,
+                                  int maxBackoffMs)
 {
     m_url = url;
     m_requests = requests;
     m_intervalMs = qBound(50, intervalMs, 5000);
     m_authToken = authToken.trimmed();
+    m_requestTimeoutMs = qBound(500, requestTimeoutMs, 30000);
+    m_maxBackoffMs = qBound(m_intervalMs, maxBackoffMs, 60000);
     m_timer->setInterval(m_intervalMs);
 }
 

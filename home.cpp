@@ -71,31 +71,9 @@ Home::Home(Ui::MainWindow *ui, QObject *parent)
 {
     initialize();
     initializeMotionTimers();
-    const ConfigManager &config = ConfigManager::instance();
+    ConfigManager &config = ConfigManager::instance();
 
-    // Route follower configuration (from config.json).
     if (m_routeFollower) {
-        const auto &ctrl = config.control();
-        RouteFollower::ControlParams params;
-        params.maxLinearSpeed = ctrl.maxLinearSpeed;
-        params.maxAngularSpeed = ctrl.maxAngularSpeed;
-        params.arrivalDistanceThreshold = ctrl.arrivalDistanceThreshold;
-        params.arrivalAngleThresholdRad = qDegreesToRadians(ctrl.arrivalAngleThresholdDeg);
-        params.linearGain = ctrl.linearGain;
-        params.angularGain = ctrl.angularGain;
-        params.headingStopThresholdRad = qDegreesToRadians(ctrl.headingStopThresholdDeg);
-        params.headingSlowdownThresholdRad = qDegreesToRadians(ctrl.headingSlowdownThresholdDeg);
-        params.headingSlowdownFactor = ctrl.headingSlowdownFactor;
-        params.nearTargetDistanceMultiplier = ctrl.nearTargetDistanceMultiplier;
-        params.nearTargetSpeedMultiplier = ctrl.nearTargetSpeedMultiplier;
-        params.linearAccelerationLimit = ctrl.linearAccelerationLimit;
-        params.linearDecelerationLimit = ctrl.linearDecelerationLimit;
-        params.angularAccelerationLimit = ctrl.angularAccelerationLimit;
-        params.angularDecelerationLimit = ctrl.angularDecelerationLimit;
-        params.finalAdjustLinearSpeed = ctrl.finalAdjustLinearSpeed;
-        params.finalAdjustAngularSpeed = ctrl.finalAdjustAngularSpeed;
-        m_routeFollower->setControlParams(params);
-        m_routeFollower->setUpdateIntervalMs(100);
         connect(m_routeFollower, &RouteFollower::velocityCommand, this, &Home::sendVelocityCommand);
         connect(m_routeFollower, &RouteFollower::segmentCompleted, this, &Home::routeSegmentCompleted);
     }
@@ -108,31 +86,18 @@ Home::Home(Ui::MainWindow *ui, QObject *parent)
 
     // Status polling (HTTP, worker thread).
     if (m_statusClient) {
-        const QJsonArray requests = StatusProtocol::defaultReadRequests();
-
-        const auto &netCfg = config.network();
-        const QUrl statusUrl(netCfg.statusReadUrl);
-        if (!statusUrl.isValid()) {
-            logMessage(tr("状态轮询地址无效：%1").arg(netCfg.statusReadUrl));
-        }
-
         connect(m_statusClient, &StatusClient::statusReceived, this, &Home::handleStatusPacket);
         connect(m_statusClient, &StatusClient::requestFailed, this, &Home::handleNetworkFailure);
-        m_statusClient->configure(statusUrl, requests, netCfg.statusPollIntervalMs, netCfg.authToken);
-        m_statusClient->start();
     }
 
     // Chassis WebSocket client.
     if (m_chassisClient) {
-        const auto &netCfg = config.network();
-        const QUrl wsUrl(netCfg.websocketUrl.trimmed());
-        m_chassisClient->setUrl(wsUrl);
-        m_chassisClient->setAuthorizationToken(netCfg.authToken);
         connect(m_chassisClient, &ChassisClient::connected, this, &Home::handleChassisConnected);
         connect(m_chassisClient, &ChassisClient::disconnected, this, &Home::handleChassisDisconnected);
         connect(m_chassisClient, &ChassisClient::errorOccurred, this, &Home::handleChassisError);
-        m_chassisClient->connectToHost();
     }
+
+    connect(&config, &ConfigManager::configChanged, this, &Home::applyRuntimeConfig);
 
     rebootCountdownTimer->setInterval(1000);
     rebootCountdownTimer->setSingleShot(false);
@@ -144,6 +109,9 @@ Home::Home(Ui::MainWindow *ui, QObject *parent)
             stopGimbal();
         }
     });
+
+    applyRuntimeConfig();
+    logMessage(tr("首页模块已初始化，等待操作…"));
 }
 Home::~Home()
 {
@@ -189,11 +157,6 @@ void Home::initialize()
     connect(ui->pushButton_7, &QPushButton::released, this, &Home::handleGimbalButtonReleased);
     connect(ui->pushButton_8, &QPushButton::pressed, this, &Home::handleGimbalPitchDownPressed);
     connect(ui->pushButton_8, &QPushButton::released, this, &Home::handleGimbalButtonReleased);
-    initializeVideoDisplay();
-    initializeCameraControl();
-    initializeCameraStatusPolling();
-    initializeGimbalControl();
-    logMessage(tr("首页模块已初始化，等待操作…"));
 }
 void Home::setupImageSwitches()
 {
@@ -209,7 +172,7 @@ void Home::setupImageSwitches()
 // 为四种运动指令配置重复发送的 QTimer
 void Home::initializeMotionTimers()
 {
-    const int interval = kMotionRepeatIntervalMs;  // 连发周期取常量，保证四个方向一致
+    const int interval = m_manualMotionRepeatIntervalMs;  // 连发周期取配置，保证四个方向一致
     forwardRepeatTimer->setInterval(interval);  // 前进指令的重复发送周期
     forwardRepeatTimer->setSingleShot(false);  // 允许定时器持续触发
     connect(forwardRepeatTimer, &QTimer::timeout, this, &Home::sendForwardCommand);  // 定时重发 sendForwardCommand() 保持匀速
@@ -222,6 +185,126 @@ void Home::initializeMotionTimers()
     turnRightRepeatTimer->setInterval(interval);  // 右转共享同一重复周期
     turnRightRepeatTimer->setSingleShot(false);  // 右转同样持续触发
     connect(turnRightRepeatTimer, &QTimer::timeout, this, &Home::sendTurnRightCommand);  // 定时重发右转角速度
+}
+
+void Home::applyRuntimeConfig()
+{
+    applyRouteFollowerConfig();
+    applyStatusClientConfig();
+    applyChassisClientConfig();
+    applyVideoConfig();
+    applyCameraControlConfig();
+    applyGimbalControlConfig();
+    logMessage(tr("运行配置已应用"));
+}
+
+void Home::applyRouteFollowerConfig()
+{
+    if (!m_routeFollower) {
+        return;
+    }
+    const auto &ctrl = ConfigManager::instance().control();
+    RouteFollower::ControlParams params;
+    params.maxLinearSpeed = ctrl.maxLinearSpeed;
+    params.maxAngularSpeed = ctrl.maxAngularSpeed;
+    params.arrivalDistanceThreshold = ctrl.arrivalDistanceThreshold;
+    params.arrivalAngleThresholdRad = qDegreesToRadians(ctrl.arrivalAngleThresholdDeg);
+    params.linearGain = ctrl.linearGain;
+    params.angularGain = ctrl.angularGain;
+    params.headingStopThresholdRad = qDegreesToRadians(ctrl.headingStopThresholdDeg);
+    params.headingSlowdownThresholdRad = qDegreesToRadians(ctrl.headingSlowdownThresholdDeg);
+    params.headingSlowdownFactor = ctrl.headingSlowdownFactor;
+    params.nearTargetDistanceMultiplier = ctrl.nearTargetDistanceMultiplier;
+    params.nearTargetSpeedMultiplier = ctrl.nearTargetSpeedMultiplier;
+    params.linearAccelerationLimit = ctrl.linearAccelerationLimit;
+    params.linearDecelerationLimit = ctrl.linearDecelerationLimit;
+    params.angularAccelerationLimit = ctrl.angularAccelerationLimit;
+    params.angularDecelerationLimit = ctrl.angularDecelerationLimit;
+    params.finalAdjustLinearSpeed = ctrl.finalAdjustLinearSpeed;
+    params.finalAdjustAngularSpeed = ctrl.finalAdjustAngularSpeed;
+    m_routeFollower->setControlParams(params);
+    m_routeFollower->setUpdateIntervalMs(ctrl.routeFollowerUpdateIntervalMs);
+    m_manualMotionRepeatIntervalMs = qBound(20, ctrl.manualMotionRepeatIntervalMs, 1000);
+    if (forwardRepeatTimer) {
+        forwardRepeatTimer->setInterval(m_manualMotionRepeatIntervalMs);
+    }
+    if (backwardRepeatTimer) {
+        backwardRepeatTimer->setInterval(m_manualMotionRepeatIntervalMs);
+    }
+    if (turnLeftRepeatTimer) {
+        turnLeftRepeatTimer->setInterval(m_manualMotionRepeatIntervalMs);
+    }
+    if (turnRightRepeatTimer) {
+        turnRightRepeatTimer->setInterval(m_manualMotionRepeatIntervalMs);
+    }
+}
+
+void Home::applyStatusClientConfig()
+{
+    if (!m_statusClient) {
+        return;
+    }
+    const auto &netCfg = ConfigManager::instance().network();
+    const QUrl statusUrl(netCfg.statusReadUrl.trimmed());
+    if (!statusUrl.isValid()) {
+        logMessage(tr("状态轮询地址无效：%1").arg(netCfg.statusReadUrl));
+    }
+    m_statusClient->configure(statusUrl,
+                              StatusProtocol::defaultReadRequests(),
+                              netCfg.statusPollIntervalMs,
+                              netCfg.authToken,
+                              netCfg.statusRequestTimeoutMs,
+                              netCfg.statusMaxBackoffMs);
+    m_statusClient->start();
+}
+
+void Home::applyChassisClientConfig()
+{
+    if (!m_chassisClient) {
+        return;
+    }
+    const auto &netCfg = ConfigManager::instance().network();
+    const QUrl wsUrl(netCfg.websocketUrl.trimmed());
+    m_chassisClient->disconnectFromHost();
+    m_chassisClient->setUrl(wsUrl);
+    m_chassisClient->setAuthorizationToken(netCfg.authToken);
+    m_chassisClient->setAutoReconnect(netCfg.chassisAutoReconnect);
+    m_chassisClient->setReconnectIntervalMs(netCfg.chassisReconnectIntervalMs);
+    m_chassisClient->setReconnectMaxIntervalMs(netCfg.chassisReconnectMaxIntervalMs);
+    m_chassisClient->connectToHost();
+}
+
+void Home::applyVideoConfig()
+{
+    if (!isVideoDisplayReady()) {
+        return;
+    }
+    const auto &videoCfg = ConfigManager::instance().video();
+    const bool wasActive = m_videoSource && m_videoSource->isActive();
+    const bool wantsOakBackend = videoCfg.backend == QStringLiteral("oak_depthai");
+    const bool hasOakBackend = dynamic_cast<OakCameraVideoSource *>(m_videoSource) != nullptr;
+
+    if (m_videoSource && wantsOakBackend != hasOakBackend) {
+        m_videoSource->stop();
+        m_videoSource->deleteLater();
+        m_videoSource = nullptr;
+    }
+
+    initializeVideoDisplay();
+    if (m_videoSource && (wasActive || videoCfg.autoStart) && m_videoSource->isConfigured()) {
+        m_videoSource->start();
+    }
+}
+
+void Home::applyCameraControlConfig()
+{
+    initializeCameraControl();
+    initializeCameraStatusPolling();
+}
+
+void Home::applyGimbalControlConfig()
+{
+    initializeGimbalControl();
 }
 
 void Home::initializeVideoDisplay()
@@ -242,6 +325,15 @@ void Home::initializeVideoDisplay()
         } else {
             m_videoSource = new MjpegVideoSource(this);
         }
+        connect(m_videoSource, &AbstractVideoSource::frameReceived, this, &Home::handleVideoFrameReceived);
+        connect(m_videoSource, &AbstractVideoSource::stateChanged, this, [this](AbstractVideoSource::State state, const QString &message) {
+            if (!message.isEmpty()) {
+                logMessage(message);
+                if (state != AbstractVideoSource::State::Streaming) {
+                    updateVideoPlaceholder(message);
+                }
+            }
+        });
     }
 
     if (!m_videoSource) {
@@ -252,16 +344,6 @@ void Home::initializeVideoDisplay()
     m_videoSource->setStreamUrlTemplate(videoCfg.streamUrl);
     m_videoSource->setReconnectIntervalMs(videoCfg.reconnectIntervalMs);
     m_videoSource->setAutoReconnect(true);
-
-    connect(m_videoSource, &AbstractVideoSource::frameReceived, this, &Home::handleVideoFrameReceived);
-    connect(m_videoSource, &AbstractVideoSource::stateChanged, this, [this](AbstractVideoSource::State state, const QString &message) {
-        if (!message.isEmpty()) {
-            logMessage(message);
-            if (state != AbstractVideoSource::State::Streaming) {
-                updateVideoPlaceholder(message);
-            }
-        }
-    });
 
     m_activeVideoTopic.clear();
     const bool isMjpegBackend = videoCfg.backend == QStringLiteral("mjpeg_http");
@@ -293,7 +375,11 @@ void Home::initializeCameraStatusPolling()
     }
     cameraStatusTimer->setSingleShot(false);
     cameraStatusTimer->setInterval(qMax(1000, ConfigManager::instance().video().reconnectIntervalMs));
-    connect(cameraStatusTimer, &QTimer::timeout, this, &Home::requestRemoteCameraStatus);
+    if (!cameraStatusTimer->property("configured").toBool()) {
+        connect(cameraStatusTimer, &QTimer::timeout, this, &Home::requestRemoteCameraStatus);
+        cameraStatusTimer->setProperty("configured", true);
+    }
+    cameraStatusTimer->stop();
     if (usesRemoteCameraControl()) {
         cameraStatusTimer->start();
     }
@@ -304,6 +390,41 @@ void Home::initializeGimbalControl()
     const auto &gimbalCfg = ConfigManager::instance().gimbal();
     if (!m_gimbalControlClient) {
         m_gimbalControlClient = new GimbalControlClient(this);
+        connect(m_gimbalControlClient, &GimbalControlClient::connectionStateChanged, this, [this](bool connected) {
+            logMessage(connected ? tr("云台 PLC 已连接") : tr("云台 PLC 已断开"));
+        });
+        connect(m_gimbalControlClient, &GimbalControlClient::statusReceived, this, &Home::updateGimbalStatus);
+        connect(m_gimbalControlClient, &GimbalControlClient::commandSucceeded, this, [this](const QString &operation) {
+            if (operation == QStringLiteral("gimbal_status")) {
+                return;
+            }
+            if (!m_activeGimbalAction.isEmpty()) {
+                logMessage(tr("%1 成功").arg(m_activeGimbalAction));
+                m_activeGimbalAction.clear();
+            } else if (operation != QStringLiteral("gimbal_stop_all")) {
+                logMessage(tr("%1 成功").arg(operation));
+            }
+        });
+        connect(m_gimbalControlClient, &GimbalControlClient::commandFailed, this, [this](const QString &operation, const QString &message) {
+            if (operation == QStringLiteral("gimbal_status")) {
+                const QString text = message.isEmpty() ? tr("云台状态暂不可用") : tr("云台状态暂不可用：%1").arg(message);
+                logMessage(text);
+                if (m_gimbalMoving) {
+                    logMessage(tr("云台运动中状态反馈中断，已请求停止"));
+                    stopGimbal();
+                }
+                updateGimbalButtonState();
+                return;
+            }
+            m_gimbalMoving = false;
+            if (gimbalSafetyStopTimer) {
+                gimbalSafetyStopTimer->stop();
+            }
+            const QString text = message.isEmpty() ? tr("%1 失败").arg(operation) : tr("%1 失败：%2").arg(operation, message);
+            logMessage(text);
+            m_activeGimbalAction.clear();
+            updateGimbalButtonState();
+        });
     }
 
     GimbalControlClient::Settings settings;
@@ -318,43 +439,8 @@ void Home::initializeGimbalControl()
     settings.yawControlAddress = gimbalCfg.yawControlAddress;
     settings.statusStartAddress = gimbalCfg.statusStartAddress;
     settings.statusRegisterCount = gimbalCfg.statusRegisterCount;
+    m_gimbalControlClient->stopStatusPolling();
     m_gimbalControlClient->configure(settings);
-
-    connect(m_gimbalControlClient, &GimbalControlClient::connectionStateChanged, this, [this](bool connected) {
-        logMessage(connected ? tr("云台 PLC 已连接") : tr("云台 PLC 已断开"));
-    });
-    connect(m_gimbalControlClient, &GimbalControlClient::statusReceived, this, &Home::updateGimbalStatus);
-    connect(m_gimbalControlClient, &GimbalControlClient::commandSucceeded, this, [this](const QString &operation) {
-        if (operation == QStringLiteral("gimbal_status")) {
-            return;
-        }
-        if (!m_activeGimbalAction.isEmpty()) {
-            logMessage(tr("%1 成功").arg(m_activeGimbalAction));
-            m_activeGimbalAction.clear();
-        } else if (operation != QStringLiteral("gimbal_stop_all")) {
-            logMessage(tr("%1 成功").arg(operation));
-        }
-    });
-    connect(m_gimbalControlClient, &GimbalControlClient::commandFailed, this, [this](const QString &operation, const QString &message) {
-        if (operation == QStringLiteral("gimbal_status")) {
-            const QString text = message.isEmpty() ? tr("云台状态暂不可用") : tr("云台状态暂不可用：%1").arg(message);
-            logMessage(text);
-            if (m_gimbalMoving) {
-                logMessage(tr("云台运动中状态反馈中断，已请求停止"));
-                stopGimbal();
-            }
-            updateGimbalButtonState();
-            return;
-        }
-        m_gimbalMoving = false;
-        if (gimbalSafetyStopTimer) {
-            gimbalSafetyStopTimer->stop();
-        }
-        const QString text = message.isEmpty() ? tr("%1 失败").arg(operation) : tr("%1 失败：%2").arg(operation, message);
-        logMessage(text);
-        m_activeGimbalAction.clear();
-        updateGimbalButtonState();
-    });
 
     updateGimbalButtonState();
     if (gimbalCfg.enabled) {
@@ -466,74 +552,87 @@ void Home::initializeCameraControl()
     const auto &cfg = ConfigManager::instance();
     const QUrl controlUrl(cfg.video().controlBaseUrl.trimmed());
     if (!controlUrl.isValid() || controlUrl.isEmpty()) {
+        if (cameraStatusTimer) {
+            cameraStatusTimer->stop();
+        }
+        if (m_cameraControlClient) {
+            m_cameraControlClient->setBaseUrl(QUrl());
+        }
+        m_remoteCameraServiceAvailable = false;
+        m_remoteCameraConnected = false;
+        m_remoteCameraRecording = false;
+        m_recordFilePath.clear();
+        m_hasLoggedRemoteCameraStatus = false;
+        updateRecordButtonText(false);
+        updateRemoteCameraUiState();
         return;
     }
 
     if (!m_cameraControlClient) {
         m_cameraControlClient = new CameraControlClient(this);
+        connect(m_cameraControlClient, &CameraControlClient::recordingStateChanged, this, &Home::updateRecordButtonText);
+        connect(m_cameraControlClient, &CameraControlClient::photoSaved, this, [this](const QString &path, const QString &message) {
+            m_remoteCameraServiceAvailable = true;
+            QWidget *parentWidget = ui ? ui->centralwidget : nullptr;
+            const QString finalMessage = message.isEmpty() ? tr("工控机拍照成功") : message;
+            QMessageBox::information(parentWidget,
+                                     tr("成功"),
+                                     path.isEmpty() ? finalMessage : tr("%1\n\n保存路径：\n%2").arg(finalMessage, path));
+            logMessage(path.isEmpty() ? finalMessage : tr("%1：%2").arg(finalMessage, path));
+        });
+        connect(m_cameraControlClient, &CameraControlClient::recordingStarted, this, [this](const QString &path, const QString &message) {
+            m_remoteCameraServiceAvailable = true;
+            m_remoteCameraRecording = true;
+            const QString finalMessage = message.isEmpty() ? tr("工控机已开始录像") : message;
+            m_recordFilePath = path;
+            logMessage(path.isEmpty() ? finalMessage : tr("%1：%2").arg(finalMessage, path));
+            updateRemoteCameraUiState();
+        });
+        connect(m_cameraControlClient, &CameraControlClient::recordingStopped, this, [this](const QString &path, const QString &message) {
+            m_remoteCameraServiceAvailable = true;
+            m_remoteCameraRecording = false;
+            QWidget *parentWidget = ui ? ui->centralwidget : nullptr;
+            const QString finalMessage = message.isEmpty() ? tr("工控机已停止录像") : message;
+            m_recordFilePath.clear();
+            QMessageBox::information(parentWidget,
+                                     tr("成功"),
+                                     path.isEmpty() ? finalMessage : tr("%1\n\n保存路径：\n%2").arg(finalMessage, path));
+            logMessage(path.isEmpty() ? finalMessage : tr("%1：%2").arg(finalMessage, path));
+            updateRemoteCameraUiState();
+        });
+        connect(m_cameraControlClient, &CameraControlClient::statusReceived, this, [this](bool cameraConnected, bool recording, const QString &message) {
+            const bool serviceRecovered = !m_remoteCameraServiceAvailable;
+            m_remoteCameraServiceAvailable = true;
+            m_remoteCameraConnected = cameraConnected;
+            m_remoteCameraRecording = recording;
+            logCameraStatusChange(message);
+            if (serviceRecovered) {
+                logMessage(tr("工控机相机服务已恢复"));
+            }
+            updateRecordButtonText(recording);
+            updateRemoteCameraUiState();
+        });
+        connect(m_cameraControlClient, &CameraControlClient::requestFailed, this, [this](const QString &operation, const QString &message) {
+            const QString text = tr("远程相机操作失败（%1）：%2").arg(operation, message);
+            if (operation == QStringLiteral("status")) {
+                if (m_remoteCameraServiceAvailable) {
+                    logMessage(text);
+                }
+                m_remoteCameraServiceAvailable = false;
+                m_remoteCameraConnected = false;
+                m_remoteCameraRecording = false;
+                updateRemoteCameraUiState();
+                return;
+            }
+            logMessage(text);
+            QWidget *parentWidget = ui ? ui->centralwidget : nullptr;
+            QMessageBox::warning(parentWidget, tr("失败"), text);
+        });
     }
 
     m_cameraControlClient->setBaseUrl(controlUrl);
     m_cameraControlClient->setAuthorizationToken(cfg.network().authToken);
-
-    connect(m_cameraControlClient, &CameraControlClient::recordingStateChanged, this, &Home::updateRecordButtonText);
-    connect(m_cameraControlClient, &CameraControlClient::photoSaved, this, [this](const QString &path, const QString &message) {
-        m_remoteCameraServiceAvailable = true;
-        QWidget *parentWidget = ui ? ui->centralwidget : nullptr;
-        const QString finalMessage = message.isEmpty() ? tr("工控机拍照成功") : message;
-        QMessageBox::information(parentWidget,
-                                 tr("成功"),
-                                 path.isEmpty() ? finalMessage : tr("%1\n\n保存路径：\n%2").arg(finalMessage, path));
-        logMessage(path.isEmpty() ? finalMessage : tr("%1：%2").arg(finalMessage, path));
-    });
-    connect(m_cameraControlClient, &CameraControlClient::recordingStarted, this, [this](const QString &path, const QString &message) {
-        m_remoteCameraServiceAvailable = true;
-        m_remoteCameraRecording = true;
-        const QString finalMessage = message.isEmpty() ? tr("工控机已开始录像") : message;
-        m_recordFilePath = path;
-        logMessage(path.isEmpty() ? finalMessage : tr("%1：%2").arg(finalMessage, path));
-        updateRemoteCameraUiState();
-    });
-    connect(m_cameraControlClient, &CameraControlClient::recordingStopped, this, [this](const QString &path, const QString &message) {
-        m_remoteCameraServiceAvailable = true;
-        m_remoteCameraRecording = false;
-        QWidget *parentWidget = ui ? ui->centralwidget : nullptr;
-        const QString finalMessage = message.isEmpty() ? tr("工控机已停止录像") : message;
-        m_recordFilePath.clear();
-        QMessageBox::information(parentWidget,
-                                 tr("成功"),
-                                 path.isEmpty() ? finalMessage : tr("%1\n\n保存路径：\n%2").arg(finalMessage, path));
-        logMessage(path.isEmpty() ? finalMessage : tr("%1：%2").arg(finalMessage, path));
-        updateRemoteCameraUiState();
-    });
-    connect(m_cameraControlClient, &CameraControlClient::statusReceived, this, [this](bool cameraConnected, bool recording, const QString &message) {
-        const bool serviceRecovered = !m_remoteCameraServiceAvailable;
-        m_remoteCameraServiceAvailable = true;
-        m_remoteCameraConnected = cameraConnected;
-        m_remoteCameraRecording = recording;
-        logCameraStatusChange(message);
-        if (serviceRecovered) {
-            logMessage(tr("工控机相机服务已恢复"));
-        }
-        updateRecordButtonText(recording);
-        updateRemoteCameraUiState();
-    });
-    connect(m_cameraControlClient, &CameraControlClient::requestFailed, this, [this](const QString &operation, const QString &message) {
-        const QString text = tr("远程相机操作失败（%1）：%2").arg(operation, message);
-        if (operation == QStringLiteral("status")) {
-            if (m_remoteCameraServiceAvailable) {
-                logMessage(text);
-            }
-            m_remoteCameraServiceAvailable = false;
-            m_remoteCameraConnected = false;
-            m_remoteCameraRecording = false;
-            updateRemoteCameraUiState();
-            return;
-        }
-        logMessage(text);
-        QWidget *parentWidget = ui ? ui->centralwidget : nullptr;
-        QMessageBox::warning(parentWidget, tr("失败"), text);
-    });
+    m_cameraControlClient->setRequestTimeoutMs(cfg.video().cameraRequestTimeoutMs);
 
     updateRecordButtonText(m_cameraControlClient->isRecording());
     requestRemoteCameraStatus();
@@ -592,15 +691,21 @@ void Home::updateRecordButtonText(bool remoteRecordingActive)
 
 void Home::updateRemoteCameraUiState()
 {
-    if (!usesRemoteCameraControl() || !ui) {
+    if (!ui) {
         return;
     }
 
     if (ui->captureButton) {
-        ui->captureButton->setEnabled(m_remoteCameraServiceAvailable && m_remoteCameraConnected);
+        ui->captureButton->setEnabled(!usesRemoteCameraControl() ||
+                                      (m_remoteCameraServiceAvailable && m_remoteCameraConnected));
     }
     if (ui->recordButton) {
-        ui->recordButton->setEnabled(m_remoteCameraServiceAvailable && m_remoteCameraConnected);
+        ui->recordButton->setEnabled(!usesRemoteCameraControl() ||
+                                     (m_remoteCameraServiceAvailable && m_remoteCameraConnected));
+    }
+
+    if (!usesRemoteCameraControl()) {
+        return;
     }
 
     if (!m_remoteCameraServiceAvailable) {
@@ -684,7 +789,7 @@ void Home::jogGimbal(GimbalControlClient::Axis axis, GimbalControlClient::Direct
         if (axis == GimbalControlClient::Axis::Height) {
             gimbalSafetyStopTimer->stop();
         } else {
-            gimbalSafetyStopTimer->start(1500);
+            gimbalSafetyStopTimer->start(ConfigManager::instance().gimbal().safetyStopTimeoutMs);
         }
     }
     updateGimbalButtonState();

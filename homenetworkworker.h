@@ -18,7 +18,12 @@ class HomeNetworkWorker : public QObject
 public:
     explicit HomeNetworkWorker(QObject *parent = nullptr);
 
-    void configure(const QUrl &url, const QJsonArray &requests, int intervalMs, const QString &authToken = QString());
+    void configure(const QUrl &url,
+                   const QJsonArray &requests,
+                   int intervalMs,
+                   const QString &authToken = QString(),
+                   int requestTimeoutMs = 3000,
+                   int maxBackoffMs = 5000);
 
 public slots:
     void start();

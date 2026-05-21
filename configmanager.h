@@ -2,9 +2,11 @@
 #define CONFIGMANAGER_H
 
 #include <QObject>
+#include <QJsonObject>
 #include <QList>
 #include <QPointF>
 #include <QString>
+#include <QStringList>
 
 class ConfigManager : public QObject
 {
@@ -34,6 +36,8 @@ public:
         double angularDecelerationLimit = 1.5;  // rad/s^2
         double finalAdjustLinearSpeed = 0.2;    // m/s
         double finalAdjustAngularSpeed = 0.6;   // rad/s
+        int routeFollowerUpdateIntervalMs = 100;
+        int manualMotionRepeatIntervalMs = 40;
     };
 
     struct VehicleConfig {
@@ -59,6 +63,7 @@ public:
         QString recordMode;
         QString recordCodec;
         int reconnectIntervalMs = 2000;
+        int cameraRequestTimeoutMs = 5000;
         bool autoStart = true;
         bool scaleContents = true;
     };
@@ -70,6 +75,11 @@ public:
         QString saveFileUrl;
         QString authToken;
         int statusPollIntervalMs = 100;
+        int statusRequestTimeoutMs = 3000;
+        int statusMaxBackoffMs = 5000;
+        bool chassisAutoReconnect = true;
+        int chassisReconnectIntervalMs = 1000;
+        int chassisReconnectMaxIntervalMs = 15000;
     };
 
     struct RowWorkConfig {
@@ -98,12 +108,32 @@ public:
         int maxYaw = 175;
         int minPitch = 95;
         int maxPitch = 265;
+        int safetyStopTimeoutMs = 1500;
+    };
+
+    struct ConfigSnapshot {
+        GeoConfig geo;
+        ControlConfig control;
+        VehicleConfig vehicle;
+        VideoConfig video;
+        NetworkConfig network;
+        RowWorkConfig rowWork;
+        GimbalConfig gimbal;
     };
 
     static ConfigManager &instance();
 
     void reload();
     void setConfigFilePath(const QString &path);
+    ConfigSnapshot snapshot() const;
+    bool saveSnapshot(const ConfigSnapshot &snapshot, QString *errorMessage = nullptr, bool applyAfterSave = false);
+    bool createStartupBackup(QString *errorMessage = nullptr);
+    QString backupDirectoryPath() const;
+    QStringList backupFilePaths() const;
+    QString latestBackupFilePath() const;
+    bool currentConfigMatchesLatestBackup() const;
+    bool loadSnapshotFromFile(const QString &path, ConfigSnapshot *snapshot, QString *errorMessage = nullptr);
+    bool restoreLatestBackup(QString *errorMessage = nullptr, bool applyAfterRestore = true);
 
     const GeoConfig &geo() const { return m_geo; }
     const ControlConfig &control() const { return m_control; }
@@ -119,14 +149,22 @@ public:
     QString configFilePath() const { return m_configPath; }
     bool loadedFromFile() const { return m_loadedFromFile; }
 
+signals:
+    void configChanged();
+
 private:
     explicit ConfigManager(QObject *parent = nullptr);
     void ensureLoaded();
     void load();
     void loadFromFile(const QString &path);
+    void applyJsonObjectToCurrentConfig(const QJsonObject &root);
+    bool saveToFile(const QString &path, QString *errorMessage = nullptr) const;
+    bool copyFileAtomically(const QString &sourcePath, const QString &targetPath, QString *errorMessage = nullptr) const;
+    void pruneBackups(int keepCount);
     void loadDefaults();
     void sanitizeConfig();
     void updateCachedScales();
+    QJsonObject toJsonObject() const;
 
     GeoConfig m_geo;
     ControlConfig m_control;
@@ -141,6 +179,7 @@ private:
     QString m_configPathOverride;
     bool m_loaded = false;
     bool m_loadedFromFile = false;
+    bool m_startupBackupCreated = false;
 };
 
 #endif // CONFIGMANAGER_H

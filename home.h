@@ -47,6 +47,7 @@ public slots:
     void cancelRouteExecution();
 
 private slots:
+    void applyRuntimeConfig();
     void handleStatusPacket(const QJsonObject &packet);
     void handleNetworkFailure(int httpStatus, const QString &errorString, const QByteArray &responseBody);
     void checkConnectionRestored();
@@ -82,13 +83,17 @@ private slots:
     void handleVideoFrameReceived(const QImage &frame);
 
 private:
-    static constexpr int kMotionRepeatIntervalMs = 40;
-
     Ui::MainWindow *ui;
 
     void initialize();
     void setupImageSwitches();
     void initializeMotionTimers();
+    void applyRouteFollowerConfig();
+    void applyStatusClientConfig();
+    void applyChassisClientConfig();
+    void applyVideoConfig();
+    void applyCameraControlConfig();
+    void applyGimbalControlConfig();
     void initializeVideoDisplay();
     void initializeCameraStatusPolling();
     void populateVideoStreamSelector();
@@ -193,6 +198,7 @@ private:
     bool gimbalKeyboardMotionActive = false;
     GimbalControlClient::Axis m_activeGimbalKeyboardAxis = GimbalControlClient::Axis::Height;
     GimbalControlClient::Direction m_activeGimbalKeyboardDirection = GimbalControlClient::Direction::Value1;
+    int m_manualMotionRepeatIntervalMs = 40;
     int rebootRemainingSeconds;
 };
 
