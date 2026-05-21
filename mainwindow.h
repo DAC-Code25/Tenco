@@ -19,6 +19,7 @@ class Map;
 class Maintenance;
 class Help;
 class About;
+class QCloseEvent;
 class QKeyEvent;
 class QMouseEvent; //用于窗口拖拽鼠标事件
 class QEvent;
@@ -34,6 +35,7 @@ public:
     ~MainWindow() override; //重写基类析构逻辑
 
 protected:
+    void closeEvent(QCloseEvent *event) override;
     bool eventFilter(QObject *watched, QEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override; //重写键盘按下事件入口
     void keyReleaseEvent(QKeyEvent *event) override; //重写键盘释放事件入口
@@ -58,6 +60,7 @@ private slots: //槽函数声明
 
 private:
     void applyTopMost(bool enabled); //切换窗口置顶属性并同步窗口按钮状态
+    bool switchToPage(int pageIndex, QPushButton *button);
 
     Ui::MainWindow *ui; //Qt Designer 生成的界面对象入口
     QPushButton *homeButton;

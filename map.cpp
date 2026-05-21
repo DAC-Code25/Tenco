@@ -203,8 +203,19 @@ Map::Map(Ui::MainWindow *ui, QObject *parent)
     ensureScene();
     ensureVehicleItem();
     ensureRowWorkClient();
+    connect(&ConfigManager::instance(), &ConfigManager::configChanged, this, &Map::applyRuntimeConfig);
     m_vehiclePoseRefreshClock.start();
     handleModuleActivated();
+}
+
+void Map::applyRuntimeConfig()
+{
+    const auto &geo = ConfigManager::instance().geo();
+    m_baseLatitudeDeg = geo.baseLatitudeDeg;
+    m_baseLongitudeDeg = geo.baseLongitudeDeg;
+    ensureRowWorkClient();
+    refreshRowWorkControlState();
+    setRowWorkStatusText(tr("地图运行配置已应用"));
 }
 
 void Map::handleModuleActivated()
@@ -4133,6 +4144,9 @@ void Map::ensureRowWorkClient()
 {
     const auto &rowWorkCfg = ConfigManager::instance().rowWork();
     if (!rowWorkCfg.enabled) {
+        if (m_rowWorkClient) {
+            m_rowWorkClient->stopStatusPolling();
+        }
         return;
     }
 
@@ -4147,6 +4161,8 @@ void Map::ensureRowWorkClient()
     m_rowWorkClient->setCommandTimeoutMs(rowWorkCfg.commandTimeoutMs);
     if (rowWorkCfg.autoRefreshPlanStatus) {
         m_rowWorkClient->startStatusPolling();
+    } else {
+        m_rowWorkClient->stopStatusPolling();
     }
 }
 

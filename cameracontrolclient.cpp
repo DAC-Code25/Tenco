@@ -7,11 +7,11 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QTimer>
+#include <QtGlobal>
 
 Q_LOGGING_CATEGORY(lcCameraControlClient, "tenco.camera.control")
 
 namespace {
-constexpr int kRequestTimeoutMs = 5000;
 constexpr auto kPhotoEndpoint = "/camera/photo";
 constexpr auto kRecordStartEndpoint = "/camera/record/start";
 constexpr auto kRecordStopEndpoint = "/camera/record/stop";
@@ -41,6 +41,11 @@ void CameraControlClient::setBaseUrl(const QUrl &url)
 void CameraControlClient::setAuthorizationToken(const QString &token)
 {
     m_authToken = token.trimmed();
+}
+
+void CameraControlClient::setRequestTimeoutMs(int timeoutMs)
+{
+    m_requestTimeoutMs = qBound(1000, timeoutMs, 30000);
 }
 
 bool CameraControlClient::isConfigured() const
@@ -220,7 +225,7 @@ void CameraControlClient::sendRequest(Operation operation, const QString &endpoi
     }
 
     connect(m_reply, &QNetworkReply::finished, this, &CameraControlClient::handleReplyFinished);
-    m_timeoutTimer->start(kRequestTimeoutMs);
+    m_timeoutTimer->start(m_requestTimeoutMs);
     emit busyChanged(true);
     if (operation != Operation::QueryStatus) {
         qCInfo(lcCameraControlClient) << "Sending remote camera request:" << opName << url;

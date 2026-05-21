@@ -73,6 +73,15 @@ void ChassisClient::setAutoReconnect(bool enabled)
 void ChassisClient::setReconnectIntervalMs(int intervalMs)
 {
     m_reconnectIntervalMs = qMax(200, intervalMs);
+    if (m_reconnectMaxIntervalMs < m_reconnectIntervalMs) {
+        m_reconnectMaxIntervalMs = m_reconnectIntervalMs;
+    }
+    m_reconnectAttempt = 0;
+}
+
+void ChassisClient::setReconnectMaxIntervalMs(int intervalMs)
+{
+    m_reconnectMaxIntervalMs = qMax(m_reconnectIntervalMs, intervalMs);
     m_reconnectAttempt = 0;
 }
 

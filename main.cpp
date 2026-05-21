@@ -7,6 +7,9 @@
 #include <QCommandLineParser>
 #include <QCoreApplication>
 #include <QIcon>
+#include <QLoggingCategory>
+
+Q_LOGGING_CATEGORY(lcMain, "tenco.main")
 
 int main(int argc, char *argv[])
 {
@@ -31,6 +34,10 @@ int main(int argc, char *argv[])
         if (!path.isEmpty()) {
             ConfigManager::instance().setConfigFilePath(path);
         }
+    }
+    QString backupError;
+    if (!ConfigManager::instance().createStartupBackup(&backupError)) {
+        qCWarning(lcMain) << "Create startup config backup failed:" << backupError;
     }
 
     QApplication::setWindowIcon(QIcon(":/icon.ico"));

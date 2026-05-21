@@ -14,6 +14,7 @@
 #include <QTextStream> // 读取样式文件时使用
 #include <QEvent>
 #include <QWidget>
+#include <QCloseEvent>
 #include <QKeyEvent> // 捕获键盘事件
 #include <QFile> // 文件操作
 #include <QMouseEvent>
@@ -118,16 +119,13 @@ MainWindow::~MainWindow() // 析构函数
 // 首页按钮槽函数
 void MainWindow::on_homeButton_clicked()
 {
-    stackedWidget->setCurrentIndex(0); // 切换到首页页面
-    homeButton->setChecked(true); // 保持按钮选中状态
+    switchToPage(0, homeButton); // 切换到首页页面
 }
 
 // 地图按钮槽函数
 void MainWindow::on_mapButton_clicked()
 {
-    stackedWidget->setCurrentIndex(1); // 切换到地图页面
-    mapButton->setChecked(true); // 保持按钮选中状态
-    if (mapPage) {
+    if (switchToPage(1, mapButton) && mapPage) { // 切换到地图页面
         mapPage->handleModuleActivated();
     }
 }
@@ -135,22 +133,19 @@ void MainWindow::on_mapButton_clicked()
 // 维护按钮槽函数
 void MainWindow::on_maintenanceButton_clicked()
 {
-    stackedWidget->setCurrentIndex(2); // 切换到维护页面
-    maintenanceButton->setChecked(true); // 保持按钮选中状态
+    switchToPage(2, maintenanceButton); // 切换到维护页面
 }
 
  // 帮助按钮槽函数
 void MainWindow::on_helpButton_clicked()
 {
-    stackedWidget->setCurrentIndex(3); // 切换到帮助页面
-    helpButton->setChecked(true); // 保持按钮选中状态
+    switchToPage(3, helpButton); // 切换到帮助页面
 }
 
 // 关于按钮槽函数
 void MainWindow::on_aboutButton_clicked()
 {
-    stackedWidget->setCurrentIndex(4); // 切换到关于页面
-    aboutButton->setChecked(true); // 保持按钮选中状态
+    switchToPage(4, aboutButton); // 切换到关于页面
 }
 
  // 关于页右键菜单槽
@@ -216,6 +211,34 @@ void MainWindow::applyTopMost(bool enabled) //单独封装置顶
 #endif
 }
 
+bool MainWindow::switchToPage(int pageIndex, QPushButton *button)
+{
+    if (!stackedWidget) {
+        return false;
+    }
+
+    const int currentIndex = stackedWidget->currentIndex();
+    if (currentIndex == pageIndex) {
+        if (button) {
+            button->setChecked(true);
+        }
+        return true;
+    }
+
+    if (currentIndex == 2 && maintenancePage && !maintenancePage->confirmLeaveIfDirty(this)) {
+        if (maintenanceButton) {
+            maintenanceButton->setChecked(true);
+        }
+        return false;
+    }
+
+    stackedWidget->setCurrentIndex(pageIndex);
+    if (button) {
+        button->setChecked(true);
+    }
+    return true;
+}
+
 bool MainWindow::isInNavBarDragArea(const QPoint &globalPos) const //判断拖拽区域是否在导航栏
 {
     if (!ui || !ui->navBar || !ui->navBar->isVisible()) {
@@ -249,6 +272,18 @@ void MainWindow::changeEvent(QEvent *event) //监听窗口状态变化 同步改
             }
         }
     }
+}
+
+void MainWindow::closeEvent(QCloseEvent *event)
+{
+    if (maintenancePage && maintenancePage->hasUnsavedChanges()) {
+        if (!maintenancePage->confirmLeaveIfDirty(this)) {
+            event->ignore();
+            return;
+        }
+    }
+
+    QMainWindow::closeEvent(event);
 }
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event)

@@ -28,6 +28,8 @@ public:
 
     void setReconnectIntervalMs(int intervalMs);
     int reconnectIntervalMs() const { return m_reconnectIntervalMs; }
+    void setReconnectMaxIntervalMs(int intervalMs);
+    int reconnectMaxIntervalMs() const { return m_reconnectMaxIntervalMs; }
 
     void connectToHost();
     void disconnectFromHost();

@@ -20,7 +20,9 @@
     "angularAccelerationLimit": 1.5,
     "angularDecelerationLimit": 2.0,
     "finalAdjustLinearSpeed": 0.25,
-    "finalAdjustAngularSpeed": 0.7
+    "finalAdjustAngularSpeed": 0.7,
+    "routeFollowerUpdateIntervalMs": 100,
+    "manualMotionRepeatIntervalMs": 40
   },
   "vehicle": {
     "wheelBaseMeters": 0.58,
@@ -44,6 +46,7 @@
     "recordMode": "host_opencv",
     "recordCodec": "MJPG",
     "reconnectIntervalMs": 2000,
+    "cameraRequestTimeoutMs": 5000,
     "autoStart": true,
     "scaleContents": true
   },
@@ -53,7 +56,12 @@
     "writeInsUrl": "http://192.168.31.7:9999/table/writeIns",
     "saveFileUrl": "http://192.168.31.7:9999/saveFile",
     "authToken": "",
-    "statusPollIntervalMs": 100
+    "statusPollIntervalMs": 100,
+    "statusRequestTimeoutMs": 3000,
+    "statusMaxBackoffMs": 5000,
+    "chassisAutoReconnect": true,
+    "chassisReconnectIntervalMs": 1000,
+    "chassisReconnectMaxIntervalMs": 15000
   },
   "rowWork": {
     "enabled": true,
@@ -79,6 +87,7 @@
     "minYaw": 5,
     "maxYaw": 175,
     "minPitch": 95,
-    "maxPitch": 265
+    "maxPitch": 265,
+    "safetyStopTimeoutMs": 1500
   }
 }

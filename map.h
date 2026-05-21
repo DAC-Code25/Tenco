@@ -63,6 +63,7 @@ public slots:
     void updateVehiclePose(double x, double y, double theta);
     void handleRouteSegmentCompleted(bool success);
     void handleRowWorkStatusUpdate(const RowWorkStatus &status);
+    void applyRuntimeConfig();
 
 public:
     enum class PathType {
