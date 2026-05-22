@@ -8,11 +8,20 @@
 #include <QCoreApplication>
 #include <QIcon>
 #include <QLoggingCategory>
+#include <QSurfaceFormat>
+
+#ifdef TENCO_ENABLE_ABOUT_3D
+#include <QtQuick3D/qquick3d.h>
+#endif
 
 Q_LOGGING_CATEGORY(lcMain, "tenco.main")
 
 int main(int argc, char *argv[])
 {
+#ifdef TENCO_ENABLE_ABOUT_3D
+    QSurfaceFormat::setDefaultFormat(QQuick3D::idealSurfaceFormat());
+#endif
+
     QApplication a(argc, argv);
     QCoreApplication::setOrganizationName(QStringLiteral("Tenco"));
     QCoreApplication::setApplicationName(QStringLiteral("Tenco"));

@@ -24,5 +24,7 @@
         <file>image/imageswitch/btncheckoff2.png</file>
         <file>image/imageswitch/btncheckon1.png</file>
         <file>image/imageswitch/btncheckon2.png</file>
+        <file>image/car.jpg</file>
+        <file>qml/AboutCarViewer.qml</file>
     </qresource>
 </RCC>

@@ -17,12 +17,21 @@ set(CMAKE_AUTORCC ON)
 option(TENCO_ENABLE_WARNINGS "Enable stricter compiler warnings" ON)
 option(TENCO_BUILD_TESTS "Build unit tests" ON)
 option(TENCO_ENABLE_OAK_CAMERA "Enable DepthAI/OpenCV OAK camera backend" OFF)
+option(TENCO_ENABLE_ABOUT_3D "Enable the interactive 3D model viewer on the About page when Qt Quick3D is available" ON)
 
 # Qt 6 is the primary supported build for this repository.
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network WebSockets)
 if(TENCO_ENABLE_OAK_CAMERA)
     find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs videoio)
     find_package(depthai CONFIG REQUIRED)
+endif()
+
+set(TENCO_ABOUT_3D_AVAILABLE OFF)
+if(TENCO_ENABLE_ABOUT_3D)
+    find_package(Qt6 QUIET COMPONENTS Quick QuickWidgets Quick3D Quick3DAssetUtils)
+    if(TARGET Qt6::Quick AND TARGET Qt6::QuickWidgets AND TARGET Qt6::Quick3D AND TARGET Qt6::Quick3DAssetUtils)
+        set(TENCO_ABOUT_3D_AVAILABLE ON)
+    endif()
 endif()
 
 qt_standard_project_setup()
@@ -134,6 +143,16 @@ if(TENCO_ENABLE_OAK_CAMERA)
     )
 endif()
 
+if(TENCO_ABOUT_3D_AVAILABLE)
+    target_compile_definitions(Tenco PRIVATE TENCO_ENABLE_ABOUT_3D)
+    target_link_libraries(Tenco PRIVATE
+        Qt6::Quick
+        Qt6::QuickWidgets
+        Qt6::Quick3D
+        Qt6::Quick3DAssetUtils
+    )
+endif()
+
 target_include_directories(Tenco PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 if(TENCO_ENABLE_WARNINGS)
@@ -164,6 +183,15 @@ add_custom_command(TARGET Tenco POST_BUILD
             "$<TARGET_FILE_DIR:Tenco>/config.json"
     COMMENT "Copy config.json next to the executable"
 )
+
+    add_custom_command(TARGET Tenco POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_FILE_DIR:Tenco>/models"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_CURRENT_SOURCE_DIR}/src/carmodel_about_centered.glb"
+                "$<TARGET_FILE_DIR:Tenco>/models/carmodel_about_centered.glb"
+        COMMENT "Copy about-page 3D model next to the executable"
+    )
 
 include(GNUInstallDirs)
 install(TARGETS Tenco
