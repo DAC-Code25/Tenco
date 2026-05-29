@@ -149,7 +149,7 @@ void RowWorkClient::handleReplyFinished()
     const Operation operation = m_pendingOperation;
     m_timeoutTimer->stop();
 
-    const QByteArray body = reply->readAll();
+    const QByteArray body = reply->isOpen() ? reply->readAll() : QByteArray();
     const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     const bool httpSucceeded = httpStatus >= 200 && httpStatus < 300;
 

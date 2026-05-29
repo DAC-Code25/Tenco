@@ -88,7 +88,7 @@ void CameraControlClient::handleReplyFinished()
     const Operation operation = m_pendingOperation;
     m_timeoutTimer->stop();
 
-    const QByteArray body = reply->readAll();
+    const QByteArray body = reply->isOpen() ? reply->readAll() : QByteArray();
     const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     QString message;
     QString path;

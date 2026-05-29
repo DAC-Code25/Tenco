@@ -1,6 +1,7 @@
 #include "maintenance.h"
 
 #include "configmanager.h"
+#include "loggingmanager.h"
 #include "ui_mainwindow.h"
 
 #include <QAbstractSpinBox>
@@ -29,6 +30,7 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QRegularExpression>
 #include <QSizePolicy>
 #include <QSpinBox>
 #include <QTabWidget>
@@ -36,6 +38,8 @@
 #include <QVBoxLayout>
 #include <QWheelEvent>
 #include <QtGlobal>
+
+#include <limits>
 
 namespace {
 constexpr int kFieldMinWidth = 360;
@@ -414,6 +418,25 @@ QString parameterDescription(const QString &key)
         {QStringLiteral("vehicle.wheelDiameterMeters"), QStringLiteral("车轮直径。用于速度、里程和轮速换算，应按实际轮胎外径填写。")},
         {QStringLiteral("vehicle.gearReduction"), QStringLiteral("电机到车轮的总减速比。用于后续电机转速与车轮速度换算。")},
 
+        {QStringLiteral("logging.level"), QStringLiteral("运行日志最低输出等级。debug 最详细，info 适合调试，warn/error 适合现场稳定运行。")},
+        {QStringLiteral("logging.consoleEnabled"), QStringLiteral("是否输出到 Qt Creator 应用程序输出或终端。现场发布版可关闭以减少控制台噪声。")},
+        {QStringLiteral("logging.fileEnabled"), QStringLiteral("是否写入运行日志文件。生产维护建议开启。")},
+        {QStringLiteral("logging.includeSourceLocation"), QStringLiteral("是否记录源码文件和行号。定位开发问题有用，但会增加日志长度。")},
+        {QStringLiteral("logging.includeThreadId"), QStringLiteral("是否记录线程 ID。排查网络、视频、云台等多线程问题时建议开启。")},
+        {QStringLiteral("logging.includeCategory"), QStringLiteral("是否记录模块分类，例如 tenco.net.status 或 tenco.gimbal.control。")},
+        {QStringLiteral("logging.maxFileBytes"), QStringLiteral("单个运行日志最大大小。达到上限后自动轮转保留历史日志。")},
+        {QStringLiteral("logging.maxBackupFiles"), QStringLiteral("运行日志最多保留数量。数量越大越利于回溯，但占用磁盘更多。")},
+        {QStringLiteral("logging.perSessionFile"), QStringLiteral("每次程序启动额外生成独立会话日志，便于定位一次现场运行过程。")},
+        {QStringLiteral("logging.auditEnabled"), QStringLiteral("是否启用操作审计日志。用于记录配置应用、诊断导出和关键控制操作。")},
+        {QStringLiteral("logging.auditMaxFileBytes"), QStringLiteral("单个审计日志最大大小。达到上限后自动轮转。")},
+        {QStringLiteral("logging.auditMaxBackupFiles"), QStringLiteral("审计日志最多保留数量。")},
+        {QStringLiteral("logging.redactSensitiveData"), QStringLiteral("是否对 token、Authorization、password、secret 等敏感信息脱敏。生产环境必须开启。")},
+        {QStringLiteral("logging.categoryRules"), QStringLiteral("Qt 分类日志过滤规则，每行一条，例如 tenco.net.status.debug=false。高级维护人员使用。")},
+        {QStringLiteral("logging.currentLevel"), QStringLiteral("当前运行中实际生效的日志等级。")},
+        {QStringLiteral("logging.currentFile"), QStringLiteral("当前运行日志文件路径。")},
+        {QStringLiteral("logging.auditFile"), QStringLiteral("当前审计日志文件路径。")},
+        {QStringLiteral("logging.actions"), QStringLiteral("日志维护操作：刷新日志状态、打开日志目录和导出现场诊断包。")},
+
         {QStringLiteral("production.configPath"), QStringLiteral("当前程序实际读取和写入的 config.json 路径，用于确认是否改到了正确配置文件。")},
         {QStringLiteral("production.loadedFromFile"), QStringLiteral("显示当前配置是否来自磁盘文件；否表示程序使用了内置默认配置。")},
         {QStringLiteral("production.runtimeDir"), QStringLiteral("当前程序可执行文件所在目录，用于排查运行目录和配置文件路径问题。")},
@@ -526,6 +549,7 @@ void Maintenance::buildUi()
     tabs->addTab(wrapScrollable(createRowWorkPage()), tr("直线作业"));
     tabs->addTab(wrapScrollable(createControlPage()), tr("定位/控制"));
     tabs->addTab(wrapScrollable(createVehiclePage()), tr("车辆标定"));
+    tabs->addTab(wrapScrollable(createLoggingPage()), tr("日志"));
     tabs->addTab(wrapScrollable(createProductionPage()), tr("生产维护"));
     rootLayout->addWidget(tabs, 1);
 
@@ -722,6 +746,85 @@ QWidget *Maintenance::createVehiclePage()
     addDoubleSpinBox(layout, QStringLiteral("vehicle.wheelBaseMeters"), tr("轮距"), 0.01, 10.0, 3, QStringLiteral(" m"));
     addDoubleSpinBox(layout, QStringLiteral("vehicle.wheelDiameterMeters"), tr("轮径"), 0.01, 2.0, 3, QStringLiteral(" m"));
     addDoubleSpinBox(layout, QStringLiteral("vehicle.gearReduction"), tr("减速比"), 0.01, 500.0, 3);
+    return page;
+}
+
+QWidget *Maintenance::createLoggingPage()
+{
+    QFormLayout *layout = nullptr;
+    auto *page = createFormPage(tr("日志系统"),
+                                tr("配置运行日志、审计日志和分类过滤规则。修改后可立即热加载生效。"),
+                                &layout);
+    addComboBox(layout,
+                QStringLiteral("logging.level"),
+                tr("最低日志等级"),
+                {QStringLiteral("debug"), QStringLiteral("info"), QStringLiteral("warn"), QStringLiteral("error"), QStringLiteral("fatal")});
+    addCheckBox(layout, QStringLiteral("logging.consoleEnabled"), tr("输出到控制台"));
+    addCheckBox(layout, QStringLiteral("logging.fileEnabled"), tr("写入运行日志文件"));
+    addCheckBox(layout, QStringLiteral("logging.includeSourceLocation"), tr("记录源码位置"));
+    addCheckBox(layout, QStringLiteral("logging.includeThreadId"), tr("记录线程 ID"));
+    addCheckBox(layout, QStringLiteral("logging.includeCategory"), tr("记录分类名称"));
+    auto *runtimeSize = addSpinBox(layout, QStringLiteral("logging.maxFileBytes"), tr("运行日志单文件大小"), 256 * 1024, 256 * 1024 * 1024, QStringLiteral(" bytes"));
+    if (runtimeSize) {
+        runtimeSize->setSingleStep(1024 * 1024);
+    }
+    addSpinBox(layout, QStringLiteral("logging.maxBackupFiles"), tr("运行日志保留数量"), 1, 99);
+    addCheckBox(layout, QStringLiteral("logging.perSessionFile"), tr("生成会话日志文件"));
+    addCheckBox(layout, QStringLiteral("logging.auditEnabled"), tr("启用审计日志"));
+    auto *auditSize = addSpinBox(layout, QStringLiteral("logging.auditMaxFileBytes"), tr("审计日志单文件大小"), 256 * 1024, 256 * 1024 * 1024, QStringLiteral(" bytes"));
+    if (auditSize) {
+        auditSize->setSingleStep(1024 * 1024);
+    }
+    addSpinBox(layout, QStringLiteral("logging.auditMaxBackupFiles"), tr("审计日志保留数量"), 1, 99);
+    addCheckBox(layout, QStringLiteral("logging.redactSensitiveData"), tr("敏感信息脱敏"));
+    addPlainTextEdit(layout, QStringLiteral("logging.categoryRules"), tr("分类过滤规则"), tr("每行一条，例如：tenco.net.status.debug=false"));
+
+    m_loggingCurrentLevelValue = new QLabel(page);
+    m_loggingCurrentFileValue = new QLabel(page);
+    m_loggingAuditFileValue = new QLabel(page);
+    const QList<QLabel *> labels{m_loggingCurrentLevelValue, m_loggingCurrentFileValue, m_loggingAuditFileValue};
+    for (QLabel *label : labels) {
+        label->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        label->setWordWrap(true);
+        label->setObjectName(QStringLiteral("maintenanceReadonlyValue"));
+    }
+    addDescribedRow(layout, QStringLiteral("logging.currentLevel"), tr("当前运行等级"), m_loggingCurrentLevelValue);
+    addDescribedRow(layout, QStringLiteral("logging.currentFile"), tr("当前运行日志文件"), m_loggingCurrentFileValue);
+    addDescribedRow(layout, QStringLiteral("logging.auditFile"), tr("当前审计日志文件"), m_loggingAuditFileValue);
+
+    auto *buttonRow = new QHBoxLayout();
+    buttonRow->setSpacing(10);
+    auto *refreshButton = new QPushButton(tr("刷新日志状态"), page);
+    refreshButton->setObjectName(QStringLiteral("maintenanceSecondaryButton"));
+    auto *openLogDirButton = new QPushButton(tr("打开日志目录"), page);
+    openLogDirButton->setObjectName(QStringLiteral("maintenanceSecondaryButton"));
+    auto *exportDiagButton = new QPushButton(tr("导出诊断包"), page);
+    exportDiagButton->setObjectName(QStringLiteral("maintenancePrimaryButton"));
+    buttonRow->addWidget(refreshButton);
+    buttonRow->addWidget(openLogDirButton);
+    buttonRow->addWidget(exportDiagButton);
+    buttonRow->addStretch(1);
+    auto *buttonContainer = new QWidget(page);
+    buttonContainer->setLayout(buttonRow);
+    addDescribedRow(layout, QStringLiteral("logging.actions"), tr("日志维护操作"), buttonContainer);
+
+    connect(refreshButton, &QPushButton::clicked, this, &Maintenance::refreshLoggingInfo);
+    connect(openLogDirButton, &QPushButton::clicked, this, []() {
+        QDesktopServices::openUrl(QUrl::fromLocalFile(LoggingManager::logDirectoryPath()));
+    });
+    connect(exportDiagButton, &QPushButton::clicked, this, [this]() {
+        QString error;
+        const QString target = LoggingManager::exportDiagnostics(QString(), &error);
+        if (target.isEmpty()) {
+            QMessageBox::critical(ui ? ui->maintenancePage : nullptr, tr("导出诊断包失败"), error);
+            return;
+        }
+        QMessageBox::information(ui ? ui->maintenancePage : nullptr,
+                                 tr("导出成功"),
+                                 tr("诊断信息已导出到：%1").arg(target));
+    });
+
+    refreshLoggingInfo();
     return page;
 }
 
@@ -1011,6 +1114,21 @@ void Maintenance::loadSnapshotToForm(const ConfigManager::ConfigSnapshot &snap)
     setIntValue(QStringLiteral("rowWork.commandTimeoutMs"), snap.rowWork.commandTimeoutMs);
     setBoolValue(QStringLiteral("rowWork.autoRefreshPlanStatus"), snap.rowWork.autoRefreshPlanStatus);
 
+    setComboValue(QStringLiteral("logging.level"), snap.logging.level);
+    setBoolValue(QStringLiteral("logging.consoleEnabled"), snap.logging.consoleEnabled);
+    setBoolValue(QStringLiteral("logging.fileEnabled"), snap.logging.fileEnabled);
+    setBoolValue(QStringLiteral("logging.includeSourceLocation"), snap.logging.includeSourceLocation);
+    setBoolValue(QStringLiteral("logging.includeThreadId"), snap.logging.includeThreadId);
+    setBoolValue(QStringLiteral("logging.includeCategory"), snap.logging.includeCategory);
+    setIntValue(QStringLiteral("logging.maxFileBytes"), static_cast<int>(qMin<qint64>(snap.logging.maxFileBytes, std::numeric_limits<int>::max())));
+    setIntValue(QStringLiteral("logging.maxBackupFiles"), snap.logging.maxBackupFiles);
+    setBoolValue(QStringLiteral("logging.perSessionFile"), snap.logging.perSessionFile);
+    setBoolValue(QStringLiteral("logging.auditEnabled"), snap.logging.auditEnabled);
+    setIntValue(QStringLiteral("logging.auditMaxFileBytes"), static_cast<int>(qMin<qint64>(snap.logging.auditMaxFileBytes, std::numeric_limits<int>::max())));
+    setIntValue(QStringLiteral("logging.auditMaxBackupFiles"), snap.logging.auditMaxBackupFiles);
+    setBoolValue(QStringLiteral("logging.redactSensitiveData"), snap.logging.redactSensitiveData);
+    setPlainTextValue(QStringLiteral("logging.categoryRules"), snap.logging.categoryRules.join(QStringLiteral("\n")));
+
     setDoubleValue(QStringLiteral("geo.baseLatitudeDeg"), snap.geo.baseLatitudeDeg);
     setDoubleValue(QStringLiteral("geo.baseLongitudeDeg"), snap.geo.baseLongitudeDeg);
     setDoubleValue(QStringLiteral("control.arrivalDistanceThreshold"), snap.control.arrivalDistanceThreshold);
@@ -1111,6 +1229,29 @@ ConfigManager::ConfigSnapshot Maintenance::collectSnapshot() const
     snap.rowWork.commandTimeoutMs = intValue(QStringLiteral("rowWork.commandTimeoutMs"));
     snap.rowWork.autoRefreshPlanStatus = boolValue(QStringLiteral("rowWork.autoRefreshPlanStatus"));
 
+    snap.logging.level = comboValue(QStringLiteral("logging.level"));
+    snap.logging.consoleEnabled = boolValue(QStringLiteral("logging.consoleEnabled"));
+    snap.logging.fileEnabled = boolValue(QStringLiteral("logging.fileEnabled"));
+    snap.logging.includeSourceLocation = boolValue(QStringLiteral("logging.includeSourceLocation"));
+    snap.logging.includeThreadId = boolValue(QStringLiteral("logging.includeThreadId"));
+    snap.logging.includeCategory = boolValue(QStringLiteral("logging.includeCategory"));
+    snap.logging.maxFileBytes = intValue(QStringLiteral("logging.maxFileBytes"));
+    snap.logging.maxBackupFiles = intValue(QStringLiteral("logging.maxBackupFiles"));
+    snap.logging.perSessionFile = boolValue(QStringLiteral("logging.perSessionFile"));
+    snap.logging.auditEnabled = boolValue(QStringLiteral("logging.auditEnabled"));
+    snap.logging.auditMaxFileBytes = intValue(QStringLiteral("logging.auditMaxFileBytes"));
+    snap.logging.auditMaxBackupFiles = intValue(QStringLiteral("logging.auditMaxBackupFiles"));
+    snap.logging.redactSensitiveData = boolValue(QStringLiteral("logging.redactSensitiveData"));
+    snap.logging.categoryRules.clear();
+    const QStringList ruleLines = plainTextValue(QStringLiteral("logging.categoryRules")).split(QRegularExpression(QStringLiteral("[\r\n]+")),
+                                                                                             Qt::SkipEmptyParts);
+    for (const QString &rule : ruleLines) {
+        const QString trimmed = rule.trimmed();
+        if (!trimmed.isEmpty()) {
+            snap.logging.categoryRules.push_back(trimmed);
+        }
+    }
+
     snap.geo.baseLatitudeDeg = doubleValue(QStringLiteral("geo.baseLatitudeDeg"));
     snap.geo.baseLongitudeDeg = doubleValue(QStringLiteral("geo.baseLongitudeDeg"));
     snap.control.arrivalDistanceThreshold = doubleValue(QStringLiteral("control.arrivalDistanceThreshold"));
@@ -1209,6 +1350,18 @@ bool Maintenance::validateSnapshot(const ConfigManager::ConfigSnapshot &snapshot
         }
         return false;
     }
+    if (snapshot.logging.maxFileBytes < 256 * 1024 || snapshot.logging.auditMaxFileBytes < 256 * 1024) {
+        if (errorMessage) {
+            *errorMessage = tr("日志文件大小不能小于 256 KB");
+        }
+        return false;
+    }
+    if (snapshot.logging.maxBackupFiles < 1 || snapshot.logging.auditMaxBackupFiles < 1) {
+        if (errorMessage) {
+            *errorMessage = tr("日志保留数量必须大于 0");
+        }
+        return false;
+    }
 
     const QJsonDocument streamDoc = QJsonDocument::fromJson(plainTextValue(QStringLiteral("video.streamOptions")).toUtf8());
     if (!plainTextValue(QStringLiteral("video.streamOptions")).trimmed().isEmpty() && !streamDoc.isArray()) {
@@ -1244,6 +1397,11 @@ bool Maintenance::saveConfig(bool applyAfterSave)
     m_cleanFingerprint = snapshotFingerprint(snap);
     updateActionState();
     refreshProductionInfo();
+    refreshLoggingInfo();
+    LoggingManager::audit(QStringLiteral("config.save"),
+                          applyAfterSave ? QStringLiteral("applied") : QStringLiteral("saved"),
+                          {{QStringLiteral("target"), ConfigManager::instance().configFilePath()},
+                           {QStringLiteral("dirty"), QStringLiteral("false")}});
     if (m_statusLabel) {
         m_statusLabel->setText(tr("%1：%2；文件：%3")
                                    .arg(message,
@@ -1274,6 +1432,10 @@ void Maintenance::loadConfigFile()
     loadSnapshotToForm(snap);
     m_cleanFingerprint = snapshotFingerprint(ConfigManager::instance().snapshot());
     updateActionState();
+    refreshLoggingInfo();
+    LoggingManager::audit(QStringLiteral("config.load"),
+                          QStringLiteral("preview"),
+                          {{QStringLiteral("source"), QFileInfo(filePath).fileName()}});
     if (m_statusLabel) {
         m_statusLabel->setText(tr("已加载配置到表单，尚未保存或应用：%1").arg(QFileInfo(filePath).fileName()));
     }
@@ -1304,6 +1466,10 @@ void Maintenance::restoreLatestBackup()
 
     loadFromConfig();
     refreshProductionInfo();
+    refreshLoggingInfo();
+    LoggingManager::audit(QStringLiteral("config.restore_latest"),
+                          QStringLiteral("success"),
+                          {{QStringLiteral("backup"), QFileInfo(latestPath).fileName()}});
     if (m_statusLabel) {
         m_statusLabel->setText(tr("已恢复并应用上次配置：%1").arg(QFileInfo(latestPath).fileName()));
     }
@@ -1431,6 +1597,22 @@ QJsonObject Maintenance::snapshotFingerprint(const ConfigManager::ConfigSnapshot
                      {QStringLiteral("statusPollIntervalMs"), snapshot.rowWork.statusPollIntervalMs},
                      {QStringLiteral("commandTimeoutMs"), snapshot.rowWork.commandTimeoutMs},
                      {QStringLiteral("autoRefreshPlanStatus"), snapshot.rowWork.autoRefreshPlanStatus}}},
+        {QStringLiteral("logging"),
+         QJsonObject{{QStringLiteral("level"), snapshot.logging.level.trimmed()},
+                     {QStringLiteral("consoleEnabled"), snapshot.logging.consoleEnabled},
+                     {QStringLiteral("fileEnabled"), snapshot.logging.fileEnabled},
+                     {QStringLiteral("includeSourceLocation"), snapshot.logging.includeSourceLocation},
+                     {QStringLiteral("includeThreadId"), snapshot.logging.includeThreadId},
+                     {QStringLiteral("includeCategory"), snapshot.logging.includeCategory},
+                     {QStringLiteral("maxFileBytes"), static_cast<double>(snapshot.logging.maxFileBytes)},
+                     {QStringLiteral("maxBackupFiles"), snapshot.logging.maxBackupFiles},
+                     {QStringLiteral("perSessionFile"), snapshot.logging.perSessionFile},
+                     {QStringLiteral("auditEnabled"), snapshot.logging.auditEnabled},
+                     {QStringLiteral("auditMaxFileBytes"), static_cast<double>(snapshot.logging.auditMaxFileBytes)},
+                     {QStringLiteral("auditMaxBackupFiles"), snapshot.logging.auditMaxBackupFiles},
+                     {QStringLiteral("redactSensitiveData"), snapshot.logging.redactSensitiveData},
+                     {QStringLiteral("categoryRules"),
+                      QJsonArray::fromStringList(snapshot.logging.categoryRules)}}},
         {QStringLiteral("control"),
          QJsonObject{{QStringLiteral("arrivalDistanceThreshold"), snapshot.control.arrivalDistanceThreshold},
                      {QStringLiteral("arrivalAngleThresholdDeg"), snapshot.control.arrivalAngleThresholdDeg},
@@ -1456,6 +1638,22 @@ QJsonObject Maintenance::snapshotFingerprint(const ConfigManager::ConfigSnapshot
                      {QStringLiteral("wheelDiameterMeters"), snapshot.vehicle.wheelDiameterMeters},
                      {QStringLiteral("gearReduction"), snapshot.vehicle.gearReduction}}}
     };
+}
+
+void Maintenance::refreshLoggingInfo()
+{
+    const auto settings = LoggingManager::currentSettings();
+    if (m_loggingCurrentLevelValue) {
+        m_loggingCurrentLevelValue->setText(settings.level);
+    }
+    if (m_loggingCurrentFileValue) {
+        const QString path = LoggingManager::currentLogFilePath();
+        m_loggingCurrentFileValue->setText(path.isEmpty() ? tr("未初始化") : path);
+    }
+    if (m_loggingAuditFileValue) {
+        const QString path = LoggingManager::auditLogFilePath();
+        m_loggingAuditFileValue->setText(path.isEmpty() ? tr("未初始化") : path);
+    }
 }
 
 QString Maintenance::lineValue(const QString &key) const { return m_lineEdits.value(key)->text().trimmed(); }

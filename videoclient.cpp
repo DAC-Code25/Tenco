@@ -147,11 +147,15 @@ void VideoClient::cleanupReply()
 
 void VideoClient::handleReadyRead()
 {
-    if (!m_reply) {
+    if (!m_reply || !m_reply->isOpen()) {
         return;
     }
 
-    m_buffer.append(m_reply->readAll());
+    const QByteArray chunk = m_reply->readAll();
+    if (chunk.isEmpty()) {
+        return;
+    }
+    m_buffer.append(chunk);
     if (m_buffer.size() > kMaxBufferSize) {
         m_buffer = m_buffer.right(kMaxBufferSize / 2);
     }

@@ -52,6 +52,10 @@ constexpr int kDefaultCameraRequestTimeoutMs = 5000;
 constexpr int kDefaultRouteFollowerUpdateIntervalMs = 100;
 constexpr int kDefaultManualMotionRepeatIntervalMs = 40;
 constexpr int kDefaultGimbalSafetyStopTimeoutMs = 1500;
+constexpr qint64 kDefaultLogMaxFileBytes = 5 * 1024 * 1024;
+constexpr qint64 kMinLogMaxFileBytes = 256 * 1024;
+constexpr qint64 kMaxLogMaxFileBytes = 256 * 1024 * 1024;
+constexpr int kDefaultLogMaxBackupFiles = 10;
 constexpr int kMaxConfigBackups = 10;
 
 QString defaultConfigPath()
@@ -111,6 +115,7 @@ ConfigManager::ConfigSnapshot ConfigManager::snapshot() const
     snap.network = m_network;
     snap.rowWork = m_rowWork;
     snap.gimbal = m_gimbal;
+    snap.logging = m_logging;
     return snap;
 }
 
@@ -130,6 +135,7 @@ bool ConfigManager::saveSnapshot(const ConfigSnapshot &snapshot, QString *errorM
     m_network = snapshot.network;
     m_rowWork = snapshot.rowWork;
     m_gimbal = snapshot.gimbal;
+    m_logging = snapshot.logging;
     sanitizeConfig();
     updateCachedScales();
 
@@ -144,6 +150,7 @@ bool ConfigManager::saveSnapshot(const ConfigSnapshot &snapshot, QString *errorM
         m_network = oldSnapshot.network;
         m_rowWork = oldSnapshot.rowWork;
         m_gimbal = oldSnapshot.gimbal;
+        m_logging = oldSnapshot.logging;
         m_configPath = oldPath;
         m_loaded = oldLoaded;
         m_loadedFromFile = oldLoadedFromFile;
@@ -165,6 +172,7 @@ bool ConfigManager::saveSnapshot(const ConfigSnapshot &snapshot, QString *errorM
         m_network = oldSnapshot.network;
         m_rowWork = oldSnapshot.rowWork;
         m_gimbal = oldSnapshot.gimbal;
+        m_logging = oldSnapshot.logging;
         m_configPath = oldPath;
         m_loaded = oldLoaded;
         m_loadedFromFile = oldLoadedFromFile;
@@ -287,6 +295,7 @@ bool ConfigManager::loadSnapshotFromFile(const QString &path, ConfigSnapshot *sn
     m_network = oldSnapshot.network;
     m_rowWork = oldSnapshot.rowWork;
     m_gimbal = oldSnapshot.gimbal;
+    m_logging = oldSnapshot.logging;
     m_metersPerDegLat = oldMetersPerDegLat;
     m_metersPerDegLon = oldMetersPerDegLon;
     return true;
@@ -491,6 +500,35 @@ void ConfigManager::applyJsonObjectToCurrentConfig(const QJsonObject &root)
         m_gimbal.safetyStopTimeoutMs =
             gimbalObj.value(QStringLiteral("safetyStopTimeoutMs")).toInt(m_gimbal.safetyStopTimeoutMs);
     }
+
+    if (const QJsonObject loggingObj = root.value(QStringLiteral("logging")).toObject(); !loggingObj.isEmpty()) {
+        m_logging.level = loggingObj.value(QStringLiteral("level")).toString(m_logging.level).trimmed().toLower();
+        m_logging.consoleEnabled = loggingObj.value(QStringLiteral("consoleEnabled")).toBool(m_logging.consoleEnabled);
+        m_logging.fileEnabled = loggingObj.value(QStringLiteral("fileEnabled")).toBool(m_logging.fileEnabled);
+        m_logging.includeSourceLocation =
+            loggingObj.value(QStringLiteral("includeSourceLocation")).toBool(m_logging.includeSourceLocation);
+        m_logging.includeThreadId = loggingObj.value(QStringLiteral("includeThreadId")).toBool(m_logging.includeThreadId);
+        m_logging.includeCategory = loggingObj.value(QStringLiteral("includeCategory")).toBool(m_logging.includeCategory);
+        m_logging.maxFileBytes =
+            static_cast<qint64>(loggingObj.value(QStringLiteral("maxFileBytes")).toDouble(m_logging.maxFileBytes));
+        m_logging.maxBackupFiles = loggingObj.value(QStringLiteral("maxBackupFiles")).toInt(m_logging.maxBackupFiles);
+        m_logging.perSessionFile = loggingObj.value(QStringLiteral("perSessionFile")).toBool(m_logging.perSessionFile);
+        m_logging.auditEnabled = loggingObj.value(QStringLiteral("auditEnabled")).toBool(m_logging.auditEnabled);
+        m_logging.auditMaxFileBytes =
+            static_cast<qint64>(loggingObj.value(QStringLiteral("auditMaxFileBytes")).toDouble(m_logging.auditMaxFileBytes));
+        m_logging.auditMaxBackupFiles =
+            loggingObj.value(QStringLiteral("auditMaxBackupFiles")).toInt(m_logging.auditMaxBackupFiles);
+        m_logging.redactSensitiveData =
+            loggingObj.value(QStringLiteral("redactSensitiveData")).toBool(m_logging.redactSensitiveData);
+        m_logging.categoryRules.clear();
+        const QJsonArray rules = loggingObj.value(QStringLiteral("categoryRules")).toArray();
+        for (const QJsonValue &value : rules) {
+            const QString rule = value.toString().trimmed();
+            if (!rule.isEmpty()) {
+                m_logging.categoryRules.push_back(rule);
+            }
+        }
+    }
 }
 
 bool ConfigManager::saveToFile(const QString &path, QString *errorMessage) const
@@ -687,6 +725,28 @@ QJsonObject ConfigManager::toJsonObject() const
                     {QStringLiteral("safetyStopTimeoutMs"), m_gimbal.safetyStopTimeoutMs},
                 });
 
+    QJsonArray categoryRules;
+    for (const QString &rule : m_logging.categoryRules) {
+        categoryRules.append(rule);
+    }
+    root.insert(QStringLiteral("logging"),
+                QJsonObject{
+                    {QStringLiteral("level"), m_logging.level},
+                    {QStringLiteral("consoleEnabled"), m_logging.consoleEnabled},
+                    {QStringLiteral("fileEnabled"), m_logging.fileEnabled},
+                    {QStringLiteral("includeSourceLocation"), m_logging.includeSourceLocation},
+                    {QStringLiteral("includeThreadId"), m_logging.includeThreadId},
+                    {QStringLiteral("includeCategory"), m_logging.includeCategory},
+                    {QStringLiteral("maxFileBytes"), static_cast<double>(m_logging.maxFileBytes)},
+                    {QStringLiteral("maxBackupFiles"), m_logging.maxBackupFiles},
+                    {QStringLiteral("perSessionFile"), m_logging.perSessionFile},
+                    {QStringLiteral("auditEnabled"), m_logging.auditEnabled},
+                    {QStringLiteral("auditMaxFileBytes"), static_cast<double>(m_logging.auditMaxFileBytes)},
+                    {QStringLiteral("auditMaxBackupFiles"), m_logging.auditMaxBackupFiles},
+                    {QStringLiteral("redactSensitiveData"), m_logging.redactSensitiveData},
+                    {QStringLiteral("categoryRules"), categoryRules},
+                });
+
     return root;
 }
 
@@ -724,6 +784,20 @@ void ConfigManager::loadDefaults()
     m_gimbal.requestTimeoutMs = kDefaultGimbalRequestTimeoutMs;
     m_gimbal.statusPollIntervalMs = kDefaultGimbalStatusPollIntervalMs;
     m_gimbal.safetyStopTimeoutMs = kDefaultGimbalSafetyStopTimeoutMs;
+    m_logging = LoggingConfig{};
+#ifdef QT_DEBUG
+    m_logging.level = QStringLiteral("debug");
+#else
+    m_logging.level = QStringLiteral("info");
+#endif
+    m_logging.maxFileBytes = kDefaultLogMaxFileBytes;
+    m_logging.maxBackupFiles = kDefaultLogMaxBackupFiles;
+    m_logging.auditMaxFileBytes = kDefaultLogMaxFileBytes;
+    m_logging.auditMaxBackupFiles = kDefaultLogMaxBackupFiles;
+    m_logging.categoryRules = {
+        QStringLiteral("tenco.net.status.debug=false"),
+        QStringLiteral("tenco.gimbal.control.debug=false")
+    };
 }
 
 void ConfigManager::sanitizeConfig()
@@ -838,6 +912,27 @@ void ConfigManager::sanitizeConfig()
     if (m_gimbal.minPitch > m_gimbal.maxPitch) {
         std::swap(m_gimbal.minPitch, m_gimbal.maxPitch);
     }
+
+    m_logging.level = m_logging.level.trimmed().toLower();
+    if (m_logging.level != QStringLiteral("debug") &&
+        m_logging.level != QStringLiteral("info") &&
+        m_logging.level != QStringLiteral("warn") &&
+        m_logging.level != QStringLiteral("error") &&
+        m_logging.level != QStringLiteral("fatal")) {
+        m_logging.level = QStringLiteral("info");
+    }
+    m_logging.maxFileBytes = qBound(kMinLogMaxFileBytes, m_logging.maxFileBytes, kMaxLogMaxFileBytes);
+    m_logging.maxBackupFiles = qBound(1, m_logging.maxBackupFiles, 99);
+    m_logging.auditMaxFileBytes = qBound(kMinLogMaxFileBytes, m_logging.auditMaxFileBytes, kMaxLogMaxFileBytes);
+    m_logging.auditMaxBackupFiles = qBound(1, m_logging.auditMaxBackupFiles, 99);
+    QStringList sanitizedRules;
+    for (const QString &rule : std::as_const(m_logging.categoryRules)) {
+        const QString trimmed = rule.trimmed();
+        if (!trimmed.isEmpty()) {
+            sanitizedRules.push_back(trimmed);
+        }
+    }
+    m_logging.categoryRules = sanitizedRules;
 }
 
 void ConfigManager::updateCachedScales()

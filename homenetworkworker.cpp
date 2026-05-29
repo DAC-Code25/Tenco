@@ -129,7 +129,8 @@ void HomeNetworkWorker::onReplyFinished()
 void HomeNetworkWorker::handleReply(QNetworkReply *reply)
 {
     const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-    const QByteArray payload = reply->readAll();
+    const bool canReadBody = reply->isOpen();
+    const QByteArray payload = canReadBody ? reply->readAll() : QByteArray();
 
     if (reply->error() != QNetworkReply::NoError || httpStatus != 200) {
         applyPollingIntervalByHealth(false);

@@ -1834,7 +1834,7 @@ void Home::submitOriginCommand()
         if (httpStatus == 200) {
             QMessageBox::information(messageParent, tr("成功"), tr("基站位置已更新。"));
         } else {
-            const QByteArray response = reply->readAll();
+            const QByteArray response = reply->isOpen() ? reply->readAll() : QByteArray();
             const QString errorMsg = response.isEmpty()
                                          ? tr("请求失败 (HTTP 状态: %1)").arg(httpStatus)
                                          : tr("服务器返回: %1 (HTTP 状态: %2)").arg(QString::fromUtf8(response)).arg(httpStatus);
