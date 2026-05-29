@@ -55,8 +55,10 @@ private:
     QWidget *createControlPage();
     QWidget *createVehiclePage();
     QWidget *createProductionPage();
+    QWidget *createLoggingPage();
     QWidget *createFormPage(const QString &title, const QString &description, QFormLayout **outLayout) const;
     void refreshProductionInfo();
+    void refreshLoggingInfo();
 
     QLineEdit *addLineEdit(QFormLayout *layout, const QString &key, const QString &label, const QString &placeholder = QString());
     QSpinBox *addSpinBox(QFormLayout *layout, const QString &key, const QString &label, int min, int max, const QString &suffix = QString());
@@ -99,6 +101,9 @@ private:
     QHash<QString, QCheckBox *> m_checkBoxes;
     QHash<QString, QComboBox *> m_comboBoxes;
     QHash<QString, QPlainTextEdit *> m_plainTextEdits;
+    QLabel *m_loggingCurrentLevelValue = nullptr;
+    QLabel *m_loggingCurrentFileValue = nullptr;
+    QLabel *m_loggingAuditFileValue = nullptr;
 };
 
 #endif // MAINTENANCE_H

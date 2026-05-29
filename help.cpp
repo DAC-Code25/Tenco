@@ -1,6 +1,7 @@
 #include "help.h"
 
 #include "configmanager.h"
+#include "loggingmanager.h"
 #include "ui_mainwindow.h"
 
 #include <QCoreApplication>
@@ -729,14 +730,17 @@ QWidget *Help::createDataLogPage()
     layout->addWidget(createCard(tr("应保留的数据"),
                                  {tr("配置文件 config.json：记录通信地址、控制参数、云台限位、视频流和作业服务地址。"),
                                   tr("配置备份 config_backups：用于恢复启动前配置，最多保留最近 10 份。"),
-                                  tr("运行日志 tenco.log：记录状态变化、请求错误、连接断开、配置应用和关键操作。"),
+                                  tr("运行日志 tenco.log / 会话日志：记录状态变化、请求错误、连接断开、配置应用和关键操作。"),
+                                  tr("审计日志 audit.log：记录保存、恢复、导出和关键控制动作。"),
+                                  tr("诊断导出目录 diagnostics：用于现场打包日志、脱敏配置和环境摘要。"),
                                   tr("视频、截图和录像：用于追溯现场环境、相机状态和作业过程。"),
                                   tr("地图、路径和作业计划文件：用于复现车辆当时执行的目标。")},
                                  content));
     layout->addWidget(createCard(tr("日志查看建议"),
                                  {tr("先看错误发生时间附近的 WARN/ERROR，再向前查看配置应用、连接状态和用户操作。"),
                                   tr("如果日志中持续出现同一错误，应优先处理根因，不要重复点击按钮制造更多噪声。"),
-                                  tr("视频流、云台、底盘、作业服务问题应分别结合首页日志、运行日志和维护页配置排查。"),
+                                  tr("视频流、云台、底盘、作业服务问题应分别结合首页日志、运行日志、审计日志和维护页配置排查。"),
+                                  tr("日志级别、轮转、脱敏和诊断导出可在维护页的“日志”页统一配置。"),
                                   tr("提交问题给开发人员时，应同时提供配置文件、相关日志、复现步骤和现场现象。")},
                                  content));
     layout->addWidget(createCard(tr("隐私与安全"),
@@ -760,7 +764,10 @@ QWidget *Help::createRuntimePage()
     const QString configDir = QFileInfo(configPath).absolutePath();
     const QString backupDir = config.backupDirectoryPath();
     const QString runtimeDir = QCoreApplication::applicationDirPath();
-    const QString logsDir = appDataPath(QStringLiteral("logs"));
+    const QString logsDir = LoggingManager::logDirectoryPath();
+    const QString runtimeLog = LoggingManager::currentLogFilePath();
+    const QString auditLog = LoggingManager::auditLogFilePath();
+    const QString diagnosticsDir = LoggingManager::diagnosticsDirectoryPath();
     const QString docsDir = repositoryPath(QStringLiteral("docs/develop"));
 
     auto *infoCard = new QFrame(content);
@@ -776,6 +783,9 @@ QWidget *Help::createRuntimePage()
     infoLayout->addWidget(createInfoRow(tr("程序运行目录"), runtimeDir, infoCard));
     infoLayout->addWidget(createInfoRow(tr("备份目录"), backupDir, infoCard));
     infoLayout->addWidget(createInfoRow(tr("日志目录"), logsDir, infoCard));
+    infoLayout->addWidget(createInfoRow(tr("运行日志"), runtimeLog, infoCard));
+    infoLayout->addWidget(createInfoRow(tr("审计日志"), auditLog, infoCard));
+    infoLayout->addWidget(createInfoRow(tr("诊断导出目录"), diagnosticsDir, infoCard));
     infoLayout->addWidget(createInfoRow(tr("开发文档目录"), docsDir, infoCard));
     layout->addWidget(infoCard);
 

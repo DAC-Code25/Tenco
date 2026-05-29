@@ -1,6 +1,7 @@
 #include "about.h"
 
 #include "configmanager.h"
+#include "loggingmanager.h"
 #include "ui_mainwindow.h"
 
 #include <QApplication>
@@ -274,6 +275,8 @@ void About::buildUi()
     runtimeLayout->addWidget(createInfoRow(tr("配置来自文件"), yesNo(config.loadedFromFile()), runtimeCard));
     runtimeLayout->addWidget(createInfoRow(tr("备份目录"), config.backupDirectoryPath(), runtimeCard));
     runtimeLayout->addWidget(createInfoRow(tr("日志目录"), appDataPath(QStringLiteral("logs")), runtimeCard));
+    runtimeLayout->addWidget(createInfoRow(tr("运行日志"), LoggingManager::currentLogFilePath(), runtimeCard));
+    runtimeLayout->addWidget(createInfoRow(tr("审计日志"), LoggingManager::auditLogFilePath(), runtimeCard));
     rightColumn->addWidget(runtimeCard);
     grid->addLayout(rightColumn, 1);
     contentLayout->addLayout(grid);

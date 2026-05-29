@@ -89,5 +89,24 @@
     "minPitch": 95,
     "maxPitch": 265,
     "safetyStopTimeoutMs": 1500
+  },
+  "logging": {
+    "level": "info",
+    "consoleEnabled": true,
+    "fileEnabled": true,
+    "includeSourceLocation": false,
+    "includeThreadId": true,
+    "includeCategory": true,
+    "maxFileBytes": 5242880,
+    "maxBackupFiles": 10,
+    "perSessionFile": true,
+    "auditEnabled": true,
+    "auditMaxFileBytes": 5242880,
+    "auditMaxBackupFiles": 10,
+    "redactSensitiveData": true,
+    "categoryRules": [
+      "tenco.net.status.debug=false",
+      "tenco.gimbal.control.debug=false"
+    ]
   }
 }

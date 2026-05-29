@@ -111,6 +111,23 @@ public:
         int safetyStopTimeoutMs = 1500;
     };
 
+    struct LoggingConfig {
+        QString level = QStringLiteral("info");
+        bool consoleEnabled = true;
+        bool fileEnabled = true;
+        bool includeSourceLocation = false;
+        bool includeThreadId = true;
+        bool includeCategory = true;
+        qint64 maxFileBytes = 5 * 1024 * 1024;
+        int maxBackupFiles = 10;
+        bool perSessionFile = true;
+        bool auditEnabled = true;
+        qint64 auditMaxFileBytes = 5 * 1024 * 1024;
+        int auditMaxBackupFiles = 10;
+        bool redactSensitiveData = true;
+        QStringList categoryRules;
+    };
+
     struct ConfigSnapshot {
         GeoConfig geo;
         ControlConfig control;
@@ -119,6 +136,7 @@ public:
         NetworkConfig network;
         RowWorkConfig rowWork;
         GimbalConfig gimbal;
+        LoggingConfig logging;
     };
 
     static ConfigManager &instance();
@@ -142,6 +160,7 @@ public:
     const NetworkConfig &network() const { return m_network; }
     const RowWorkConfig &rowWork() const { return m_rowWork; }
     const GimbalConfig &gimbal() const { return m_gimbal; }
+    const LoggingConfig &logging() const { return m_logging; }
 
     QPointF geoToLocal(double latitudeDeg, double longitudeDeg) const;
     void localToGeo(const QPointF &localPoint, double &latitudeDeg, double &longitudeDeg) const;
@@ -173,6 +192,7 @@ private:
     NetworkConfig m_network;
     RowWorkConfig m_rowWork;
     GimbalConfig m_gimbal;
+    LoggingConfig m_logging;
     double m_metersPerDegLat = 0.0;
     double m_metersPerDegLon = 0.0;
     QString m_configPath;
