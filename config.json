@@ -108,5 +108,25 @@
       "tenco.net.status.debug=false",
       "tenco.gimbal.control.debug=false"
     ]
+  },
+  "database": {
+    "backend": "sqlite",
+    "connectionName": "tenco_main",
+    "sqliteFilePath": "",
+    "host": "",
+    "port": 5432,
+    "databaseName": "tenco",
+    "userName": "",
+    "password": "",
+    "useWAL": true,
+    "foreignKeys": true,
+    "synchronousNormal": true,
+    "busyTimeoutMs": 5000,
+    "cacheSizePages": 2000,
+    "connectTimeoutMs": 5000,
+    "reconnectIntervalMs": 3000,
+    "enableTelemetryTables": true,
+    "enableLocalCache": true,
+    "enableAuditSync": true
   }
 }

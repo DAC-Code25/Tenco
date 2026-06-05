@@ -10,6 +10,7 @@
 #include "home_status_presenter.h"
 #include "statusprotocol.h"
 #include "configmanager.h"
+#include "loggingmanager.h"
 #include "ui_mainwindow.h"         
 #include "imageswitch.h"         
 #include <QDir>              // 读取录像目录时需要主目录定位
@@ -42,6 +43,34 @@
 #include <QtMath>
 #include <algorithm>
 #include <cmath>
+
+namespace {
+
+QString gimbalAxisAuditName(GimbalControlClient::Axis axis)
+{
+    switch (axis) {
+    case GimbalControlClient::Axis::Height:
+        return QStringLiteral("height");
+    case GimbalControlClient::Axis::Pitch:
+        return QStringLiteral("pitch");
+    case GimbalControlClient::Axis::Yaw:
+        return QStringLiteral("yaw");
+    }
+    return QStringLiteral("unknown");
+}
+
+QString gimbalDirectionAuditName(GimbalControlClient::Direction direction)
+{
+    switch (direction) {
+    case GimbalControlClient::Direction::Value1:
+        return QStringLiteral("value1");
+    case GimbalControlClient::Direction::Value2:
+        return QStringLiteral("value2");
+    }
+    return QStringLiteral("unknown");
+}
+
+}
 
 // 构造函数：缓存 UI 指针并准备网络与定时资源
 Home::Home(Ui::MainWindow *ui, QObject *parent)
@@ -770,16 +799,36 @@ void Home::jogGimbal(GimbalControlClient::Axis axis, GimbalControlClient::Direct
 {
     if (!m_gimbalControlClient || !m_gimbalControlClient->isConfigured()) {
         logMessage(tr("云台控制未启用或未配置"));
+        LoggingManager::audit(QStringLiteral("gimbal.jog"),
+                              QStringLiteral("rejected"),
+                              {{QStringLiteral("axis"), gimbalAxisAuditName(axis)},
+                               {QStringLiteral("direction"), gimbalDirectionAuditName(direction)},
+                               {QStringLiteral("action"), actionText},
+                               {QStringLiteral("reason"), QStringLiteral("not_configured")}});
         return;
     }
 
     QString reason;
     if (!canJogGimbal(axis, direction, &reason)) {
         logMessage(reason);
+        LoggingManager::audit(QStringLiteral("gimbal.jog"),
+                              QStringLiteral("rejected"),
+                              {{QStringLiteral("axis"), gimbalAxisAuditName(axis)},
+                               {QStringLiteral("direction"), gimbalDirectionAuditName(direction)},
+                               {QStringLiteral("action"), actionText},
+                               {QStringLiteral("reason"), reason}});
         stopGimbal();
         return;
     }
 
+    LoggingManager::audit(QStringLiteral("gimbal.jog"),
+                          QStringLiteral("accepted"),
+                          {{QStringLiteral("axis"), gimbalAxisAuditName(axis)},
+                           {QStringLiteral("direction"), gimbalDirectionAuditName(direction)},
+                           {QStringLiteral("action"), actionText},
+                           {QStringLiteral("height"), QString::number(m_lastGimbalStatus.height)},
+                           {QStringLiteral("yaw"), QString::number(m_lastGimbalStatus.yaw)},
+                           {QStringLiteral("pitch"), QString::number(m_lastGimbalStatus.pitch)}});
     m_gimbalMoving = true;
     m_activeGimbalAxis = axis;
     m_activeGimbalDirection = direction;
@@ -797,6 +846,11 @@ void Home::jogGimbal(GimbalControlClient::Axis axis, GimbalControlClient::Direct
 
 void Home::stopGimbal()
 {
+    const bool wasMoving = m_gimbalMoving;
+    const QString action = m_activeGimbalAction;
+    const GimbalControlClient::Axis axis = m_activeGimbalAxis;
+    const GimbalControlClient::Direction direction = m_activeGimbalDirection;
+
     m_gimbalMoving = false;
     gimbalKeyboardMotionActive = false;
     m_activeGimbalAction.clear();
@@ -805,6 +859,13 @@ void Home::stopGimbal()
     }
     if (m_gimbalControlClient && m_gimbalControlClient->isConfigured()) {
         m_gimbalControlClient->stopAll();
+    }
+    if (wasMoving) {
+        LoggingManager::audit(QStringLiteral("gimbal.stop"),
+                              QStringLiteral("accepted"),
+                              {{QStringLiteral("axis"), gimbalAxisAuditName(axis)},
+                               {QStringLiteral("direction"), gimbalDirectionAuditName(direction)},
+                               {QStringLiteral("action"), action}});
     }
     updateGimbalButtonState();
 }
@@ -1279,6 +1340,12 @@ void Home::handleForwardButtonPressed()
     forwardButtonHeld = true;  // 标记按钮处于按下状态
     sendForwardCommand();  // 立即发送一次前进命令，响应用户操作
     updateForwardTimer();  // 依据当前状态停止前进定时器
+    LoggingManager::audit(QStringLiteral("chassis.manual_move"),
+                          QStringLiteral("start"),
+                          {{QStringLiteral("source"), QStringLiteral("button")},
+                           {QStringLiteral("direction"), QStringLiteral("forward")},
+                           {QStringLiteral("xVel"), QString::number(ui ? ui->doubleSpinBox->value() : 0.0, 'f', 3)},
+                           {QStringLiteral("thetaVel"), QStringLiteral("0")}});
     logMessage(tr("前进开始（按钮）"));
 }
 // 前进按钮抬起：停止连发
@@ -1287,6 +1354,10 @@ void Home::handleForwardButtonReleased()
     forwardButtonHeld = false;  // 清除按钮按下标记
     // 更新所有定时器，确保立即停止输出
     updateForwardTimer();
+    LoggingManager::audit(QStringLiteral("chassis.manual_move"),
+                          QStringLiteral("stop"),
+                          {{QStringLiteral("source"), QStringLiteral("button")},
+                           {QStringLiteral("direction"), QStringLiteral("forward")}});
     logMessage(tr("前进停止（按钮）"));
 }
 // 后退按钮按下：立即发送一次后退命令
@@ -1295,6 +1366,12 @@ void Home::handleBackwardButtonPressed()
     backwardButtonHeld = true;  // 记录按钮按下
     sendBackwardCommand();  // 立刻推送后退速度
     updateBackwardTimer();  // 停止后退定时器
+    LoggingManager::audit(QStringLiteral("chassis.manual_move"),
+                          QStringLiteral("start"),
+                          {{QStringLiteral("source"), QStringLiteral("button")},
+                           {QStringLiteral("direction"), QStringLiteral("backward")},
+                           {QStringLiteral("xVel"), QString::number(ui ? -ui->doubleSpinBox->value() : 0.0, 'f', 3)},
+                           {QStringLiteral("thetaVel"), QStringLiteral("0")}});
     logMessage(tr("后退开始（按钮）"));
 }
 // 后退按钮抬起：停止后退连发
@@ -1302,6 +1379,10 @@ void Home::handleBackwardButtonReleased()
 {
     backwardButtonHeld = false;  // 清除按钮状态
     updateBackwardTimer();
+    LoggingManager::audit(QStringLiteral("chassis.manual_move"),
+                          QStringLiteral("stop"),
+                          {{QStringLiteral("source"), QStringLiteral("button")},
+                           {QStringLiteral("direction"), QStringLiteral("backward")}});
     logMessage(tr("后退停止（按钮）"));
 }
 // 左转按钮按下：立即推送左转角速度
@@ -1310,6 +1391,12 @@ void Home::handleTurnLeftButtonPressed()
     turnLeftButtonHeld = true;  // 记录按钮按下
     sendTurnLeftCommand();  // 立即发送左转角速度
     updateTurnLeftTimer();  // 停止左转定时器
+    LoggingManager::audit(QStringLiteral("chassis.manual_move"),
+                          QStringLiteral("start"),
+                          {{QStringLiteral("source"), QStringLiteral("button")},
+                           {QStringLiteral("direction"), QStringLiteral("turn_left")},
+                           {QStringLiteral("xVel"), QStringLiteral("0")},
+                           {QStringLiteral("thetaVel"), QString::number(ui ? ui->doubleSpinBox_2->value() : 0.0, 'f', 3)}});
     logMessage(tr("左转开始（按钮）"));
 }
 // 左转按钮抬起：停止左转连发
@@ -1317,6 +1404,10 @@ void Home::handleTurnLeftButtonReleased()
 {
     turnLeftButtonHeld = false;  // 清除按钮状态
     updateTurnLeftTimer();
+    LoggingManager::audit(QStringLiteral("chassis.manual_move"),
+                          QStringLiteral("stop"),
+                          {{QStringLiteral("source"), QStringLiteral("button")},
+                           {QStringLiteral("direction"), QStringLiteral("turn_left")}});
     logMessage(tr("左转停止（按钮）"));
 }
 // 右转按钮按下：立即推送右转角速度
@@ -1325,6 +1416,12 @@ void Home::handleTurnRightButtonPressed()
     turnRightButtonHeld = true;  // 记录按钮按下
     sendTurnRightCommand();  // 立即发送右转角速度
     updateTurnRightTimer();  // 停止右转定时器
+    LoggingManager::audit(QStringLiteral("chassis.manual_move"),
+                          QStringLiteral("start"),
+                          {{QStringLiteral("source"), QStringLiteral("button")},
+                           {QStringLiteral("direction"), QStringLiteral("turn_right")},
+                           {QStringLiteral("xVel"), QStringLiteral("0")},
+                           {QStringLiteral("thetaVel"), QString::number(ui ? -ui->doubleSpinBox_2->value() : 0.0, 'f', 3)}});
     logMessage(tr("右转开始（按钮）"));
 }
 // 右转按钮抬起：停止右转连发
@@ -1332,6 +1429,10 @@ void Home::handleTurnRightButtonReleased()
 {
     turnRightButtonHeld = false;  // 清除按钮状态
     updateTurnRightTimer();
+    LoggingManager::audit(QStringLiteral("chassis.manual_move"),
+                          QStringLiteral("stop"),
+                          {{QStringLiteral("source"), QStringLiteral("button")},
+                           {QStringLiteral("direction"), QStringLiteral("turn_right")}});
     logMessage(tr("右转停止（按钮）"));
 }
 // 急停按钮：清除所有输入并发送零速度
@@ -1349,6 +1450,9 @@ void Home::handleStopButtonClicked()
         sendVelocityCommand(0.0, 0.0);  // 确保底盘停下来
     }
     stopGimbal();
+    LoggingManager::audit(QStringLiteral("safety.estop"),
+                          QStringLiteral("accepted"),
+                          {{QStringLiteral("source"), QStringLiteral("home_stop_button")}});
     logMessage(tr("急停"));
 }
 
@@ -1417,24 +1521,48 @@ bool Home::handleKeyPress(int key, Qt::KeyboardModifiers modifiers, bool isAutoR
         forwardKeyHeld = true;  // 记录键盘输入状态
         sendForwardCommand();  // 即刻触发前进命令
         updateForwardTimer();  // 启动前进连发
+        LoggingManager::audit(QStringLiteral("chassis.manual_move"),
+                              QStringLiteral("start"),
+                              {{QStringLiteral("source"), QStringLiteral("keyboard")},
+                               {QStringLiteral("direction"), QStringLiteral("forward")},
+                               {QStringLiteral("xVel"), QString::number(ui ? ui->doubleSpinBox->value() : 0.0, 'f', 3)},
+                               {QStringLiteral("thetaVel"), QStringLiteral("0")}});
         logMessage(tr("前进开始（键盘）"));
         return true;
     case Qt::Key_S:  // S 键 -> 后退
         backwardKeyHeld = true;  // 记录按键状态
         sendBackwardCommand();  // 即刻触发后退
         updateBackwardTimer();  // 启动后退连发
+        LoggingManager::audit(QStringLiteral("chassis.manual_move"),
+                              QStringLiteral("start"),
+                              {{QStringLiteral("source"), QStringLiteral("keyboard")},
+                               {QStringLiteral("direction"), QStringLiteral("backward")},
+                               {QStringLiteral("xVel"), QString::number(ui ? -ui->doubleSpinBox->value() : 0.0, 'f', 3)},
+                               {QStringLiteral("thetaVel"), QStringLiteral("0")}});
         logMessage(tr("后退开始（键盘）"));
         return true;
     case Qt::Key_A:  // A 键 -> 左转
         turnLeftKeyHeld = true;  // 标记左转按下
         sendTurnLeftCommand();  // 立即发送左转角速度
         updateTurnLeftTimer();  // 启动左转连发
+        LoggingManager::audit(QStringLiteral("chassis.manual_move"),
+                              QStringLiteral("start"),
+                              {{QStringLiteral("source"), QStringLiteral("keyboard")},
+                               {QStringLiteral("direction"), QStringLiteral("turn_left")},
+                               {QStringLiteral("xVel"), QStringLiteral("0")},
+                               {QStringLiteral("thetaVel"), QString::number(ui ? ui->doubleSpinBox_2->value() : 0.0, 'f', 3)}});
         logMessage(tr("左转开始（键盘）"));
         return true;
     case Qt::Key_D:  // D 键 -> 右转
         turnRightKeyHeld = true;  // 标记右转按下
         sendTurnRightCommand();  // 立即发送右转角速度
         updateTurnRightTimer();  // 启动右转连发
+        LoggingManager::audit(QStringLiteral("chassis.manual_move"),
+                              QStringLiteral("start"),
+                              {{QStringLiteral("source"), QStringLiteral("keyboard")},
+                               {QStringLiteral("direction"), QStringLiteral("turn_right")},
+                               {QStringLiteral("xVel"), QStringLiteral("0")},
+                               {QStringLiteral("thetaVel"), QString::number(ui ? -ui->doubleSpinBox_2->value() : 0.0, 'f', 3)}});
         logMessage(tr("右转开始（键盘）"));
         return true;
     default:  // 其它按键交由基类处理
@@ -1458,21 +1586,37 @@ bool Home::handleKeyRelease(int key, Qt::KeyboardModifiers modifiers, bool isAut
     case Qt::Key_W:  // W 键抬起
         forwardKeyHeld = false;  // 清除标记
         updateForwardTimer();  // 若没有其它输入则停止前进
+        LoggingManager::audit(QStringLiteral("chassis.manual_move"),
+                              QStringLiteral("stop"),
+                              {{QStringLiteral("source"), QStringLiteral("keyboard")},
+                               {QStringLiteral("direction"), QStringLiteral("forward")}});
         logMessage(tr("前进停止（键盘）"));
         return true;
     case Qt::Key_S:  // S 键抬起
         backwardKeyHeld = false;  // 清除后退状态
         updateBackwardTimer();  // 更新后退定时器
+        LoggingManager::audit(QStringLiteral("chassis.manual_move"),
+                              QStringLiteral("stop"),
+                              {{QStringLiteral("source"), QStringLiteral("keyboard")},
+                               {QStringLiteral("direction"), QStringLiteral("backward")}});
         logMessage(tr("后退停止（键盘）"));
         return true;
     case Qt::Key_A:  // A 键抬起
         turnLeftKeyHeld = false;  // 清除左转状态
         updateTurnLeftTimer();  // 停止左转连发
+        LoggingManager::audit(QStringLiteral("chassis.manual_move"),
+                              QStringLiteral("stop"),
+                              {{QStringLiteral("source"), QStringLiteral("keyboard")},
+                               {QStringLiteral("direction"), QStringLiteral("turn_left")}});
         logMessage(tr("左转停止（键盘）"));
         return true;
     case Qt::Key_D:  // D 键抬起
         turnRightKeyHeld = false;  // 清除右转状态
         updateTurnRightTimer();  // 停止右转连发
+        LoggingManager::audit(QStringLiteral("chassis.manual_move"),
+                              QStringLiteral("stop"),
+                              {{QStringLiteral("source"), QStringLiteral("keyboard")},
+                               {QStringLiteral("direction"), QStringLiteral("turn_right")}});
         logMessage(tr("右转停止（键盘）"));
         return true;
     default:  // 其它按键交由基类处理

@@ -1,4 +1,4 @@
-find_package(Qt6 REQUIRED COMPONENTS Core Test Network)
+find_package(Qt6 REQUIRED COMPONENTS Core Test Network Sql)
 
 qt_add_executable(tenco_test_routefollower
     test_routefollower.cpp
@@ -90,6 +90,23 @@ target_link_libraries(tenco_test_configmanager PRIVATE
 )
 add_test(NAME tenco_test_configmanager COMMAND tenco_test_configmanager)
 
+qt_add_executable(tenco_test_databasemanager
+    test_databasemanager.cpp
+    ../databasemanager.h
+    ../databasemanager.cpp
+    ../configmanager.h
+    ../configmanager.cpp
+)
+target_include_directories(tenco_test_databasemanager PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+)
+target_link_libraries(tenco_test_databasemanager PRIVATE
+    Qt6::Core
+    Qt6::Sql
+    Qt6::Test
+)
+add_test(NAME tenco_test_databasemanager COMMAND tenco_test_databasemanager)
+
 qt_add_executable(tenco_test_statusprotocol
     test_statusprotocol.cpp
     ../statusprotocol.h
@@ -122,6 +139,8 @@ qt_add_executable(tenco_test_map_route_integration
     ../routepathfinder.cpp
     ../configmanager.h
     ../configmanager.cpp
+    ../loggingmanager.h
+    ../loggingmanager.cpp
     ../battery.h
     ../battery.cpp
     ../imageswitch.h
