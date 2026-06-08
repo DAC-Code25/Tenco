@@ -1,175 +1,77 @@
-find_package(Qt6 REQUIRED COMPONENTS Core Test Network Sql)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Test Network Sql)
 
-qt_add_executable(tenco_test_routefollower
+function(tenco_add_test target_name)
+    qt_add_executable(${target_name}
+        ${ARGN}
+    )
+    target_include_directories(${target_name} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/..
+    )
+    target_link_libraries(${target_name} PRIVATE Qt6::Core Qt6::Test)
+    add_test(NAME ${target_name} COMMAND ${target_name})
+endfunction()
+
+tenco_add_test(tenco_test_routefollower
     test_routefollower.cpp
-    ../routefollower.h
-    ../routefollower.cpp
 )
-target_include_directories(tenco_test_routefollower PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/..
-)
-target_link_libraries(tenco_test_routefollower PRIVATE
-    Qt6::Core
-    Qt6::Test
-)
-add_test(NAME tenco_test_routefollower COMMAND tenco_test_routefollower)
+target_link_libraries(tenco_test_routefollower PRIVATE tenco_motion)
 
-qt_add_executable(tenco_test_motioncommandarbiter
+tenco_add_test(tenco_test_motioncommandarbiter
     test_motioncommandarbiter.cpp
-    ../motioncommandarbiter.h
-    ../motioncommandarbiter.cpp
 )
-target_include_directories(tenco_test_motioncommandarbiter PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/..
-)
-target_link_libraries(tenco_test_motioncommandarbiter PRIVATE
-    Qt6::Core
-    Qt6::Test
-)
-add_test(NAME tenco_test_motioncommandarbiter COMMAND tenco_test_motioncommandarbiter)
+target_link_libraries(tenco_test_motioncommandarbiter PRIVATE tenco_motion)
 
-qt_add_executable(tenco_test_routepathfinder
+tenco_add_test(tenco_test_routepathfinder
     test_routepathfinder.cpp
-    ../routepathfinder.h
-    ../routepathfinder.cpp
 )
-target_include_directories(tenco_test_routepathfinder PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/..
-)
-target_link_libraries(tenco_test_routepathfinder PRIVATE
-    Qt6::Core
-    Qt6::Test
-)
-add_test(NAME tenco_test_routepathfinder COMMAND tenco_test_routepathfinder)
+target_link_libraries(tenco_test_routepathfinder PRIVATE tenco_motion)
 
-qt_add_executable(tenco_test_mapdocument
+tenco_add_test(tenco_test_maprouteplanner
+    test_maprouteplanner.cpp
+)
+target_link_libraries(tenco_test_maprouteplanner PRIVATE tenco_map_model)
+
+tenco_add_test(tenco_test_mapdocument
     test_mapdocument.cpp
-    ../mapdocument.h
-    ../mapdocument.cpp
-    ../rowmissiontypes.h
-    ../rowmissiontypes.cpp
-    ../rowworktypes.h
-    ../rowworktypes.cpp
 )
-target_include_directories(tenco_test_mapdocument PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/..
-)
-target_link_libraries(tenco_test_mapdocument PRIVATE
-    Qt6::Core
-    Qt6::Test
-)
-add_test(NAME tenco_test_mapdocument COMMAND tenco_test_mapdocument)
+target_link_libraries(tenco_test_mapdocument PRIVATE tenco_map_model)
 
-qt_add_executable(tenco_test_rowworktypes
+tenco_add_test(tenco_test_rowworktypes
     test_rowworktypes.cpp
-    ../rowworktypes.h
-    ../rowworktypes.cpp
 )
-target_include_directories(tenco_test_rowworktypes PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/..
-)
-target_link_libraries(tenco_test_rowworktypes PRIVATE
-    Qt6::Core
-    Qt6::Test
-)
-add_test(NAME tenco_test_rowworktypes COMMAND tenco_test_rowworktypes)
+target_link_libraries(tenco_test_rowworktypes PRIVATE tenco_map_model)
 
-qt_add_executable(tenco_test_rowmissiontypes
+tenco_add_test(tenco_test_rowmissiontypes
     test_rowmissiontypes.cpp
-    ../rowmissiontypes.h
-    ../rowmissiontypes.cpp
-    ../rowworktypes.h
-    ../rowworktypes.cpp
 )
-target_include_directories(tenco_test_rowmissiontypes PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/..
-)
-target_link_libraries(tenco_test_rowmissiontypes PRIVATE
-    Qt6::Core
-    Qt6::Test
-)
-add_test(NAME tenco_test_rowmissiontypes COMMAND tenco_test_rowmissiontypes)
+target_link_libraries(tenco_test_rowmissiontypes PRIVATE tenco_map_model)
 
-qt_add_executable(tenco_test_configmanager
+tenco_add_test(tenco_test_configmanager
     test_configmanager.cpp
-    ../configmanager.h
-    ../configmanager.cpp
 )
-target_include_directories(tenco_test_configmanager PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/..
-)
-target_link_libraries(tenco_test_configmanager PRIVATE
-    Qt6::Core
-    Qt6::Test
-)
-add_test(NAME tenco_test_configmanager COMMAND tenco_test_configmanager)
+target_link_libraries(tenco_test_configmanager PRIVATE tenco_config)
 
-qt_add_executable(tenco_test_databasemanager
+tenco_add_test(tenco_test_databasemanager
     test_databasemanager.cpp
-    ../databasemanager.h
-    ../databasemanager.cpp
-    ../configmanager.h
-    ../configmanager.cpp
 )
-target_include_directories(tenco_test_databasemanager PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/..
-)
-target_link_libraries(tenco_test_databasemanager PRIVATE
-    Qt6::Core
-    Qt6::Sql
-    Qt6::Test
-)
-add_test(NAME tenco_test_databasemanager COMMAND tenco_test_databasemanager)
+target_link_libraries(tenco_test_databasemanager PRIVATE Qt6::Sql tenco_storage)
 
-qt_add_executable(tenco_test_statusprotocol
+tenco_add_test(tenco_test_statusprotocol
     test_statusprotocol.cpp
-    ../statusprotocol.h
-    ../statusprotocol.cpp
 )
-target_include_directories(tenco_test_statusprotocol PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/..
-)
-target_link_libraries(tenco_test_statusprotocol PRIVATE
-    Qt6::Core
-    Qt6::Test
-)
-add_test(NAME tenco_test_statusprotocol COMMAND tenco_test_statusprotocol)
+target_link_libraries(tenco_test_statusprotocol PRIVATE tenco_network)
 
-qt_add_executable(tenco_test_videoframeworker
+tenco_add_test(tenco_test_videoframeworker
     test_videoframeworker.cpp
-    ../videoframeworker.h
-    ../videoframeworker.cpp
 )
-target_include_directories(tenco_test_videoframeworker PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/..
-)
-target_link_libraries(tenco_test_videoframeworker PRIVATE
-    Qt6::Core
-    Qt6::Gui
-    Qt6::Test
-)
-add_test(NAME tenco_test_videoframeworker COMMAND tenco_test_videoframeworker)
+target_link_libraries(tenco_test_videoframeworker PRIVATE Qt6::Gui tenco_video)
 
-qt_add_executable(tenco_test_map_route_integration
+tenco_add_test(tenco_test_map_route_integration
     test_map_route_integration.cpp
     ../map.h
     ../map.cpp
-    ../rowmissiontypes.h
-    ../rowmissiontypes.cpp
-    ../rowworktypes.h
-    ../rowworktypes.cpp
-    ../rowworkclient.h
-    ../rowworkclient.cpp
     ../mapgraphicsview.h
     ../mapgraphicsview.cpp
-    ../mapdocument.h
-    ../mapdocument.cpp
-    ../routepathfinder.h
-    ../routepathfinder.cpp
-    ../configmanager.h
-    ../configmanager.cpp
-    ../loggingmanager.h
-    ../loggingmanager.cpp
     ../battery.h
     ../battery.cpp
     ../imageswitch.h
@@ -179,14 +81,13 @@ qt_add_executable(tenco_test_map_route_integration
 set_property(TARGET tenco_test_map_route_integration PROPERTY
     AUTOUIC_SEARCH_PATHS "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
-target_include_directories(tenco_test_map_route_integration PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/..
-)
 target_link_libraries(tenco_test_map_route_integration PRIVATE
-    Qt6::Core
     Qt6::Gui
     Qt6::Widgets
     Qt6::Network
-    Qt6::Test
+    tenco_config
+    tenco_logging
+    tenco_motion
+    tenco_map_model
+    tenco_network
 )
-add_test(NAME tenco_test_map_route_integration COMMAND tenco_test_map_route_integration)

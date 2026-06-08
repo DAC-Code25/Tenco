@@ -6,15 +6,21 @@
 - **页面编排层**：`Home` / `Map` / `Maintenance` / `Help` / `About`
 - **业务模块层（已拆分）**
   - `HomeStatusPresenter`：状态包解析与状态区 UI 映射
+  - `HomeControlCoordinator`：路线跟随/手动控制参数映射
+  - `HomeVideoPresenter`：首页视频 QLabel 占位、缩放、最新帧显示
   - `StatusClient`：状态轮询编排（线程封装）
   - `HomeNetworkWorker`：真正执行 HTTP 轮询的 worker（跑在 QThread）
+  - `NetworkPolicy`：Bearer Header、JSON 请求构造、指数退避策略
   - `StatusProtocol`：状态字段枚举与地址映射、默认轮询请求构造
   - `ChassisClient`：WebSocket 协议封装（cmd_vel/reboot/stopLocation…）
   - `VideoClient`：MJPEG 拉流、解码、录像、截图、自动重连
   - `RouteFollower`：路线段跟随算法（输出速度命令，不直接发网络）
   - `RoutePathFinder`：路径搜索（加权最短路）
+  - `MapRoutePlanner`：地图路径边到 `RoutePathFinder` 的适配，并应用 `routePlanning` 配置
   - `MapDocument`：地图 JSON 文档模型编解码
 - **配置层**：`ConfigManager`（`config.json`）
+- **日志层**：`LoggingManager`（Qt message handler + 异步文件写入）
+- **构建边界**：CMake 内部库拆为 `tenco_config`、`tenco_logging`、`tenco_storage`、`tenco_motion`、`tenco_map_model`、`tenco_network`、`tenco_video`
 
 这样拆分的核心价值（企业常用思路）：
 
@@ -38,6 +44,9 @@
 
 - `HomeNetworkWorker` 在 `StatusClient` 创建的 `QThread` 中运行
 - 负责周期性 HTTP 请求，避免 UI 被网络阻塞
+- `VideoFrameWorker` 在 `VideoClient` 的帧处理线程中运行
+- 负责 MJPEG 扫描、解码、限帧、录像和指标统计，UI 只接收最新帧
+- `LoggingManager` 使用后台 LogWriterThread 写文件和审计日志，Qt message handler 不再同步写磁盘
 
 ---
 

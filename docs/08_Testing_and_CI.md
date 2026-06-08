@@ -11,8 +11,13 @@
 - `RouteFollower`：`tests/test_routefollower.cpp`
 - `ConfigManager`：`tests/test_configmanager.cpp`
 - `RoutePathFinder`：`tests/test_routepathfinder.cpp`
+- `MapRoutePlanner`：`tests/test_maprouteplanner.cpp`（验证路线代价配置会影响路径选择）
 - `StatusProtocol`：`tests/test_statusprotocol.cpp`
 - `MapDocument`：`tests/test_mapdocument.cpp`（地图 JSON 编解码与校验）
+- `MotionCommandArbiter`：`tests/test_motioncommandarbiter.cpp`
+- `VideoFrameWorker`：`tests/test_videoframeworker.cpp`
+- `DatabaseManager`：`tests/test_databasemanager.cpp`
+- `RowWorkTypes` / `RowMissionTypes`：作业计划与多垄任务 JSON/几何模型测试
 
 本项目已补齐的 IT 模块：
 

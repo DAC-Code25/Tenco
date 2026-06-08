@@ -14,6 +14,7 @@ class ConfigManagerTest : public QObject
 
 private slots:
     void loadCustomConfigAndSanitize();
+    void envOverridesSecretsAndReportsSchemaWarnings();
     void geoRoundTripKeepsPrecision();
 };
 
@@ -35,6 +36,10 @@ void ConfigManagerTest::loadCustomConfigAndSanitize()
                      {QStringLiteral("nearTargetSpeedMultiplier"), 5.0},
                      {QStringLiteral("maxLinearSpeed"), -1.0},
                      {QStringLiteral("maxAngularSpeed"), -1.0}}},
+        {QStringLiteral("routePlanning"),
+         QJsonObject{{QStringLiteral("minEdgeCost"), -1.0},
+                     {QStringLiteral("edgePenalty"), -2.0},
+                     {QStringLiteral("arcPenalty"), 0.25}}},
         {QStringLiteral("video"),
          QJsonObject{{QStringLiteral("backend"), QStringLiteral("bad_backend")},
                      {QStringLiteral("controlBaseUrl"), QStringLiteral(" http://192.168.31.7:18080/ ")},
@@ -82,6 +87,9 @@ void ConfigManagerTest::loadCustomConfigAndSanitize()
     QVERIFY(cfg.control().nearTargetSpeedMultiplier <= 1.0);
     QVERIFY(cfg.control().maxLinearSpeed >= 0.0);
     QVERIFY(cfg.control().maxAngularSpeed >= 0.0);
+    QVERIFY(cfg.routePlanning().minEdgeCost > 0.0);
+    QVERIFY(cfg.routePlanning().edgePenalty >= 0.0);
+    QCOMPARE(cfg.routePlanning().arcPenalty, 0.25);
     QVERIFY(cfg.video().reconnectIntervalMs >= 200);
     QCOMPARE(cfg.video().backend, QStringLiteral("mjpeg_http"));
     QCOMPARE(cfg.video().controlBaseUrl, QStringLiteral("http://192.168.31.7:18080/"));
@@ -109,6 +117,47 @@ void ConfigManagerTest::loadCustomConfigAndSanitize()
     QVERIFY(cfg.database().reconnectIntervalMs >= 500);
     QVERIFY(cfg.database().enableTelemetryTables);
 
+    cfg.setConfigFilePath(QString());
+}
+
+void ConfigManagerTest::envOverridesSecretsAndReportsSchemaWarnings()
+{
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+
+    const QString filePath = tempDir.filePath(QStringLiteral("config.json"));
+    QFile file(filePath);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    const QJsonObject root{
+        {QStringLiteral("unknownTopLevel"), true},
+        {QStringLiteral("network"),
+         QJsonObject{{QStringLiteral("authToken"), QStringLiteral("file-token")},
+                     {QStringLiteral("websocketUrl"), 42}}},
+        {QStringLiteral("database"),
+         QJsonObject{{QStringLiteral("password"), QStringLiteral("file-password")}}},
+        {QStringLiteral("routePlanning"),
+         QJsonObject{{QStringLiteral("minEdgeCost"), 0.5},
+                     {QStringLiteral("edgePenalty"), 0.2},
+                     {QStringLiteral("arcPenalty"), 0.7}}},
+    };
+    file.write(QJsonDocument(root).toJson(QJsonDocument::Compact));
+    file.close();
+
+    qputenv("TENCO_AUTH_TOKEN", QByteArrayLiteral("env-token"));
+    qputenv("TENCO_DATABASE_PASSWORD", QByteArrayLiteral("env-db-password"));
+
+    ConfigManager &cfg = ConfigManager::instance();
+    cfg.setConfigFilePath(filePath);
+
+    QCOMPARE(cfg.network().authToken, QStringLiteral("env-token"));
+    QCOMPARE(cfg.database().password, QStringLiteral("env-db-password"));
+    QCOMPARE(cfg.routePlanning().minEdgeCost, 0.5);
+    QCOMPARE(cfg.routePlanning().edgePenalty, 0.2);
+    QCOMPARE(cfg.routePlanning().arcPenalty, 0.7);
+    QVERIFY(!cfg.validationWarnings().isEmpty());
+
+    qunsetenv("TENCO_AUTH_TOKEN");
+    qunsetenv("TENCO_DATABASE_PASSWORD");
     cfg.setConfigFilePath(QString());
 }
 

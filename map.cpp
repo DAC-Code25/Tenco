@@ -2,7 +2,7 @@
 
 #include "mapgraphicsview.h"
 #include "mapdocument.h"
-#include "routepathfinder.h"
+#include "maprouteplanner.h"
 #include "rowworkclient.h"
 #include "ui_mainwindow.h"
 #include "configmanager.h"
@@ -3159,14 +3159,14 @@ QList<int> Map::findRoutePathIds(int startId, int endId) const
         return result;
     }
 
-    QList<RouteGraphEdge> edges;
+    QList<MapRoutePlanner::Edge> edges;
     edges.reserve(m_paths.size());
     for (auto it = m_paths.cbegin(); it != m_paths.cend(); ++it) {
         const MapPath &path = it.value();
         if (path.startId < 0 || path.endId < 0) {
             continue;
         }
-        RouteGraphEdge edge;
+        MapRoutePlanner::Edge edge;
         edge.pathId = path.id;
         edge.fromId = path.startId;
         edge.toId = path.endId;
@@ -3175,8 +3175,7 @@ QList<int> Map::findRoutePathIds(int startId, int endId) const
         edges.append(edge);
     }
 
-    const RoutePathFinderOptions options;
-    return RoutePathFinder::findShortestPath(startId, endId, edges, options);
+    return MapRoutePlanner::findPathIds(startId, endId, edges, ConfigManager::instance().routePlanning());
 }
 
 QList<QPointF> Map::composePolyline(const QList<int> &pathIds) const

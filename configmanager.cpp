@@ -52,6 +52,9 @@ constexpr int kDefaultGimbalStatusPollIntervalMs = 300;
 constexpr int kDefaultCameraRequestTimeoutMs = 5000;
 constexpr int kDefaultRouteFollowerUpdateIntervalMs = 100;
 constexpr int kDefaultManualMotionRepeatIntervalMs = 40;
+constexpr double kDefaultRouteMinEdgeCost = 1e-3;
+constexpr double kDefaultRouteEdgePenalty = 0.01;
+constexpr double kDefaultRouteArcPenalty = 0.05;
 constexpr int kDefaultGimbalSafetyStopTimeoutMs = 1500;
 constexpr qint64 kDefaultLogMaxFileBytes = 5 * 1024 * 1024;
 constexpr qint64 kMinLogMaxFileBytes = 256 * 1024;
@@ -119,6 +122,7 @@ ConfigManager::ConfigSnapshot ConfigManager::snapshot() const
     ConfigSnapshot snap;
     snap.geo = m_geo;
     snap.control = m_control;
+    snap.routePlanning = m_routePlanning;
     snap.vehicle = m_vehicle;
     snap.video = m_video;
     snap.network = m_network;
@@ -140,6 +144,7 @@ bool ConfigManager::saveSnapshot(const ConfigSnapshot &snapshot, QString *errorM
 
     m_geo = snapshot.geo;
     m_control = snapshot.control;
+    m_routePlanning = snapshot.routePlanning;
     m_vehicle = snapshot.vehicle;
     m_video = snapshot.video;
     m_network = snapshot.network;
@@ -156,6 +161,7 @@ bool ConfigManager::saveSnapshot(const ConfigSnapshot &snapshot, QString *errorM
     if (!saveToFile(targetPath, errorMessage)) {
         m_geo = oldSnapshot.geo;
         m_control = oldSnapshot.control;
+        m_routePlanning = oldSnapshot.routePlanning;
         m_vehicle = oldSnapshot.vehicle;
         m_video = oldSnapshot.video;
         m_network = oldSnapshot.network;
@@ -179,6 +185,7 @@ bool ConfigManager::saveSnapshot(const ConfigSnapshot &snapshot, QString *errorM
     } else {
         m_geo = oldSnapshot.geo;
         m_control = oldSnapshot.control;
+        m_routePlanning = oldSnapshot.routePlanning;
         m_vehicle = oldSnapshot.vehicle;
         m_video = oldSnapshot.video;
         m_network = oldSnapshot.network;
@@ -303,6 +310,7 @@ bool ConfigManager::loadSnapshotFromFile(const QString &path, ConfigSnapshot *sn
 
     m_geo = oldSnapshot.geo;
     m_control = oldSnapshot.control;
+    m_routePlanning = oldSnapshot.routePlanning;
     m_vehicle = oldSnapshot.vehicle;
     m_video = oldSnapshot.video;
     m_network = oldSnapshot.network;
@@ -359,8 +367,10 @@ void ConfigManager::load()
         loadFromFile(path);
         m_loadedFromFile = true;
     } else {
+        m_validationWarnings.clear();
         qCWarning(lcConfigManager) << "Config file not found, fallback to defaults:" << path;
     }
+    applyEnvironmentOverrides();
     sanitizeConfig();
     m_loaded = true;
     updateCachedScales();
@@ -380,11 +390,17 @@ void ConfigManager::loadFromFile(const QString &path)
 
     const QJsonDocument doc = QJsonDocument::fromJson(raw);
     if (!doc.isObject()) {
+        m_validationWarnings = {tr("配置文件不是合法 JSON 对象：%1").arg(path)};
         qCWarning(lcConfigManager) << "Invalid JSON object in config:" << path;
         return;
     }
 
-    applyJsonObjectToCurrentConfig(doc.object());
+    const QJsonObject root = doc.object();
+    m_validationWarnings = validateJsonObject(root);
+    for (const QString &warning : std::as_const(m_validationWarnings)) {
+        qCWarning(lcConfigManager) << warning;
+    }
+    applyJsonObjectToCurrentConfig(root);
 }
 
 void ConfigManager::applyJsonObjectToCurrentConfig(const QJsonObject &root)
@@ -418,6 +434,15 @@ void ConfigManager::applyJsonObjectToCurrentConfig(const QJsonObject &root)
             ctrlObj.value(QStringLiteral("routeFollowerUpdateIntervalMs")).toInt(m_control.routeFollowerUpdateIntervalMs);
         m_control.manualMotionRepeatIntervalMs =
             ctrlObj.value(QStringLiteral("manualMotionRepeatIntervalMs")).toInt(m_control.manualMotionRepeatIntervalMs);
+    }
+
+    if (const QJsonObject routeObj = root.value(QStringLiteral("routePlanning")).toObject(); !routeObj.isEmpty()) {
+        m_routePlanning.minEdgeCost =
+            routeObj.value(QStringLiteral("minEdgeCost")).toDouble(m_routePlanning.minEdgeCost);
+        m_routePlanning.edgePenalty =
+            routeObj.value(QStringLiteral("edgePenalty")).toDouble(m_routePlanning.edgePenalty);
+        m_routePlanning.arcPenalty =
+            routeObj.value(QStringLiteral("arcPenalty")).toDouble(m_routePlanning.arcPenalty);
     }
 
     if (const QJsonObject vehicleObj = root.value(QStringLiteral("vehicle")).toObject(); !vehicleObj.isEmpty()) {
@@ -577,6 +602,153 @@ void ConfigManager::applyJsonObjectToCurrentConfig(const QJsonObject &root)
     }
 }
 
+QStringList ConfigManager::validateJsonObject(const QJsonObject &root) const
+{
+    QStringList warnings;
+    const QStringList knownSections{
+        QStringLiteral("geo"),
+        QStringLiteral("control"),
+        QStringLiteral("routePlanning"),
+        QStringLiteral("vehicle"),
+        QStringLiteral("video"),
+        QStringLiteral("network"),
+        QStringLiteral("rowWork"),
+        QStringLiteral("gimbal"),
+        QStringLiteral("logging"),
+        QStringLiteral("database"),
+    };
+
+    for (auto it = root.constBegin(); it != root.constEnd(); ++it) {
+        if (!knownSections.contains(it.key())) {
+            warnings << tr("配置包含未知顶层字段：%1").arg(it.key());
+        }
+    }
+
+    const auto sectionObject = [&](const QString &section) -> QJsonObject {
+        if (!root.contains(section)) {
+            return {};
+        }
+        const QJsonValue value = root.value(section);
+        if (!value.isObject()) {
+            warnings << tr("配置段 %1 应为 JSON 对象").arg(section);
+            return {};
+        }
+        return value.toObject();
+    };
+
+    const auto warnIfNotNumber = [&](const QJsonObject &object, const QString &section, const QString &key) {
+        if (object.contains(key) && !object.value(key).isDouble()) {
+            warnings << tr("配置项 %1.%2 应为数字").arg(section, key);
+        }
+    };
+
+    const auto warnIfNotBool = [&](const QJsonObject &object, const QString &section, const QString &key) {
+        if (object.contains(key) && !object.value(key).isBool()) {
+            warnings << tr("配置项 %1.%2 应为布尔值").arg(section, key);
+        }
+    };
+
+    const auto warnIfNotString = [&](const QJsonObject &object, const QString &section, const QString &key) {
+        if (object.contains(key) && !object.value(key).isString()) {
+            warnings << tr("配置项 %1.%2 应为字符串").arg(section, key);
+        }
+    };
+
+    const auto warnIfInvalidUrl = [&](const QJsonObject &object,
+                                      const QString &section,
+                                      const QString &key,
+                                      const QStringList &schemes) {
+        if (!object.contains(key)) {
+            return;
+        }
+        if (!object.value(key).isString()) {
+            warnings << tr("配置项 %1.%2 应为 URL 字符串").arg(section, key);
+            return;
+        }
+        const QString value = object.value(key).toString().trimmed();
+        if (value.isEmpty()) {
+            return;
+        }
+        const QUrl url(value);
+        if (!url.isValid() || !schemes.contains(url.scheme())) {
+            warnings << tr("配置项 %1.%2 URL 无效：%3").arg(section, key, value);
+        }
+    };
+
+    const QJsonObject controlObj = sectionObject(QStringLiteral("control"));
+    const QStringList controlNumbers{
+        QStringLiteral("arrivalDistanceThreshold"),
+        QStringLiteral("arrivalAngleThresholdDeg"),
+        QStringLiteral("maxLinearSpeed"),
+        QStringLiteral("maxAngularSpeed"),
+        QStringLiteral("linearGain"),
+        QStringLiteral("angularGain"),
+        QStringLiteral("headingStopThresholdDeg"),
+        QStringLiteral("headingSlowdownThresholdDeg"),
+        QStringLiteral("headingSlowdownFactor"),
+        QStringLiteral("nearTargetDistanceMultiplier"),
+        QStringLiteral("nearTargetSpeedMultiplier"),
+        QStringLiteral("linearAccelerationLimit"),
+        QStringLiteral("linearDecelerationLimit"),
+        QStringLiteral("angularAccelerationLimit"),
+        QStringLiteral("angularDecelerationLimit"),
+        QStringLiteral("finalAdjustLinearSpeed"),
+        QStringLiteral("finalAdjustAngularSpeed"),
+        QStringLiteral("routeFollowerUpdateIntervalMs"),
+        QStringLiteral("manualMotionRepeatIntervalMs"),
+    };
+    for (const QString &key : controlNumbers) {
+        warnIfNotNumber(controlObj, QStringLiteral("control"), key);
+    }
+
+    const QJsonObject routeObj = sectionObject(QStringLiteral("routePlanning"));
+    warnIfNotNumber(routeObj, QStringLiteral("routePlanning"), QStringLiteral("minEdgeCost"));
+    warnIfNotNumber(routeObj, QStringLiteral("routePlanning"), QStringLiteral("edgePenalty"));
+    warnIfNotNumber(routeObj, QStringLiteral("routePlanning"), QStringLiteral("arcPenalty"));
+
+    const QJsonObject videoObj = sectionObject(QStringLiteral("video"));
+    warnIfInvalidUrl(videoObj, QStringLiteral("video"), QStringLiteral("streamUrl"), {QStringLiteral("http"), QStringLiteral("https")});
+    warnIfInvalidUrl(videoObj, QStringLiteral("video"), QStringLiteral("controlBaseUrl"), {QStringLiteral("http"), QStringLiteral("https")});
+    warnIfNotBool(videoObj, QStringLiteral("video"), QStringLiteral("autoStart"));
+    warnIfNotBool(videoObj, QStringLiteral("video"), QStringLiteral("scaleContents"));
+
+    const QJsonObject networkObj = sectionObject(QStringLiteral("network"));
+    warnIfInvalidUrl(networkObj, QStringLiteral("network"), QStringLiteral("websocketUrl"), {QStringLiteral("ws"), QStringLiteral("wss")});
+    warnIfInvalidUrl(networkObj, QStringLiteral("network"), QStringLiteral("statusReadUrl"), {QStringLiteral("http"), QStringLiteral("https")});
+    warnIfInvalidUrl(networkObj, QStringLiteral("network"), QStringLiteral("writeInsUrl"), {QStringLiteral("http"), QStringLiteral("https")});
+    warnIfInvalidUrl(networkObj, QStringLiteral("network"), QStringLiteral("saveFileUrl"), {QStringLiteral("http"), QStringLiteral("https")});
+    warnIfNotString(networkObj, QStringLiteral("network"), QStringLiteral("authToken"));
+    warnIfNotBool(networkObj, QStringLiteral("network"), QStringLiteral("chassisAutoReconnect"));
+
+    const QJsonObject loggingObj = sectionObject(QStringLiteral("logging"));
+    warnIfNotString(loggingObj, QStringLiteral("logging"), QStringLiteral("level"));
+    warnIfNotBool(loggingObj, QStringLiteral("logging"), QStringLiteral("consoleEnabled"));
+    warnIfNotBool(loggingObj, QStringLiteral("logging"), QStringLiteral("fileEnabled"));
+    warnIfNotBool(loggingObj, QStringLiteral("logging"), QStringLiteral("auditEnabled"));
+    warnIfNotBool(loggingObj, QStringLiteral("logging"), QStringLiteral("redactSensitiveData"));
+
+    const QJsonObject databaseObj = sectionObject(QStringLiteral("database"));
+    warnIfNotString(databaseObj, QStringLiteral("database"), QStringLiteral("backend"));
+    warnIfNotString(databaseObj, QStringLiteral("database"), QStringLiteral("password"));
+
+    return warnings;
+}
+
+void ConfigManager::applyEnvironmentOverrides()
+{
+    const QString authToken = qEnvironmentVariable("TENCO_AUTH_TOKEN").trimmed();
+    if (!authToken.isEmpty()) {
+        m_network.authToken = authToken;
+        qCInfo(lcConfigManager) << "Network auth token loaded from TENCO_AUTH_TOKEN";
+    }
+
+    const QString databasePassword = qEnvironmentVariable("TENCO_DATABASE_PASSWORD");
+    if (!databasePassword.isEmpty()) {
+        m_database.password = databasePassword;
+        qCInfo(lcConfigManager) << "Database password loaded from TENCO_DATABASE_PASSWORD";
+    }
+}
+
 bool ConfigManager::saveToFile(const QString &path, QString *errorMessage) const
 {
     if (path.trimmed().isEmpty()) {
@@ -691,6 +863,13 @@ QJsonObject ConfigManager::toJsonObject() const
                     {QStringLiteral("finalAdjustAngularSpeed"), m_control.finalAdjustAngularSpeed},
                     {QStringLiteral("routeFollowerUpdateIntervalMs"), m_control.routeFollowerUpdateIntervalMs},
                     {QStringLiteral("manualMotionRepeatIntervalMs"), m_control.manualMotionRepeatIntervalMs},
+                });
+
+    root.insert(QStringLiteral("routePlanning"),
+                QJsonObject{
+                    {QStringLiteral("minEdgeCost"), m_routePlanning.minEdgeCost},
+                    {QStringLiteral("edgePenalty"), m_routePlanning.edgePenalty},
+                    {QStringLiteral("arcPenalty"), m_routePlanning.arcPenalty},
                 });
 
     root.insert(QStringLiteral("vehicle"),
@@ -825,6 +1004,10 @@ void ConfigManager::loadDefaults()
     m_control = ControlConfig{};
     m_control.routeFollowerUpdateIntervalMs = kDefaultRouteFollowerUpdateIntervalMs;
     m_control.manualMotionRepeatIntervalMs = kDefaultManualMotionRepeatIntervalMs;
+    m_routePlanning = RoutePlanningConfig{};
+    m_routePlanning.minEdgeCost = kDefaultRouteMinEdgeCost;
+    m_routePlanning.edgePenalty = kDefaultRouteEdgePenalty;
+    m_routePlanning.arcPenalty = kDefaultRouteArcPenalty;
     m_vehicle = VehicleConfig{};
     m_video = VideoConfig{};
     m_video.backend = QString::fromUtf8(kDefaultVideoBackend);
@@ -905,6 +1088,10 @@ void ConfigManager::sanitizeConfig()
     m_control.finalAdjustAngularSpeed = qMax(0.0, m_control.finalAdjustAngularSpeed);
     m_control.routeFollowerUpdateIntervalMs = qBound(20, m_control.routeFollowerUpdateIntervalMs, 1000);
     m_control.manualMotionRepeatIntervalMs = qBound(20, m_control.manualMotionRepeatIntervalMs, 1000);
+
+    m_routePlanning.minEdgeCost = qBound(1e-9, m_routePlanning.minEdgeCost, 1000000.0);
+    m_routePlanning.edgePenalty = qBound(0.0, m_routePlanning.edgePenalty, 1000000.0);
+    m_routePlanning.arcPenalty = qBound(0.0, m_routePlanning.arcPenalty, 1000000.0);
 
     m_vehicle.wheelBaseMeters = qMax(0.01, m_vehicle.wheelBaseMeters);
     m_vehicle.wheelDiameterMeters = qMax(0.01, m_vehicle.wheelDiameterMeters);

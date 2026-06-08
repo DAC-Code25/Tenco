@@ -1,5 +1,7 @@
 #include "rowworkclient.h"
 
+#include "networkpolicy.h"
+
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLoggingCategory>
@@ -282,15 +284,14 @@ void RowWorkClient::sendJsonRequest(Operation operation, const QString &endpoint
         return;
     }
 
-    QNetworkRequest request(url);
-    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("TencoRowWorkClient/1.0"));
+    QNetworkRequest request = NetworkPolicy::makeJsonRequest(url,
+                                                             m_authToken,
+                                                             QByteArrayLiteral("TencoRowWorkClient/1.0"),
+                                                             m_commandTimeoutMs);
     request.setRawHeader("Accept", "application/json");
 #if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
 #endif
-    if (!m_authToken.isEmpty()) {
-        request.setRawHeader("Authorization", QByteArray("Bearer ") + m_authToken.toUtf8());
-    }
 
     m_requestTimedOut = false;
     m_pendingOperation = operation;
