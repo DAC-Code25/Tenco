@@ -31,6 +31,11 @@ tenco_add_test(tenco_test_maprouteplanner
 )
 target_link_libraries(tenco_test_maprouteplanner PRIVATE tenco_map_model)
 
+tenco_add_test(tenco_test_mapgeometry
+    test_mapgeometry.cpp
+)
+target_link_libraries(tenco_test_mapgeometry PRIVATE tenco_map_model)
+
 tenco_add_test(tenco_test_mapdocument
     test_mapdocument.cpp
 )
@@ -65,6 +70,14 @@ tenco_add_test(tenco_test_videoframeworker
     test_videoframeworker.cpp
 )
 target_link_libraries(tenco_test_videoframeworker PRIVATE Qt6::Gui tenco_video)
+
+tenco_add_test(tenco_test_homeinputstate
+    test_homeinputstate.cpp
+    ../homegimbalkeystate.h
+    ../homegimbalkeystate.cpp
+    ../homemanualinputstate.h
+    ../homemanualinputstate.cpp
+)
 
 tenco_add_test(tenco_test_map_route_integration
     test_map_route_integration.cpp

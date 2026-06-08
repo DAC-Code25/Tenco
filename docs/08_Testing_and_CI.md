@@ -12,6 +12,8 @@
 - `ConfigManager`：`tests/test_configmanager.cpp`
 - `RoutePathFinder`：`tests/test_routepathfinder.cpp`
 - `MapRoutePlanner`：`tests/test_maprouteplanner.cpp`（验证路线代价配置会影响路径选择）
+- `MapGeometry`：`tests/test_mapgeometry.cpp`
+- `HomeManualInputState` / `HomeGimbalKeyState`：`tests/test_homeinputstate.cpp`
 - `StatusProtocol`：`tests/test_statusprotocol.cpp`
 - `MapDocument`：`tests/test_mapdocument.cpp`（地图 JSON 编解码与校验）
 - `MotionCommandArbiter`：`tests/test_motioncommandarbiter.cpp`

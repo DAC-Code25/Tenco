@@ -13,6 +13,8 @@
 #include <memory>
 
 #include "gimbalcontrolclient.h"
+#include "homegimbalkeystate.h"
+#include "homemanualinputstate.h"
 
 class QProgressDialog;
 class AbstractVideoSource;
@@ -173,22 +175,8 @@ private:
     GimbalControlClient::Direction m_activeGimbalDirection = GimbalControlClient::Direction::Value1;
     QString m_activeGimbalAction;
 
-    bool forwardButtonHeld;
-    bool forwardKeyHeld;
-    bool backwardButtonHeld;
-    bool backwardKeyHeld;
-    bool turnLeftButtonHeld;
-    bool turnLeftKeyHeld;
-    bool turnRightButtonHeld;
-    bool turnRightKeyHeld;
-    bool gimbalKeyUpHeld = false;
-    bool gimbalKeyDownHeld = false;
-    bool gimbalKeyLeftHeld = false;
-    bool gimbalKeyRightHeld = false;
-    bool gimbalLeftCtrlHeld = false;
-    bool gimbalKeyboardMotionActive = false;
-    GimbalControlClient::Axis m_activeGimbalKeyboardAxis = GimbalControlClient::Axis::Height;
-    GimbalControlClient::Direction m_activeGimbalKeyboardDirection = GimbalControlClient::Direction::Value1;
+    HomeManualInputState m_manualInputState;
+    HomeGimbalKeyState m_gimbalKeyState;
     int m_manualMotionRepeatIntervalMs = 40;
     int rebootRemainingSeconds;
 };

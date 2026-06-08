@@ -2,6 +2,7 @@
 
 #include "mapgraphicsview.h"
 #include "mapdocument.h"
+#include "mapgeometry.h"
 #include "maprouteplanner.h"
 #include "rowworkclient.h"
 #include "ui_mainwindow.h"
@@ -100,34 +101,14 @@ constexpr int kRowMissionStepNameColumn = 1;
 constexpr int kRowMissionStepTypeColumn = 2;
 constexpr int kRowMissionStepSummaryColumn = 3;
 
-inline double normalizeAngle(double angle)
-{
-    angle = std::fmod(angle + M_PI, 2.0 * M_PI);
-    if (angle < 0.0) {
-        angle += 2.0 * M_PI;
-    }
-    return angle - M_PI;
-}
-
-inline double mapToStandardAngle(double angle)
-{
-    return normalizeAngle(angle - M_PI_2);
-}
-
-inline double standardToMapAngle(double angle)
-{
-    return normalizeAngle(angle + M_PI_2);
-}
-
-inline QPointF mapToStandardPoint(const QPointF &mapPoint)
-{
-    return QPointF(mapPoint.y(), -mapPoint.x());
-}
-
-inline QPointF standardToMapPoint(const QPointF &stdPoint)
-{
-    return QPointF(-stdPoint.y(), stdPoint.x());
-}
+using MapGeometry::formatNumber;
+using MapGeometry::mapToStandardAngle;
+using MapGeometry::mapToStandardPoint;
+using MapGeometry::normalizeAngle;
+using MapGeometry::pointsAlmostEqual;
+using MapGeometry::polylineLength;
+using MapGeometry::standardToMapAngle;
+using MapGeometry::standardToMapPoint;
 
 
 QPainterPath makePointArrowPath()
@@ -147,29 +128,6 @@ QPainterPath makePointArrowPath()
     arrowPath.lineTo(tipX - stemLength, -baseHalfWidth);
     arrowPath.closeSubpath();
     return arrowPath;
-}
-inline bool pointsAlmostEqual(const QPointF &a, const QPointF &b)
-{
-    return std::abs(a.x() - b.x()) < kGeometryEpsilon && std::abs(a.y() - b.y()) < kGeometryEpsilon;
-}
-
-inline QString formatNumber(double value, int precision = 3)
-{
-    return QString::number(value, 'f', precision);
-}
-
-inline double polylineLength(const QList<QPointF> &polyline)
-{
-    if (polyline.size() < 2) {
-        return 0.0;
-    }
-    double length = 0.0;
-    for (int i = 1; i < polyline.size(); ++i) {
-        const QPointF &a = polyline.at(i - 1);
-        const QPointF &b = polyline.at(i);
-        length += std::hypot(b.x() - a.x(), b.y() - a.y());
-    }
-    return length;
 }
 
 QPainterPath makeDirectionArrowPath()
