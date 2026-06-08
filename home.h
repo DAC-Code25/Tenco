@@ -22,6 +22,7 @@ class ChassisClient;
 class RouteFollower;
 class MotionCommandArbiter;
 class HomeStatusPresenter;
+class HomeVideoPresenter;
 
 namespace Ui {
 class MainWindow;
@@ -151,12 +152,11 @@ private:
     RouteFollower *m_routeFollower = nullptr;
     MotionCommandArbiter *m_motionArbiter = nullptr;
     std::unique_ptr<HomeStatusPresenter> m_statusPresenter;
+    std::unique_ptr<HomeVideoPresenter> m_videoPresenter;
 
     QString m_recordFilePath;
     QString m_saveDirectory;
-    bool m_videoScaleContents = true;
     QString m_activeVideoTopic;
-    QImage m_lastVideoFrame;
     bool m_remoteCameraServiceAvailable = false;
     bool m_remoteCameraConnected = false;
     bool m_remoteCameraRecording = false;

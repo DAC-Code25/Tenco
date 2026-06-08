@@ -36,12 +36,110 @@ endif()
 
 qt_standard_project_setup()
 
-qt_add_executable(Tenco
-    main.cpp
+function(tenco_configure_target target_name)
+    target_include_directories(${target_name} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+    if(TENCO_ENABLE_WARNINGS)
+        if(MSVC)
+            target_compile_options(${target_name} PRIVATE /W4 /permissive- /wd4100 /wd4244 /wd4267)
+        else()
+            target_compile_options(${target_name} PRIVATE -Wall -Wextra -Wpedantic)
+        endif()
+    endif()
+endfunction()
+
+qt_add_library(tenco_config STATIC
+    configmanager.h
+    configmanager.cpp
+)
+target_link_libraries(tenco_config PUBLIC Qt6::Core)
+tenco_configure_target(tenco_config)
+
+qt_add_library(tenco_logging STATIC
     loggingmanager.h
     loggingmanager.cpp
+)
+target_link_libraries(tenco_logging PUBLIC Qt6::Core tenco_config)
+tenco_configure_target(tenco_logging)
+
+qt_add_library(tenco_storage STATIC
     databasemanager.h
     databasemanager.cpp
+)
+target_link_libraries(tenco_storage PUBLIC Qt6::Core Qt6::Sql tenco_config)
+tenco_configure_target(tenco_storage)
+
+qt_add_library(tenco_motion STATIC
+    routefollower.h
+    routefollower.cpp
+    motioncommandarbiter.h
+    motioncommandarbiter.cpp
+    routepathfinder.h
+    routepathfinder.cpp
+)
+target_link_libraries(tenco_motion PUBLIC Qt6::Core)
+tenco_configure_target(tenco_motion)
+
+qt_add_library(tenco_map_model STATIC
+    rowworktypes.h
+    rowworktypes.cpp
+    rowmissiontypes.h
+    rowmissiontypes.cpp
+    mapdocument.h
+    mapdocument.cpp
+    maprouteplanner.h
+    maprouteplanner.cpp
+)
+target_link_libraries(tenco_map_model PUBLIC Qt6::Core tenco_config tenco_motion)
+tenco_configure_target(tenco_map_model)
+
+qt_add_library(tenco_network STATIC
+    networkpolicy.h
+    networkpolicy.cpp
+    cameracontrolclient.h
+    cameracontrolclient.cpp
+    gimbalcontrolclient.h
+    gimbalcontrolclient.cpp
+    rowworkclient.h
+    rowworkclient.cpp
+    homenetworkworker.h
+    homenetworkworker.cpp
+    statusclient.h
+    statusclient.cpp
+    chassisclient.h
+    chassisclient.cpp
+    statusprotocol.h
+    statusprotocol.cpp
+)
+target_link_libraries(tenco_network PUBLIC
+    Qt6::Core
+    Qt6::Network
+    Qt6::WebSockets
+    tenco_map_model
+)
+tenco_configure_target(tenco_network)
+
+qt_add_library(tenco_video STATIC
+    abstractvideosource.h
+    abstractvideosource.cpp
+    mjpegvideosource.h
+    mjpegvideosource.cpp
+    oakcameravideosource.h
+    oakcameravideosource.cpp
+    videoclient.h
+    videoclient.cpp
+    videoframeworker.h
+    videoframeworker.cpp
+)
+target_link_libraries(tenco_video PUBLIC
+    Qt6::Core
+    Qt6::Gui
+    Qt6::Network
+    tenco_config
+)
+tenco_configure_target(tenco_video)
+
+qt_add_executable(Tenco
+    main.cpp
     UI_Design.cpp
 
     mainwindow.h
@@ -56,66 +154,17 @@ qt_add_executable(Tenco
 
     home.h
     home.cpp
-
-    cameracontrolclient.h
-    cameracontrolclient.cpp
-    gimbalcontrolclient.h
-    gimbalcontrolclient.cpp
-    rowworktypes.h
-    rowworktypes.cpp
-    rowmissiontypes.h
-    rowmissiontypes.cpp
-    rowworkclient.h
-    rowworkclient.cpp
-
-    abstractvideosource.h
-    abstractvideosource.cpp
-    mjpegvideosource.h
-    mjpegvideosource.cpp
-    oakcameravideosource.h
-    oakcameravideosource.cpp
-
+    homecontrolcoordinator.h
+    homecontrolcoordinator.cpp
     home_status_presenter.h
     home_status_presenter.cpp
+    homevideopresenter.h
+    homevideopresenter.cpp
 
     map.h
     map.cpp
-
-    mapdocument.h
-    mapdocument.cpp
-
     mapgraphicsview.h
     mapgraphicsview.cpp
-
-    homenetworkworker.h
-    homenetworkworker.cpp
-
-    statusclient.h
-    statusclient.cpp
-
-    chassisclient.h
-    chassisclient.cpp
-
-    videoclient.h
-    videoclient.cpp
-
-    videoframeworker.h
-    videoframeworker.cpp
-
-    routefollower.h
-    routefollower.cpp
-
-    motioncommandarbiter.h
-    motioncommandarbiter.cpp
-
-    routepathfinder.h
-    routepathfinder.cpp
-
-    configmanager.h
-    configmanager.cpp
-
-    statusprotocol.h
-    statusprotocol.cpp
 
     maintenance.h
     maintenance.cpp
@@ -142,11 +191,18 @@ target_link_libraries(Tenco PRIVATE
     Qt6::Network
     Qt6::WebSockets
     Qt6::Sql
+    tenco_config
+    tenco_logging
+    tenco_storage
+    tenco_motion
+    tenco_map_model
+    tenco_network
+    tenco_video
 )
 
 if(TENCO_ENABLE_OAK_CAMERA)
-    target_compile_definitions(Tenco PRIVATE TENCO_ENABLE_OAK_CAMERA)
-    target_link_libraries(Tenco PRIVATE
+    target_compile_definitions(tenco_video PUBLIC TENCO_ENABLE_OAK_CAMERA)
+    target_link_libraries(tenco_video PUBLIC
         ${OpenCV_LIBS}
         depthai::core
     )
@@ -162,15 +218,7 @@ if(TENCO_ABOUT_3D_AVAILABLE)
     )
 endif()
 
-target_include_directories(Tenco PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-
-if(TENCO_ENABLE_WARNINGS)
-    if(MSVC)
-        target_compile_options(Tenco PRIVATE /W4 /permissive- /wd4100 /wd4244 /wd4267)
-    else()
-        target_compile_options(Tenco PRIVATE -Wall -Wextra -Wpedantic)
-    endif()
-endif()
+tenco_configure_target(Tenco)
 
 # Keep a stable runtime output directory for local runs and deployment scripts.
 # Output path: <repo>/../bin

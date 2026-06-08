@@ -12,12 +12,14 @@
 #include <QJsonObject>
 #include <QMutex>
 #include <QMutexLocker>
+#include <QQueue>
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QStandardPaths>
 #include <QTextStream>
 #include <QLoggingCategory>
 #include <QThread>
+#include <QWaitCondition>
 
 #include <cstdio>
 #include <cstdlib>
@@ -36,6 +38,31 @@ QString g_sessionLogPath;
 QString g_auditPath;
 QDateTime g_startTime;
 bool g_initialized = false;
+
+struct QueuedLogLine {
+    enum class Kind {
+        Message,
+        Audit
+    };
+
+    Kind kind = Kind::Message;
+    QtMsgType type = QtInfoMsg;
+    QString line;
+};
+
+class LogWriterThread : public QThread
+{
+public:
+    void run() override;
+};
+
+QMutex g_logQueueMutex;
+QWaitCondition g_logQueueReady;
+QWaitCondition g_logQueueDrained;
+QQueue<QueuedLogLine> g_logQueue;
+LogWriterThread *g_logWriterThread = nullptr;
+bool g_logWriterStop = false;
+bool g_logWriterBusy = false;
 
 QString normalizeLevel(QString level)
 {
@@ -308,25 +335,147 @@ void writeConsole(QtMsgType type, const QString &line)
     fflush(consoleStream);
 }
 
-void tencoMessageHandler(QtMsgType type, const QMessageLogContext &context, const QString &message)
+void writeQueuedLogLineLocked(const QueuedLogLine &entry)
 {
-    QMutexLocker locker(&g_logMutex);
-    if (messageRank(type) < levelRank(g_settings.level) && type != QtFatalMsg) {
+    if (entry.kind == QueuedLogLine::Kind::Audit) {
+        if (!g_settings.auditEnabled || !g_auditFile.isOpen()) {
+            return;
+        }
+        rotateIfNeeded(g_auditFile, g_auditPath, g_settings.auditMaxBackupFiles, g_settings.auditMaxFileBytes);
+        writeLine(g_auditFile, entry.line);
         return;
     }
 
-    const QString line = formatMessageLine(type, context, message);
-    writeConsole(type, line);
-    if (g_settings.fileEnabled) {
-        rotateIfNeeded(g_logFile, g_logPath, g_settings.maxBackupFiles, g_settings.maxFileBytes);
-        rotateIfNeeded(g_sessionLogFile, g_sessionLogPath, g_settings.maxBackupFiles, g_settings.maxFileBytes);
-        writeLine(g_logFile, line);
-        if (g_settings.perSessionFile) {
-            writeLine(g_sessionLogFile, line);
+    if (!g_settings.fileEnabled) {
+        return;
+    }
+    rotateIfNeeded(g_logFile, g_logPath, g_settings.maxBackupFiles, g_settings.maxFileBytes);
+    rotateIfNeeded(g_sessionLogFile, g_sessionLogPath, g_settings.maxBackupFiles, g_settings.maxFileBytes);
+    writeLine(g_logFile, entry.line);
+    if (g_settings.perSessionFile) {
+        writeLine(g_sessionLogFile, entry.line);
+    }
+}
+
+void LogWriterThread::run()
+{
+    while (true) {
+        QQueue<QueuedLogLine> batch;
+        {
+            QMutexLocker queueLocker(&g_logQueueMutex);
+            while (g_logQueue.isEmpty() && !g_logWriterStop) {
+                g_logQueueReady.wait(&g_logQueueMutex);
+            }
+            if (g_logWriterStop && g_logQueue.isEmpty()) {
+                g_logQueueDrained.wakeAll();
+                return;
+            }
+            g_logWriterBusy = true;
+            batch.swap(g_logQueue);
+        }
+
+        {
+            QMutexLocker logLocker(&g_logMutex);
+            while (!batch.isEmpty()) {
+                writeQueuedLogLineLocked(batch.dequeue());
+            }
+        }
+
+        {
+            QMutexLocker queueLocker(&g_logQueueMutex);
+            g_logWriterBusy = false;
+            if (g_logQueue.isEmpty()) {
+                g_logQueueDrained.wakeAll();
+            }
         }
     }
+}
 
+void enqueueLogLine(const QueuedLogLine &entry)
+{
+    {
+        QMutexLocker queueLocker(&g_logQueueMutex);
+        if (!g_logWriterThread) {
+            queueLocker.unlock();
+            QMutexLocker logLocker(&g_logMutex);
+            writeQueuedLogLineLocked(entry);
+            return;
+        }
+        g_logQueue.enqueue(entry);
+        g_logQueueReady.wakeOne();
+    }
+}
+
+void flushLogQueue()
+{
+    QMutexLocker queueLocker(&g_logQueueMutex);
+    while (!g_logQueue.isEmpty() || g_logWriterBusy) {
+        g_logQueueDrained.wait(&g_logQueueMutex, 3000);
+    }
+}
+
+void startLogWriterThread()
+{
+    QMutexLocker queueLocker(&g_logQueueMutex);
+    if (g_logWriterThread) {
+        return;
+    }
+    g_logWriterStop = false;
+    g_logWriterBusy = false;
+    g_logWriterThread = new LogWriterThread;
+    g_logWriterThread->setObjectName(QStringLiteral("TencoLogWriter"));
+    g_logWriterThread->start();
+}
+
+void stopLogWriterThread()
+{
+    LogWriterThread *thread = nullptr;
+    {
+        QMutexLocker queueLocker(&g_logQueueMutex);
+        thread = g_logWriterThread;
+        if (!thread) {
+            return;
+        }
+        g_logWriterStop = true;
+        g_logQueueReady.wakeAll();
+    }
+
+    if (!thread->wait(3000)) {
+        thread->terminate();
+        thread->wait(1000);
+    }
+
+    {
+        QMutexLocker queueLocker(&g_logQueueMutex);
+        g_logWriterThread = nullptr;
+        g_logWriterStop = false;
+        g_logWriterBusy = false;
+        g_logQueue.clear();
+        g_logQueueDrained.wakeAll();
+    }
+    delete thread;
+}
+
+void tencoMessageHandler(QtMsgType type, const QMessageLogContext &context, const QString &message)
+{
+    QString line;
+    bool shouldWriteFile = false;
+    {
+        QMutexLocker locker(&g_logMutex);
+        if (messageRank(type) < levelRank(g_settings.level) && type != QtFatalMsg) {
+            return;
+        }
+
+        line = formatMessageLine(type, context, message);
+        writeConsole(type, line);
+        shouldWriteFile = g_settings.fileEnabled;
+    }
+
+    if (shouldWriteFile) {
+        enqueueLogLine(QueuedLogLine{QueuedLogLine::Kind::Message, type, line});
+    }
     if (type == QtFatalMsg) {
+        flushLogQueue();
         abort();
     }
 }
@@ -455,6 +604,7 @@ void LoggingManager::initialize(const Settings &settings)
         openAppendFile(g_auditFile, g_auditPath);
     }
 
+    startLogWriterThread();
     applyFilterRules(g_settings);
     g_previousHandler = qInstallMessageHandler(tencoMessageHandler);
     g_initialized = true;
@@ -462,6 +612,7 @@ void LoggingManager::initialize(const Settings &settings)
 
 void LoggingManager::reconfigure(const Settings &settings)
 {
+    flushLogQueue();
     QMutexLocker locker(&g_logMutex);
     if (!g_initialized) {
         g_settings = settings;
@@ -496,19 +647,26 @@ void LoggingManager::reconfigure(const Settings &settings)
 
 void LoggingManager::shutdown()
 {
-    QMutexLocker locker(&g_logMutex);
-    if (!g_initialized) {
-        return;
+    {
+        QMutexLocker locker(&g_logMutex);
+        if (!g_initialized) {
+            return;
+        }
+
+        qInstallMessageHandler(g_previousHandler);
+        g_previousHandler = nullptr;
+        g_initialized = false;
     }
 
-    qInstallMessageHandler(g_previousHandler);
-    g_previousHandler = nullptr;
+    flushLogQueue();
+    stopLogWriterThread();
 
-    closeFile(g_logFile);
-    closeFile(g_sessionLogFile);
-    closeFile(g_auditFile);
-
-    g_initialized = false;
+    {
+        QMutexLocker locker(&g_logMutex);
+        closeFile(g_logFile);
+        closeFile(g_sessionLogFile);
+        closeFile(g_auditFile);
+    }
 }
 
 LoggingManager::Settings LoggingManager::currentSettings()
@@ -548,34 +706,43 @@ QString LoggingManager::diagnosticsDirectoryPath()
 
 void LoggingManager::audit(const QString &action, const QString &result, const QMap<QString, QString> &fields)
 {
-    QMutexLocker locker(&g_logMutex);
-    if (!g_settings.auditEnabled || !g_auditFile.isOpen()) {
-        return;
+    QString line;
+    bool shouldQueue = false;
+    {
+        QMutexLocker locker(&g_logMutex);
+        if (!g_settings.auditEnabled) {
+            return;
+        }
+
+        QStringList parts;
+        parts << QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd hh:mm:ss.zzz"));
+        parts << QStringLiteral("[AUDIT]");
+        parts << QStringLiteral("action=%1").arg(action.trimmed());
+        parts << QStringLiteral("result=%1").arg(result.trimmed());
+        parts << QStringLiteral("sid=%1").arg(g_sessionId);
+        for (auto it = fields.cbegin(); it != fields.cend(); ++it) {
+            QString value = it.value();
+            if (value.contains(QLatin1Char(' '))) {
+                value = QStringLiteral("\"%1\"").arg(value);
+            }
+            parts << QStringLiteral("%1=%2").arg(it.key(), value);
+        }
+        line = parts.join(QLatin1Char(' '));
+        if (g_settings.redactSensitiveData) {
+            line = redactSensitiveText(line);
+        }
+        shouldQueue = true;
     }
 
-    QStringList parts;
-    parts << QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd hh:mm:ss.zzz"));
-    parts << QStringLiteral("[AUDIT]");
-    parts << QStringLiteral("action=%1").arg(action.trimmed());
-    parts << QStringLiteral("result=%1").arg(result.trimmed());
-    parts << QStringLiteral("sid=%1").arg(g_sessionId);
-    for (auto it = fields.cbegin(); it != fields.cend(); ++it) {
-        QString value = it.value();
-        if (value.contains(QLatin1Char(' '))) {
-            value = QStringLiteral("\"%1\"").arg(value);
-        }
-        parts << QStringLiteral("%1=%2").arg(it.key(), value);
+    if (shouldQueue) {
+        enqueueLogLine(QueuedLogLine{QueuedLogLine::Kind::Audit, QtInfoMsg, line});
     }
-    QString line = parts.join(QLatin1Char(' '));
-    if (g_settings.redactSensitiveData) {
-        line = redactSensitiveText(line);
-    }
-    rotateIfNeeded(g_auditFile, g_auditPath, g_settings.auditMaxBackupFiles, g_settings.auditMaxFileBytes);
-    writeLine(g_auditFile, line);
 }
 
 QString LoggingManager::exportDiagnostics(const QString &targetDirectory, QString *errorMessage)
 {
+    flushLogQueue();
+
     const QString timestamp = QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_hhmmss_zzz"));
     const QString rootDir = targetDirectory.trimmed().isEmpty()
                                 ? QDir(diagnosticsDirectoryPath()).filePath(QStringLiteral("tenco_diag_%1").arg(timestamp))

@@ -1,5 +1,7 @@
 #include "homenetworkworker.h"
 
+#include "networkpolicy.h"
+
 #include <QNetworkAccessManager>
 #include <QNetworkRequest>
 #include <QNetworkReply>
@@ -90,16 +92,10 @@ void HomeNetworkWorker::triggerFetch()
 
     m_fetchPending = false;
 
-    QNetworkRequest request(m_url);
-    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
-    request.setRawHeader("Connection", "keep-alive");
-    request.setRawHeader("User-Agent", "TencoClient/1.0");
-    if (!m_authToken.isEmpty()) {
-        request.setRawHeader("Authorization", QByteArray("Bearer ") + m_authToken.toUtf8());
-    }
-#if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
-    request.setTransferTimeout(m_requestTimeoutMs);
-#endif
+    QNetworkRequest request = NetworkPolicy::makeJsonRequest(m_url,
+                                                             m_authToken,
+                                                             QByteArrayLiteral("TencoStatusClient/1.0"),
+                                                             m_requestTimeoutMs);
 
     const QByteArray payload = QJsonDocument(m_requests).toJson(QJsonDocument::Compact);
     m_currentReply = m_manager->post(request, payload);
@@ -163,10 +159,9 @@ void HomeNetworkWorker::applyPollingIntervalByHealth(bool success)
     }
 
     ++m_failureCount;
-    const int boundedFailures = qBound(1, m_failureCount, 6);
-    const int factor = 1 << boundedFailures;
-    const qint64 candidate = static_cast<qint64>(m_intervalMs) * factor;
-    const int backoffInterval = static_cast<int>(qMin(candidate, static_cast<qint64>(m_maxBackoffMs)));
+    const int backoffInterval = NetworkPolicy::exponentialBackoffDelayMs(m_intervalMs,
+                                                                         m_maxBackoffMs,
+                                                                         qMax(1, m_failureCount));
 
     if (m_timer->interval() != backoffInterval) {
         m_timer->setInterval(backoffInterval);

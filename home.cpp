@@ -8,7 +8,9 @@
 #include "oakcameravideosource.h"
 #include "routefollower.h"
 #include "motioncommandarbiter.h"
+#include "homecontrolcoordinator.h"
 #include "home_status_presenter.h"
+#include "homevideopresenter.h"
 #include "statusprotocol.h"
 #include "configmanager.h"
 #include "loggingmanager.h"
@@ -98,6 +100,7 @@ Home::Home(Ui::MainWindow *ui, QObject *parent)
     , rebootRemainingSeconds(0)
 {
     initialize();
+    m_videoPresenter = std::make_unique<HomeVideoPresenter>(ui ? ui->videoDisplay : nullptr);
     initializeMotionControl();
     ConfigManager &config = ConfigManager::instance();
 
@@ -239,28 +242,10 @@ void Home::applyRouteFollowerConfig()
 {
     const auto &ctrl = ConfigManager::instance().control();
     if (m_routeFollower) {
-        RouteFollower::ControlParams params;
-        params.maxLinearSpeed = ctrl.maxLinearSpeed;
-        params.maxAngularSpeed = ctrl.maxAngularSpeed;
-        params.arrivalDistanceThreshold = ctrl.arrivalDistanceThreshold;
-        params.arrivalAngleThresholdRad = qDegreesToRadians(ctrl.arrivalAngleThresholdDeg);
-        params.linearGain = ctrl.linearGain;
-        params.angularGain = ctrl.angularGain;
-        params.headingStopThresholdRad = qDegreesToRadians(ctrl.headingStopThresholdDeg);
-        params.headingSlowdownThresholdRad = qDegreesToRadians(ctrl.headingSlowdownThresholdDeg);
-        params.headingSlowdownFactor = ctrl.headingSlowdownFactor;
-        params.nearTargetDistanceMultiplier = ctrl.nearTargetDistanceMultiplier;
-        params.nearTargetSpeedMultiplier = ctrl.nearTargetSpeedMultiplier;
-        params.linearAccelerationLimit = ctrl.linearAccelerationLimit;
-        params.linearDecelerationLimit = ctrl.linearDecelerationLimit;
-        params.angularAccelerationLimit = ctrl.angularAccelerationLimit;
-        params.angularDecelerationLimit = ctrl.angularDecelerationLimit;
-        params.finalAdjustLinearSpeed = ctrl.finalAdjustLinearSpeed;
-        params.finalAdjustAngularSpeed = ctrl.finalAdjustAngularSpeed;
-        m_routeFollower->setControlParams(params);
+        m_routeFollower->setControlParams(HomeControlCoordinator::routeFollowerParamsFromConfig(ctrl));
         m_routeFollower->setUpdateIntervalMs(ctrl.routeFollowerUpdateIntervalMs);
     }
-    m_manualMotionRepeatIntervalMs = qBound(20, ctrl.manualMotionRepeatIntervalMs, 1000);
+    m_manualMotionRepeatIntervalMs = HomeControlCoordinator::boundedManualHeartbeatMs(ctrl);
     if (m_motionArbiter) {
         m_motionArbiter->setHeartbeatIntervalMs(m_manualMotionRepeatIntervalMs);
     }
@@ -340,12 +325,11 @@ void Home::initializeVideoDisplay()
     if (!isVideoDisplayReady()) {
         return;
     }
-    QLabel *videoLabel = ui->videoDisplay;
-    videoLabel->setAlignment(Qt::AlignCenter);
-
     const auto &videoCfg = ConfigManager::instance().video();
-    m_videoScaleContents = videoCfg.scaleContents;
-    videoLabel->setScaledContents(m_videoScaleContents);
+    if (m_videoPresenter) {
+        m_videoPresenter->setLabel(ui->videoDisplay);
+        m_videoPresenter->setScaleContents(videoCfg.scaleContents);
+    }
 
     if (!m_videoSource) {
         if (videoCfg.backend == QStringLiteral("oak_depthai")) {
@@ -671,7 +655,7 @@ void Home::initializeCameraControl()
 
 bool Home::isVideoDisplayReady() const
 {
-    return ui && ui->videoDisplay;
+    return m_videoPresenter && m_videoPresenter->isReady();
 }
 
 bool Home::usesRemoteCameraControl() const
@@ -681,35 +665,16 @@ bool Home::usesRemoteCameraControl() const
 
 void Home::updateVideoPlaceholder(const QString &message)
 {
-    if (!isVideoDisplayReady()) {
-        return;
+    if (m_videoPresenter) {
+        m_videoPresenter->showPlaceholder(message);
     }
-    QLabel *videoLabel = ui->videoDisplay;
-    videoLabel->setScaledContents(m_videoScaleContents);
-    videoLabel->setPixmap(QPixmap());
-    videoLabel->setText(message);
 }
 
 void Home::displayVideoFrame(const QImage &image)
 {
-    if (!isVideoDisplayReady()) {
-        return;
+    if (m_videoPresenter) {
+        m_videoPresenter->showFrame(image);
     }
-    QLabel *videoLabel = ui->videoDisplay;
-    QImage frame = image;
-    if (frame.format() != QImage::Format_RGB32 && frame.format() != QImage::Format_ARGB32) {
-        frame = frame.convertToFormat(QImage::Format_RGB32);
-    }
-    QPixmap pixmap = QPixmap::fromImage(frame);
-    if (pixmap.isNull()) {
-        return;
-    }
-    if (!m_videoScaleContents && !videoLabel->size().isEmpty()) {
-        pixmap = pixmap.scaled(videoLabel->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
-    }
-    videoLabel->setText(QString());
-    videoLabel->setPixmap(pixmap);
-    m_lastVideoFrame = frame;
 }
 
 void Home::updateRecordButtonText(bool remoteRecordingActive)
@@ -747,7 +712,7 @@ void Home::updateRemoteCameraUiState()
         updateVideoPlaceholder(tr("工控机相机服务在线，但相机未连接"));
         return;
     }
-    if (m_lastVideoFrame.isNull()) {
+    if (!m_videoPresenter || m_videoPresenter->lastFrame().isNull()) {
         updateVideoPlaceholder(tr("相机已连接，等待预览画面..."));
     }
 }
@@ -1058,12 +1023,11 @@ void Home::updateManualCommandConfig()
         return;
     }
 
-    MotionCommandArbiter::ManualCommandConfig config;
-    config.linearSpeed = ui && ui->doubleSpinBox ? ui->doubleSpinBox->value() : 0.0;
-    config.angularSpeed = ui && ui->doubleSpinBox_2 ? ui->doubleSpinBox_2->value() : 0.0;
-    config.buttonsEnabled = isManualControlEnabledForButtons();
-    config.keysEnabled = isManualControlEnabledForKeys();
-    m_motionArbiter->setManualCommandConfig(config);
+    m_motionArbiter->setManualCommandConfig(
+        HomeControlCoordinator::manualCommandConfig(ui && ui->doubleSpinBox ? ui->doubleSpinBox->value() : 0.0,
+                                                    ui && ui->doubleSpinBox_2 ? ui->doubleSpinBox_2->value() : 0.0,
+                                                    isManualControlEnabledForButtons(),
+                                                    isManualControlEnabledForKeys()));
 }
 
 // 判断是否需要继续推送前进速度

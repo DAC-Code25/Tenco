@@ -24,6 +24,11 @@
     "routeFollowerUpdateIntervalMs": 100,
     "manualMotionRepeatIntervalMs": 40
   },
+  "routePlanning": {
+    "minEdgeCost": 0.001,
+    "edgePenalty": 0.01,
+    "arcPenalty": 0.05
+  },
   "vehicle": {
     "wheelBaseMeters": 0.58,
     "wheelDiameterMeters": 0.18,

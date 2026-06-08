@@ -1,5 +1,7 @@
 #include "chassisclient.h"
 
+#include "networkpolicy.h"
+
 #include <QAbstractSocket>
 #include <QJsonDocument>
 #include <QNetworkRequest>
@@ -130,9 +132,7 @@ void ChassisClient::openIfPossible()
     m_socket->setProxy(QNetworkProxy::NoProxy);
     qCInfo(lcChassisClient) << "Opening WebSocket to" << m_url << ", attempt" << m_reconnectAttempt;
     QNetworkRequest request(m_url);
-    if (!m_authToken.isEmpty()) {
-        request.setRawHeader("Authorization", QByteArray("Bearer ") + m_authToken.toUtf8());
-    }
+    NetworkPolicy::applyBearerAuthorization(&request, m_authToken);
     m_socket->open(request);
 }
 
@@ -244,9 +244,7 @@ void ChassisClient::attemptReconnect()
 
 int ChassisClient::currentReconnectDelayMs() const
 {
-    const int boundedAttempt = qBound(0, m_reconnectAttempt, 6);
-    const int base = m_reconnectIntervalMs;
-    const int factor = 1 << boundedAttempt;
-    const qint64 candidate = static_cast<qint64>(base) * factor;
-    return static_cast<int>(qMin(candidate, static_cast<qint64>(m_reconnectMaxIntervalMs)));
+    return NetworkPolicy::exponentialBackoffDelayMs(m_reconnectIntervalMs,
+                                                    m_reconnectMaxIntervalMs,
+                                                    m_reconnectAttempt);
 }

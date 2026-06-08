@@ -54,9 +54,22 @@
 对应代码：
 
 - 读取：`ConfigManager::control()`
-- 使用：`Home::Home()` 构造时设置 `RouteFollower::ControlParams`（`home.cpp`）
+- 使用：`HomeControlCoordinator::routeFollowerParamsFromConfig()` 生成 `RouteFollower::ControlParams`
 
-### 3.3 vehicle（车辆参数）
+### 3.3 routePlanning（路径搜索代价模型）
+
+用于 `RoutePathFinder` 的加权最短路代价计算。
+
+- `routePlanning.minEdgeCost`：单边最小代价，避免零长度边导致异常权重
+- `routePlanning.edgePenalty`：每经过一条边的固定惩罚，用于减少碎片化路线
+- `routePlanning.arcPenalty`：圆弧边惩罚，用于现场按车辆能力调整弧线偏好
+
+对应代码：
+
+- 读取：`ConfigManager::routePlanning()`
+- 使用：`MapRoutePlanner::findPathIds()`，由 `Map::findRoutePathIds()` 调用
+
+### 3.4 vehicle（车辆参数）
 
 用于和车辆物理相关的参数（当前更多是预留/可扩展）。
 
@@ -64,7 +77,7 @@
 - `wheelDiameterMeters`
 - `gearReduction`
 
-### 3.4 video（视频流）
+### 3.5 video（视频流）
 
 推荐的生产部署方式是分布式：
 
@@ -184,7 +197,7 @@
 
 OAK/DepthAI 的完整落地方案见 `docs/develop/usb_oak_camera_integration_plan.md`。
 
-### 3.5 network（网络接口）
+### 3.6 network（网络接口）
 
 用于 HTTP/WS 的地址与轮询频率。
 
@@ -199,10 +212,18 @@ OAK/DepthAI 的完整落地方案见 `docs/develop/usb_oak_camera_integration_pl
 
 - 读取：`ConfigManager::network()`
 - 使用：`Home` 初始化 StatusClient / ChassisClient / 其它 HTTP（`home.cpp`）
+- 公共策略：`NetworkPolicy` 统一 JSON request、Bearer Header 和指数退避计算
+
+敏感字段推荐通过环境变量覆盖：
+
+- `TENCO_AUTH_TOKEN`：覆盖 `network.authToken`
+- `TENCO_DATABASE_PASSWORD`：覆盖 `database.password`
+
+这样仓库内配置可以不保存真实 token/password，部署时由运行环境注入。
 
 ---
 
-### 3.6 database（数据存储）
+### 3.7 database（数据存储）
 
 用于控制本地数据库与后续中心数据库连接。当前推荐默认使用 `sqlite`，用于单机离线可用、地图/任务/审计/状态缓存等本地持久化；生产中心化方案见 `docs/develop/database_system_plan.md`。
 
@@ -234,3 +255,14 @@ OAK/DepthAI 的完整落地方案见 `docs/develop/usb_oak_camera_integration_pl
 - 最大：5000ms
 
 这类“边界”属于企业项目里很重要的稳定性手段（避免误配导致 UI 卡死或网络压死）。
+
+## 5. Schema 校验
+
+`ConfigManager` 加载配置时会做基础 schema 校验并记录 `validationWarnings()`：
+
+- 顶层未知字段提示
+- 关键 section 类型校验
+- URL 字段格式校验
+- 常见数字/布尔/字符串字段类型校验
+
+校验警告不会阻止程序启动，后续仍会进入 sanitize 流程做边界裁剪，适合现场容错。

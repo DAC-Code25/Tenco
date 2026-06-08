@@ -40,6 +40,12 @@ public:
         int manualMotionRepeatIntervalMs = 40;
     };
 
+    struct RoutePlanningConfig {
+        double minEdgeCost = 1e-3;
+        double edgePenalty = 0.01;
+        double arcPenalty = 0.05;
+    };
+
     struct VehicleConfig {
         double wheelBaseMeters = 0.6;
         double wheelDiameterMeters = 0.2;
@@ -152,6 +158,7 @@ public:
     struct ConfigSnapshot {
         GeoConfig geo;
         ControlConfig control;
+        RoutePlanningConfig routePlanning;
         VehicleConfig vehicle;
         VideoConfig video;
         NetworkConfig network;
@@ -177,6 +184,7 @@ public:
 
     const GeoConfig &geo() const { return m_geo; }
     const ControlConfig &control() const { return m_control; }
+    const RoutePlanningConfig &routePlanning() const { return m_routePlanning; }
     const VehicleConfig &vehicle() const { return m_vehicle; }
     const VideoConfig &video() const { return m_video; }
     const NetworkConfig &network() const { return m_network; }
@@ -190,6 +198,7 @@ public:
 
     QString configFilePath() const { return m_configPath; }
     bool loadedFromFile() const { return m_loadedFromFile; }
+    QStringList validationWarnings() const { return m_validationWarnings; }
 
 signals:
     void configChanged();
@@ -200,6 +209,8 @@ private:
     void load();
     void loadFromFile(const QString &path);
     void applyJsonObjectToCurrentConfig(const QJsonObject &root);
+    QStringList validateJsonObject(const QJsonObject &root) const;
+    void applyEnvironmentOverrides();
     bool saveToFile(const QString &path, QString *errorMessage = nullptr) const;
     bool copyFileAtomically(const QString &sourcePath, const QString &targetPath, QString *errorMessage = nullptr) const;
     void pruneBackups(int keepCount);
@@ -210,6 +221,7 @@ private:
 
     GeoConfig m_geo;
     ControlConfig m_control;
+    RoutePlanningConfig m_routePlanning;
     VehicleConfig m_vehicle;
     VideoConfig m_video;
     NetworkConfig m_network;
@@ -221,6 +233,7 @@ private:
     double m_metersPerDegLon = 0.0;
     QString m_configPath;
     QString m_configPathOverride;
+    QStringList m_validationWarnings;
     bool m_loaded = false;
     bool m_loadedFromFile = false;
     bool m_startupBackupCreated = false;
