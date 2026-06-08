@@ -57,7 +57,15 @@ void ConfigManagerTest::loadCustomConfigAndSanitize()
                      {QStringLiteral("gatewayBaseUrl"), QStringLiteral(" http://192.168.31.13:18120/ ")},
                      {QStringLiteral("statusPollIntervalMs"), 1},
                      {QStringLiteral("commandTimeoutMs"), 10},
-                     {QStringLiteral("autoRefreshPlanStatus"), false}}}
+                     {QStringLiteral("autoRefreshPlanStatus"), false}}},
+        {QStringLiteral("database"),
+         QJsonObject{{QStringLiteral("backend"), QStringLiteral("bad_backend")},
+                     {QStringLiteral("connectionName"), QStringLiteral(" ")},
+                     {QStringLiteral("busyTimeoutMs"), 1},
+                     {QStringLiteral("cacheSizePages"), 1},
+                     {QStringLiteral("connectTimeoutMs"), 1},
+                     {QStringLiteral("reconnectIntervalMs"), 1},
+                     {QStringLiteral("enableTelemetryTables"), true}}}
     };
 
     file.write(QJsonDocument(root).toJson(QJsonDocument::Compact));
@@ -91,6 +99,15 @@ void ConfigManagerTest::loadCustomConfigAndSanitize()
     QVERIFY(cfg.rowWork().statusPollIntervalMs >= 100);
     QVERIFY(cfg.rowWork().commandTimeoutMs >= 1000);
     QVERIFY(!cfg.rowWork().autoRefreshPlanStatus);
+    QCOMPARE(cfg.database().backend, QStringLiteral("sqlite"));
+    QCOMPARE(cfg.database().connectionName, QStringLiteral("tenco_main"));
+    QVERIFY(cfg.database().useWAL);
+    QVERIFY(cfg.database().foreignKeys);
+    QVERIFY(cfg.database().busyTimeoutMs >= 100);
+    QVERIFY(cfg.database().cacheSizePages >= 64);
+    QVERIFY(cfg.database().connectTimeoutMs >= 500);
+    QVERIFY(cfg.database().reconnectIntervalMs >= 500);
+    QVERIFY(cfg.database().enableTelemetryTables);
 
     cfg.setConfigFilePath(QString());
 }

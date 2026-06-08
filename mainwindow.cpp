@@ -262,6 +262,9 @@ void MainWindow::changeEvent(QEvent *event) //监听窗口状态变化 同步改
             if (!fangdaDefaultIcon.isNull()) {
                 ui->fangda->setIcon(fangdaDefaultIcon);
             }
+            if (homePage) {
+                homePage->stopMotionForSafety(QStringLiteral("window_minimized"));
+            }
         } else if (state.testFlag(Qt::WindowMaximized) || state.testFlag(Qt::WindowFullScreen)) {
             if (!fangdaRestoreIcon.isNull()) {
                 ui->fangda->setIcon(fangdaRestoreIcon);
@@ -271,6 +274,10 @@ void MainWindow::changeEvent(QEvent *event) //监听窗口状态变化 同步改
                 ui->fangda->setIcon(fangdaDefaultIcon);
             }
         }
+    }
+
+    if (event->type() == QEvent::ActivationChange && !isActiveWindow() && homePage) {
+        homePage->stopMotionForSafety(QStringLiteral("window_deactivated"));
     }
 }
 

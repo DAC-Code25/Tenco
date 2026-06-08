@@ -128,6 +128,27 @@ public:
         QStringList categoryRules;
     };
 
+    struct DatabaseConfig {
+        QString backend = QStringLiteral("sqlite");
+        QString connectionName = QStringLiteral("tenco_main");
+        QString sqliteFilePath;
+        QString host;
+        int port = 5432;
+        QString databaseName;
+        QString userName;
+        QString password;
+        bool useWAL = true;
+        bool foreignKeys = true;
+        bool synchronousNormal = true;
+        int busyTimeoutMs = 5000;
+        int cacheSizePages = 2000;
+        int connectTimeoutMs = 5000;
+        int reconnectIntervalMs = 3000;
+        bool enableTelemetryTables = true;
+        bool enableLocalCache = true;
+        bool enableAuditSync = true;
+    };
+
     struct ConfigSnapshot {
         GeoConfig geo;
         ControlConfig control;
@@ -137,6 +158,7 @@ public:
         RowWorkConfig rowWork;
         GimbalConfig gimbal;
         LoggingConfig logging;
+        DatabaseConfig database;
     };
 
     static ConfigManager &instance();
@@ -161,6 +183,7 @@ public:
     const RowWorkConfig &rowWork() const { return m_rowWork; }
     const GimbalConfig &gimbal() const { return m_gimbal; }
     const LoggingConfig &logging() const { return m_logging; }
+    const DatabaseConfig &database() const { return m_database; }
 
     QPointF geoToLocal(double latitudeDeg, double longitudeDeg) const;
     void localToGeo(const QPointF &localPoint, double &latitudeDeg, double &longitudeDeg) const;
@@ -193,6 +216,7 @@ private:
     RowWorkConfig m_rowWork;
     GimbalConfig m_gimbal;
     LoggingConfig m_logging;
+    DatabaseConfig m_database;
     double m_metersPerDegLat = 0.0;
     double m_metersPerDegLon = 0.0;
     QString m_configPath;

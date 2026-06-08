@@ -6,6 +6,7 @@
 #include "rowworkclient.h"
 #include "ui_mainwindow.h"
 #include "configmanager.h"
+#include "loggingmanager.h"
 
 #include <QAbstractItemView>
 #include <QCheckBox>
@@ -1178,21 +1179,35 @@ void Map::handleRouteStart()
 {
     if (m_hasRowWorkStatus && m_rowWorkStatus.isActive() && m_rowWorkStatus.state != QStringLiteral("PlanReady")) {
         QMessageBox::warning(m_mapPage, tr("发送路线"), tr("当前直线作业正在运行，请先停止后再发送普通路线"));
+        LoggingManager::audit(QStringLiteral("route.start"),
+                              QStringLiteral("rejected"),
+                              {{QStringLiteral("reason"), QStringLiteral("row_work_active")},
+                               {QStringLiteral("rowWorkState"), m_rowWorkStatus.state}});
         return;
     }
 
     if (m_routeQueue.isEmpty()) {
         QMessageBox::information(m_mapPage, tr("发送路线"), tr("请先添加需要发送的路线"));
+        LoggingManager::audit(QStringLiteral("route.start"),
+                              QStringLiteral("rejected"),
+                              {{QStringLiteral("reason"), QStringLiteral("empty_queue")}});
         return;
     }
 
     if (!isRouteQueueContinuous()) {
         QMessageBox::warning(m_mapPage, tr("发送路线"), tr("路线不连续，请检查起止点"));
+        LoggingManager::audit(QStringLiteral("route.start"),
+                              QStringLiteral("rejected"),
+                              {{QStringLiteral("reason"), QStringLiteral("discontinuous_queue")},
+                               {QStringLiteral("segments"), QString::number(m_routeQueue.size())}});
         return;
     }
 
     if (!m_vehicleCurrentPointId.has_value()) {
         QMessageBox::warning(m_mapPage, tr("发送路线"), tr("无法确定小车当前所在点，请先定位"));
+        LoggingManager::audit(QStringLiteral("route.start"),
+                              QStringLiteral("rejected"),
+                              {{QStringLiteral("reason"), QStringLiteral("unknown_vehicle_point")}});
         return;
     }
 
@@ -1200,10 +1215,18 @@ void Map::handleRouteStart()
     if (m_vehicleCurrentPointId.value() != requiredStart) {
         QMessageBox::warning(m_mapPage, tr("发送路线"),
                              tr("首段路线起点为点%1，请先将小车定位到该点").arg(requiredStart));
+        LoggingManager::audit(QStringLiteral("route.start"),
+                              QStringLiteral("rejected"),
+                              {{QStringLiteral("reason"), QStringLiteral("start_point_mismatch")},
+                               {QStringLiteral("currentPoint"), QString::number(m_vehicleCurrentPointId.value())},
+                               {QStringLiteral("requiredStart"), QString::number(requiredStart)}});
         return;
     }
 
     if (m_waitingForSegmentCompletion) {
+        LoggingManager::audit(QStringLiteral("route.start"),
+                              QStringLiteral("rejected"),
+                              {{QStringLiteral("reason"), QStringLiteral("segment_running")}});
         return;
     }
 
@@ -1214,12 +1237,20 @@ void Map::handleRouteStart()
     m_pauseRequested = false;
     resetRouteProgress();
     m_activeRouteIndex = 0;
+    LoggingManager::audit(QStringLiteral("route.start"),
+                          QStringLiteral("accepted"),
+                          {{QStringLiteral("segments"), QString::number(m_routeQueue.size())},
+                           {QStringLiteral("startPoint"), QString::number(requiredStart)},
+                           {QStringLiteral("loop"), m_routeLoopCheck && m_routeLoopCheck->isChecked() ? QStringLiteral("true") : QStringLiteral("false")}});
     dispatchNextEdge();
 }
 
 void Map::handleRoutePause()
 {
     if (m_routeQueue.isEmpty()) {
+        LoggingManager::audit(QStringLiteral("route.pause"),
+                              QStringLiteral("rejected"),
+                              {{QStringLiteral("reason"), QStringLiteral("empty_queue")}});
         return;
     }
 
@@ -1229,18 +1260,29 @@ void Map::handleRoutePause()
     }
     updateRouteControlState();
     emit routeExecutionPauseRequested();
+    LoggingManager::audit(QStringLiteral("route.pause"),
+                          QStringLiteral("accepted"),
+                          {{QStringLiteral("activeIndex"), QString::number(m_activeRouteIndex)},
+                           {QStringLiteral("segments"), QString::number(m_routeQueue.size())}});
 }
 
 void Map::handleRouteResume()
 {
     if (m_routeQueue.isEmpty()) {
         QMessageBox::information(m_mapPage, tr("恢复路线"), tr("路线队列为空"));
+        LoggingManager::audit(QStringLiteral("route.resume"),
+                              QStringLiteral("rejected"),
+                              {{QStringLiteral("reason"), QStringLiteral("empty_queue")}});
         return;
     }
 
     m_pauseRequested = false;
     updateRouteControlState();
     emit routeExecutionResumeRequested();
+    LoggingManager::audit(QStringLiteral("route.resume"),
+                          QStringLiteral("accepted"),
+                          {{QStringLiteral("activeIndex"), QString::number(m_activeRouteIndex)},
+                           {QStringLiteral("segments"), QString::number(m_routeQueue.size())}});
 
     if (!m_waitingForSegmentCompletion) {
         dispatchNextEdge();
@@ -1249,6 +1291,8 @@ void Map::handleRouteResume()
 
 void Map::handleRouteStop()
 {
+    const int segmentCount = m_routeQueue.size();
+    const int activeIndex = m_activeRouteIndex;
     if (m_routeTimer) {
         m_routeTimer->stop();
     }
@@ -1261,6 +1305,10 @@ void Map::handleRouteStop()
     updateRouteControlState();
     setRouteStatusText(tr("已停止并清空路线"), true);
     emit routeExecutionCancelled();
+    LoggingManager::audit(QStringLiteral("route.stop"),
+                          QStringLiteral("accepted"),
+                          {{QStringLiteral("activeIndex"), QString::number(activeIndex)},
+                           {QStringLiteral("segments"), QString::number(segmentCount)}});
 }
 
 void Map::handleRouteTimerTick()
@@ -1332,11 +1380,22 @@ void Map::handleLoadMap()
     const QString filePath = QFileDialog::getOpenFileName(m_mapPage, tr("加载地图"), startDir,
                                                           tr("地图文件 (*.json);;所有文件 (*.*)"));
     if (filePath.isEmpty()) {
+        LoggingManager::audit(QStringLiteral("map.load"),
+                              QStringLiteral("cancelled"));
         return;
     }
 
     if (loadMapFromFile(filePath)) {
         m_lastLoadDirectory = QFileInfo(filePath).absolutePath();
+        LoggingManager::audit(QStringLiteral("map.load"),
+                              QStringLiteral("success"),
+                              {{QStringLiteral("path"), filePath},
+                               {QStringLiteral("points"), QString::number(m_points.size())},
+                               {QStringLiteral("paths"), QString::number(m_paths.size())}});
+    } else {
+        LoggingManager::audit(QStringLiteral("map.load"),
+                              QStringLiteral("failed"),
+                              {{QStringLiteral("path"), filePath}});
     }
 }
 
@@ -1358,13 +1417,21 @@ void Map::handleNewMap()
 
         if (dialog.clickedButton() == saveButton) {
             if (!saveCurrentMapInteractive(true)) {
+                LoggingManager::audit(QStringLiteral("map.new"),
+                                      QStringLiteral("cancelled"),
+                                      {{QStringLiteral("reason"), QStringLiteral("save_failed_or_cancelled")}});
                 return;
             }
         } else if (dialog.clickedButton() != discardButton) {
+            LoggingManager::audit(QStringLiteral("map.new"),
+                                  QStringLiteral("cancelled"));
             return;
         }
 
         resetToBlankMap();
+        LoggingManager::audit(QStringLiteral("map.new"),
+                              QStringLiteral("success"),
+                              {{QStringLiteral("previous"), QStringLiteral("unsaved_blank")}});
         return;
     }
 
@@ -1378,13 +1445,22 @@ void Map::handleNewMap()
 
     if (dialog.clickedButton() == saveButton) {
         if (!saveCurrentMapInteractive(false)) {
+            LoggingManager::audit(QStringLiteral("map.new"),
+                                  QStringLiteral("cancelled"),
+                                  {{QStringLiteral("reason"), QStringLiteral("save_failed_or_cancelled")}});
             return;
         }
     } else if (dialog.clickedButton() != discardButton) {
+        LoggingManager::audit(QStringLiteral("map.new"),
+                              QStringLiteral("cancelled"));
         return;
     }
 
+    const QString previousPath = m_currentMapFilePath;
     resetToBlankMap();
+    LoggingManager::audit(QStringLiteral("map.new"),
+                          QStringLiteral("success"),
+                          {{QStringLiteral("previous"), previousPath}});
 }
 
 void Map::handleSaveMap()
@@ -3817,6 +3893,7 @@ void Map::resetToBlankMap()
 bool Map::saveCurrentMapInteractive(bool forceChooseFile)
 {
     QString filePath = m_currentMapFilePath;
+    const bool saveAs = forceChooseFile || filePath.isEmpty();
     if (forceChooseFile || filePath.isEmpty()) {
         const QString startDir = !m_lastSaveDirectory.isEmpty() ? m_lastSaveDirectory
                                   : (!m_currentMapFilePath.isEmpty() ? QFileInfo(m_currentMapFilePath).absolutePath()
@@ -3826,11 +3903,18 @@ bool Map::saveCurrentMapInteractive(bool forceChooseFile)
         filePath = QFileDialog::getSaveFileName(m_mapPage, tr("保存地图"), startDir,
                                                 tr("地图文件 (*.json);;所有文件 (*.*)"));
         if (filePath.isEmpty()) {
+            LoggingManager::audit(QStringLiteral("map.save"),
+                                  QStringLiteral("cancelled"),
+                                  {{QStringLiteral("mode"), saveAs ? QStringLiteral("save_as") : QStringLiteral("save")}});
             return false;
         }
     }
 
     if (!saveMapToFile(filePath)) {
+        LoggingManager::audit(QStringLiteral("map.save"),
+                              QStringLiteral("failed"),
+                              {{QStringLiteral("mode"), saveAs ? QStringLiteral("save_as") : QStringLiteral("save")},
+                               {QStringLiteral("path"), filePath}});
         return false;
     }
 
@@ -3839,6 +3923,12 @@ bool Map::saveCurrentMapInteractive(bool forceChooseFile)
     m_lastSaveDirectory = QFileInfo(filePath).absolutePath();
     updateMapNameDisplay();
     syncCommittedMapState();
+    LoggingManager::audit(QStringLiteral("map.save"),
+                          QStringLiteral("success"),
+                          {{QStringLiteral("mode"), saveAs ? QStringLiteral("save_as") : QStringLiteral("save")},
+                           {QStringLiteral("path"), filePath},
+                           {QStringLiteral("points"), QString::number(m_points.size())},
+                           {QStringLiteral("paths"), QString::number(m_paths.size())}});
     return true;
 }
 
@@ -4219,6 +4309,11 @@ void Map::connectRowWorkClientSignals()
         m_rowWorkStatusDirty = false;
         setRowWorkStatusText(message.isEmpty() ? tr("作业计划已下发") : message);
         refreshRowWorkUi();
+        LoggingManager::audit(QStringLiteral("rowwork.plan_upload"),
+                              QStringLiteral("success"),
+                              {{QStringLiteral("planId"), m_rowWorkPlan.planId},
+                               {QStringLiteral("version"), QString::number(m_rowWorkPlan.version)},
+                               {QStringLiteral("checkpoints"), QString::number(m_rowWorkPlan.checkpoints.size())}});
         if (m_rowWorkPendingStartAfterUpload && m_rowWorkClient) {
             m_rowWorkPendingStartAfterUpload = false;
             m_rowWorkClient->startRowWork();
@@ -4232,6 +4327,12 @@ void Map::connectRowWorkClientSignals()
         }
         const QString text = message.isEmpty() ? tr("直线作业操作成功：%1").arg(action) : message;
         setRowWorkStatusText(text);
+        LoggingManager::audit(QStringLiteral("rowwork.action"),
+                              QStringLiteral("success"),
+                              {{QStringLiteral("action"), action},
+                               {QStringLiteral("message"), message},
+                               {QStringLiteral("planId"), m_rowWorkPlan.planId},
+                               {QStringLiteral("version"), QString::number(m_rowWorkPlan.version)}});
         if (m_rowWorkClient) {
             m_rowWorkClient->requestStatus();
         }
@@ -4240,6 +4341,13 @@ void Map::connectRowWorkClientSignals()
         m_rowWorkPendingCaptureTarget = RowWorkPendingCaptureTarget::None;
         m_rowWorkPendingStartAfterUpload = false;
         setRowWorkStatusText(tr("直线作业操作失败（%1）：%2").arg(operation, message), true);
+        LoggingManager::audit(operation == QStringLiteral("upload_plan") ? QStringLiteral("rowwork.plan_upload")
+                                                                         : QStringLiteral("rowwork.action"),
+                              QStringLiteral("failed"),
+                              {{QStringLiteral("action"), operation},
+                               {QStringLiteral("message"), message},
+                               {QStringLiteral("planId"), m_rowWorkPlan.planId},
+                               {QStringLiteral("version"), QString::number(m_rowWorkPlan.version)}});
         refreshRowWorkUi();
     });
     connect(m_rowWorkClient, &RowWorkClient::busyChanged, this, [this](bool) {
@@ -4746,10 +4854,18 @@ bool Map::uploadRowWorkPlanIfNeeded(bool forceUpload)
 {
     if (!m_rowWorkClient || !m_rowWorkClient->isConfigured()) {
         setRowWorkStatusText(tr("未配置直线作业服务地址"), true);
+        LoggingManager::audit(QStringLiteral("rowwork.plan_upload"),
+                              QStringLiteral("rejected"),
+                              {{QStringLiteral("reason"), QStringLiteral("not_configured")},
+                               {QStringLiteral("force"), forceUpload ? QStringLiteral("true") : QStringLiteral("false")}});
         return false;
     }
     if (!hasRowWorkLine()) {
         setRowWorkStatusText(tr("请先完成 A/B 示教"), true);
+        LoggingManager::audit(QStringLiteral("rowwork.plan_upload"),
+                              QStringLiteral("rejected"),
+                              {{QStringLiteral("reason"), QStringLiteral("missing_start_or_end_pose")},
+                               {QStringLiteral("force"), forceUpload ? QStringLiteral("true") : QStringLiteral("false")}});
         return false;
     }
 
@@ -4766,6 +4882,11 @@ bool Map::uploadRowWorkPlanIfNeeded(bool forceUpload)
     m_rowWorkPlan.params.loopEnabled = m_rowWorkLoopCheck ? m_rowWorkLoopCheck->isChecked() : m_rowWorkPlan.params.loopEnabled;
 
     if (!forceUpload && !m_rowWorkStatusDirty && rowWorkPlanMatchesStatus()) {
+        LoggingManager::audit(QStringLiteral("rowwork.plan_upload"),
+                              QStringLiteral("skipped"),
+                              {{QStringLiteral("reason"), QStringLiteral("already_synced")},
+                               {QStringLiteral("planId"), m_rowWorkPlan.planId},
+                               {QStringLiteral("version"), QString::number(m_rowWorkPlan.version)}});
         return true;
     }
 
@@ -4776,6 +4897,12 @@ bool Map::uploadRowWorkPlanIfNeeded(bool forceUpload)
         m_rowWorkPlan.frameId = QStringLiteral("map");
     }
 
+    LoggingManager::audit(QStringLiteral("rowwork.plan_upload"),
+                          QStringLiteral("accepted"),
+                          {{QStringLiteral("force"), forceUpload ? QStringLiteral("true") : QStringLiteral("false")},
+                           {QStringLiteral("planId"), m_rowWorkPlan.planId},
+                           {QStringLiteral("version"), QString::number(m_rowWorkPlan.version)},
+                           {QStringLiteral("checkpoints"), QString::number(m_rowWorkPlan.checkpoints.size())}});
     m_rowWorkClient->uploadPlan(m_rowWorkPlan);
     return false;
 }
@@ -5369,8 +5496,15 @@ void Map::handleRowWorkStart()
 {
     if (!m_rowWorkClient || !m_rowWorkClient->isConfigured()) {
         setRowWorkStatusText(tr("未配置直线作业服务地址"), true);
+        LoggingManager::audit(QStringLiteral("rowwork.start"),
+                              QStringLiteral("rejected"),
+                              {{QStringLiteral("reason"), QStringLiteral("not_configured")}});
         return;
     }
+    LoggingManager::audit(QStringLiteral("rowwork.start"),
+                          QStringLiteral("accepted"),
+                          {{QStringLiteral("planId"), m_rowWorkPlan.planId},
+                           {QStringLiteral("version"), QString::number(m_rowWorkPlan.version)}});
     emit rowWorkAutoStartRequested();
     m_rowWorkPendingStartAfterUpload = true;
     if (uploadRowWorkPlanIfNeeded(false)) {
@@ -5382,21 +5516,42 @@ void Map::handleRowWorkStart()
 void Map::handleRowWorkPause()
 {
     if (m_rowWorkClient) {
+        LoggingManager::audit(QStringLiteral("rowwork.pause"),
+                              QStringLiteral("accepted"),
+                              {{QStringLiteral("state"), m_hasRowWorkStatus ? m_rowWorkStatus.state : QStringLiteral("unknown")}});
         m_rowWorkClient->pauseRowWork();
+    } else {
+        LoggingManager::audit(QStringLiteral("rowwork.pause"),
+                              QStringLiteral("rejected"),
+                              {{QStringLiteral("reason"), QStringLiteral("client_unavailable")}});
     }
 }
 
 void Map::handleRowWorkResume()
 {
     if (m_rowWorkClient) {
+        LoggingManager::audit(QStringLiteral("rowwork.resume"),
+                              QStringLiteral("accepted"),
+                              {{QStringLiteral("state"), m_hasRowWorkStatus ? m_rowWorkStatus.state : QStringLiteral("unknown")}});
         m_rowWorkClient->resumeRowWork();
+    } else {
+        LoggingManager::audit(QStringLiteral("rowwork.resume"),
+                              QStringLiteral("rejected"),
+                              {{QStringLiteral("reason"), QStringLiteral("client_unavailable")}});
     }
 }
 
 void Map::handleRowWorkStop()
 {
     if (m_rowWorkClient) {
+        LoggingManager::audit(QStringLiteral("rowwork.stop"),
+                              QStringLiteral("accepted"),
+                              {{QStringLiteral("state"), m_hasRowWorkStatus ? m_rowWorkStatus.state : QStringLiteral("unknown")}});
         m_rowWorkClient->stopRowWork();
+    } else {
+        LoggingManager::audit(QStringLiteral("rowwork.stop"),
+                              QStringLiteral("rejected"),
+                              {{QStringLiteral("reason"), QStringLiteral("client_unavailable")}});
     }
     emit rowWorkAutoStopRequested();
 }

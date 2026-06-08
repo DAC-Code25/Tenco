@@ -58,6 +58,11 @@
 
 ## 4. 底盘控制（WebSocket）
 
+- `motioncommandarbiter.h/.cpp`
+  - UI 无关的运动命令安全仲裁层
+  - 汇总按钮、键盘和路线跟随输出，作为底盘 `cmd_vel` 的唯一速度出口
+  - 统一手动心跳、输入释放零速、急停、路线取消、断连停车、失焦停车 reason 与单测覆盖
+
 - `chassisclient.h/.cpp`
   - WebSocket 连接、自动重连、NoProxy
   - 协议封装：

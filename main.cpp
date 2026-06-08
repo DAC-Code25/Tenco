@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "databasemanager.h"
 #include "loggingmanager.h"
 #include "configmanager.h"
 
@@ -69,11 +70,20 @@ int main(int argc, char *argv[])
     QObject::connect(&ConfigManager::instance(), &ConfigManager::configChanged, []() {
         LoggingManager::reconfigure(loggingSettingsFromConfig());
         LoggingManager::audit(QStringLiteral("config.reload"), QStringLiteral("success"));
+        QString dbError;
+        if (!DatabaseManager::instance().initialize(ConfigManager::instance().database(), &dbError)) {
+            qCWarning(lcMain) << "Database reinitialize failed:" << dbError;
+        }
     });
 
     QString backupError;
     if (!ConfigManager::instance().createStartupBackup(&backupError)) {
         qCWarning(lcMain) << "Create startup config backup failed:" << backupError;
+    }
+
+    QString dbError;
+    if (!DatabaseManager::instance().initialize(ConfigManager::instance().database(), &dbError)) {
+        qCWarning(lcMain) << "Database initialization failed:" << dbError;
     }
 
     QApplication::setWindowIcon(QIcon(":/icon.ico"));
@@ -82,6 +92,7 @@ int main(int argc, char *argv[])
 
     w.show();
     const int code = a.exec();
+    DatabaseManager::instance().shutdown();
     LoggingManager::shutdown();
     return code;
 }

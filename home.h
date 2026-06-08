@@ -20,6 +20,7 @@ class CameraControlClient;
 class StatusClient;
 class ChassisClient;
 class RouteFollower;
+class MotionCommandArbiter;
 class HomeStatusPresenter;
 
 namespace Ui {
@@ -45,6 +46,7 @@ public slots:
     void followRouteSegment(int fromPointId, int toPointId, const QList<QPointF> &polyline, double startTheta, double endTheta);
     void handleRouteQueueCompleted();
     void cancelRouteExecution();
+    void stopMotionForSafety(const QString &reason);
 
 private slots:
     void applyRuntimeConfig();
@@ -87,7 +89,7 @@ private:
 
     void initialize();
     void setupImageSwitches();
-    void initializeMotionTimers();
+    void initializeMotionControl();
     void applyRouteFollowerConfig();
     void applyStatusClientConfig();
     void applyChassisClientConfig();
@@ -101,11 +103,7 @@ private:
 
     bool isManualControlEnabledForButtons() const;
     bool isManualControlEnabledForKeys() const;
-
-    void updateForwardTimer();
-    void updateBackwardTimer();
-    void updateTurnLeftTimer();
-    void updateTurnRightTimer();
+    void updateManualCommandConfig();
 
     bool shouldSendForward() const;
     bool shouldSendBackward() const;
@@ -113,10 +111,6 @@ private:
     bool shouldSendTurnRight() const;
 
     void sendVelocityCommand(double xVel, double thetaVel);
-    void sendForwardCommand();
-    void sendBackwardCommand();
-    void sendTurnLeftCommand();
-    void sendTurnRightCommand();
     void startRecording();
     void stopRecordingAndSave();
     bool ensureSaveDirectorySelected(QWidget *parentForDialog);
@@ -143,10 +137,6 @@ private:
     void updateGimbalKeyboardMotion();
 
     QTimer *restartCheckTimer;
-    QTimer *forwardRepeatTimer;
-    QTimer *backwardRepeatTimer;
-    QTimer *turnLeftRepeatTimer;
-    QTimer *turnRightRepeatTimer;
     QTimer *rebootCountdownTimer;
     QTimer *cameraStatusTimer;
     QTimer *gimbalSafetyStopTimer;
@@ -159,6 +149,7 @@ private:
     CameraControlClient *m_cameraControlClient = nullptr;
     GimbalControlClient *m_gimbalControlClient = nullptr;
     RouteFollower *m_routeFollower = nullptr;
+    MotionCommandArbiter *m_motionArbiter = nullptr;
     std::unique_ptr<HomeStatusPresenter> m_statusPresenter;
 
     QString m_recordFilePath;

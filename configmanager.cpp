@@ -11,6 +11,7 @@
 #include <QLoggingCategory>
 #include <QDateTime>
 #include <QStringList>
+#include <QUrl>
 #include <QtGlobal>
 #include <QtMath>
 #include <utility>
@@ -56,6 +57,14 @@ constexpr qint64 kDefaultLogMaxFileBytes = 5 * 1024 * 1024;
 constexpr qint64 kMinLogMaxFileBytes = 256 * 1024;
 constexpr qint64 kMaxLogMaxFileBytes = 256 * 1024 * 1024;
 constexpr int kDefaultLogMaxBackupFiles = 10;
+constexpr const char *kDefaultDatabaseBackend = "sqlite";
+constexpr const char *kDefaultDatabaseConnectionName = "tenco_main";
+constexpr const char *kDefaultDatabaseName = "tenco";
+constexpr int kDefaultDatabasePort = 5432;
+constexpr int kDefaultDatabaseBusyTimeoutMs = 5000;
+constexpr int kDefaultDatabaseCacheSizePages = 2000;
+constexpr int kDefaultDatabaseConnectTimeoutMs = 5000;
+constexpr int kDefaultDatabaseReconnectIntervalMs = 3000;
 constexpr int kMaxConfigBackups = 10;
 
 QString defaultConfigPath()
@@ -116,6 +125,7 @@ ConfigManager::ConfigSnapshot ConfigManager::snapshot() const
     snap.rowWork = m_rowWork;
     snap.gimbal = m_gimbal;
     snap.logging = m_logging;
+    snap.database = m_database;
     return snap;
 }
 
@@ -136,6 +146,7 @@ bool ConfigManager::saveSnapshot(const ConfigSnapshot &snapshot, QString *errorM
     m_rowWork = snapshot.rowWork;
     m_gimbal = snapshot.gimbal;
     m_logging = snapshot.logging;
+    m_database = snapshot.database;
     sanitizeConfig();
     updateCachedScales();
 
@@ -151,6 +162,7 @@ bool ConfigManager::saveSnapshot(const ConfigSnapshot &snapshot, QString *errorM
         m_rowWork = oldSnapshot.rowWork;
         m_gimbal = oldSnapshot.gimbal;
         m_logging = oldSnapshot.logging;
+        m_database = oldSnapshot.database;
         m_configPath = oldPath;
         m_loaded = oldLoaded;
         m_loadedFromFile = oldLoadedFromFile;
@@ -173,6 +185,7 @@ bool ConfigManager::saveSnapshot(const ConfigSnapshot &snapshot, QString *errorM
         m_rowWork = oldSnapshot.rowWork;
         m_gimbal = oldSnapshot.gimbal;
         m_logging = oldSnapshot.logging;
+        m_database = oldSnapshot.database;
         m_configPath = oldPath;
         m_loaded = oldLoaded;
         m_loadedFromFile = oldLoadedFromFile;
@@ -296,6 +309,7 @@ bool ConfigManager::loadSnapshotFromFile(const QString &path, ConfigSnapshot *sn
     m_rowWork = oldSnapshot.rowWork;
     m_gimbal = oldSnapshot.gimbal;
     m_logging = oldSnapshot.logging;
+    m_database = oldSnapshot.database;
     m_metersPerDegLat = oldMetersPerDegLat;
     m_metersPerDegLon = oldMetersPerDegLon;
     return true;
@@ -529,6 +543,38 @@ void ConfigManager::applyJsonObjectToCurrentConfig(const QJsonObject &root)
             }
         }
     }
+
+    if (const QJsonObject databaseObj = root.value(QStringLiteral("database")).toObject(); !databaseObj.isEmpty()) {
+        m_database.backend = databaseObj.value(QStringLiteral("backend")).toString(m_database.backend).trimmed().toLower();
+        m_database.connectionName =
+            databaseObj.value(QStringLiteral("connectionName")).toString(m_database.connectionName).trimmed();
+        m_database.sqliteFilePath =
+            databaseObj.value(QStringLiteral("sqliteFilePath")).toString(m_database.sqliteFilePath).trimmed();
+        m_database.host = databaseObj.value(QStringLiteral("host")).toString(m_database.host).trimmed();
+        m_database.port = databaseObj.value(QStringLiteral("port")).toInt(m_database.port);
+        m_database.databaseName =
+            databaseObj.value(QStringLiteral("databaseName")).toString(m_database.databaseName).trimmed();
+        m_database.userName = databaseObj.value(QStringLiteral("userName")).toString(m_database.userName).trimmed();
+        m_database.password = databaseObj.value(QStringLiteral("password")).toString(m_database.password);
+        m_database.useWAL = databaseObj.value(QStringLiteral("useWAL")).toBool(m_database.useWAL);
+        m_database.foreignKeys = databaseObj.value(QStringLiteral("foreignKeys")).toBool(m_database.foreignKeys);
+        m_database.synchronousNormal =
+            databaseObj.value(QStringLiteral("synchronousNormal")).toBool(m_database.synchronousNormal);
+        m_database.busyTimeoutMs =
+            databaseObj.value(QStringLiteral("busyTimeoutMs")).toInt(m_database.busyTimeoutMs);
+        m_database.cacheSizePages =
+            databaseObj.value(QStringLiteral("cacheSizePages")).toInt(m_database.cacheSizePages);
+        m_database.connectTimeoutMs =
+            databaseObj.value(QStringLiteral("connectTimeoutMs")).toInt(m_database.connectTimeoutMs);
+        m_database.reconnectIntervalMs =
+            databaseObj.value(QStringLiteral("reconnectIntervalMs")).toInt(m_database.reconnectIntervalMs);
+        m_database.enableTelemetryTables =
+            databaseObj.value(QStringLiteral("enableTelemetryTables")).toBool(m_database.enableTelemetryTables);
+        m_database.enableLocalCache =
+            databaseObj.value(QStringLiteral("enableLocalCache")).toBool(m_database.enableLocalCache);
+        m_database.enableAuditSync =
+            databaseObj.value(QStringLiteral("enableAuditSync")).toBool(m_database.enableAuditSync);
+    }
 }
 
 bool ConfigManager::saveToFile(const QString &path, QString *errorMessage) const
@@ -747,6 +793,28 @@ QJsonObject ConfigManager::toJsonObject() const
                     {QStringLiteral("categoryRules"), categoryRules},
                 });
 
+    root.insert(QStringLiteral("database"),
+                QJsonObject{
+                    {QStringLiteral("backend"), m_database.backend},
+                    {QStringLiteral("connectionName"), m_database.connectionName},
+                    {QStringLiteral("sqliteFilePath"), m_database.sqliteFilePath},
+                    {QStringLiteral("host"), m_database.host},
+                    {QStringLiteral("port"), m_database.port},
+                    {QStringLiteral("databaseName"), m_database.databaseName},
+                    {QStringLiteral("userName"), m_database.userName},
+                    {QStringLiteral("password"), m_database.password},
+                    {QStringLiteral("useWAL"), m_database.useWAL},
+                    {QStringLiteral("foreignKeys"), m_database.foreignKeys},
+                    {QStringLiteral("synchronousNormal"), m_database.synchronousNormal},
+                    {QStringLiteral("busyTimeoutMs"), m_database.busyTimeoutMs},
+                    {QStringLiteral("cacheSizePages"), m_database.cacheSizePages},
+                    {QStringLiteral("connectTimeoutMs"), m_database.connectTimeoutMs},
+                    {QStringLiteral("reconnectIntervalMs"), m_database.reconnectIntervalMs},
+                    {QStringLiteral("enableTelemetryTables"), m_database.enableTelemetryTables},
+                    {QStringLiteral("enableLocalCache"), m_database.enableLocalCache},
+                    {QStringLiteral("enableAuditSync"), m_database.enableAuditSync},
+                });
+
     return root;
 }
 
@@ -798,6 +866,22 @@ void ConfigManager::loadDefaults()
         QStringLiteral("tenco.net.status.debug=false"),
         QStringLiteral("tenco.gimbal.control.debug=false")
     };
+
+    m_database = DatabaseConfig{};
+    m_database.backend = QString::fromUtf8(kDefaultDatabaseBackend);
+    m_database.connectionName = QString::fromUtf8(kDefaultDatabaseConnectionName);
+    m_database.databaseName = QString::fromUtf8(kDefaultDatabaseName);
+    m_database.port = kDefaultDatabasePort;
+    m_database.busyTimeoutMs = kDefaultDatabaseBusyTimeoutMs;
+    m_database.cacheSizePages = kDefaultDatabaseCacheSizePages;
+    m_database.connectTimeoutMs = kDefaultDatabaseConnectTimeoutMs;
+    m_database.reconnectIntervalMs = kDefaultDatabaseReconnectIntervalMs;
+    m_database.useWAL = true;
+    m_database.foreignKeys = true;
+    m_database.synchronousNormal = true;
+    m_database.enableTelemetryTables = true;
+    m_database.enableLocalCache = true;
+    m_database.enableAuditSync = true;
 }
 
 void ConfigManager::sanitizeConfig()
@@ -933,6 +1017,36 @@ void ConfigManager::sanitizeConfig()
         }
     }
     m_logging.categoryRules = sanitizedRules;
+
+    m_database.backend = m_database.backend.trimmed().toLower();
+    if (m_database.backend.isEmpty()) {
+        m_database.backend = QString::fromUtf8(kDefaultDatabaseBackend);
+    }
+    if (m_database.backend != QStringLiteral("sqlite") &&
+        m_database.backend != QStringLiteral("postgresql")) {
+        qCWarning(lcConfigManager) << "Unsupported database backend, fallback to sqlite:" << m_database.backend;
+        m_database.backend = QString::fromUtf8(kDefaultDatabaseBackend);
+    }
+    m_database.connectionName = m_database.connectionName.trimmed();
+    if (m_database.connectionName.isEmpty()) {
+        m_database.connectionName = QString::fromUtf8(kDefaultDatabaseConnectionName);
+    }
+    m_database.sqliteFilePath = m_database.sqliteFilePath.trimmed();
+    m_database.host = m_database.host.trimmed();
+    m_database.databaseName = m_database.databaseName.trimmed();
+    if (m_database.databaseName.isEmpty()) {
+        m_database.databaseName = QString::fromUtf8(kDefaultDatabaseName);
+    }
+    m_database.userName = m_database.userName.trimmed();
+    m_database.password = m_database.password.trimmed();
+    m_database.port = qBound(1, m_database.port, 65535);
+    m_database.useWAL = m_database.useWAL;
+    m_database.foreignKeys = m_database.foreignKeys;
+    m_database.synchronousNormal = m_database.synchronousNormal;
+    m_database.busyTimeoutMs = qBound(100, m_database.busyTimeoutMs, 30000);
+    m_database.cacheSizePages = qBound(64, m_database.cacheSizePages, 262144);
+    m_database.connectTimeoutMs = qBound(500, m_database.connectTimeoutMs, 30000);
+    m_database.reconnectIntervalMs = qBound(500, m_database.reconnectIntervalMs, 60000);
 }
 
 void ConfigManager::updateCachedScales()

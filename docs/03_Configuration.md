@@ -202,6 +202,30 @@ OAK/DepthAI 的完整落地方案见 `docs/develop/usb_oak_camera_integration_pl
 
 ---
 
+### 3.6 database（数据存储）
+
+用于控制本地数据库与后续中心数据库连接。当前推荐默认使用 `sqlite`，用于单机离线可用、地图/任务/审计/状态缓存等本地持久化；生产中心化方案见 `docs/develop/database_system_plan.md`。
+
+关键字段：
+
+- `database.backend`：当前支持 `sqlite` / `postgresql`，默认 `sqlite`
+- `database.connectionName`：Qt SQL 连接名
+- `database.sqliteFilePath`：SQLite 文件路径；为空时使用 `<appDir>/data/tenco.sqlite3`
+- `database.host` / `port` / `databaseName` / `userName` / `password`：PostgreSQL 连接参数
+- `database.useWAL`：SQLite 是否启用 WAL
+- `database.foreignKeys`：SQLite 是否启用外键约束
+- `database.busyTimeoutMs`：SQLite 忙等待时间
+- `database.enableTelemetryTables`：是否启用状态采样表
+- `database.enableLocalCache`：是否启用本地缓存语义
+- `database.enableAuditSync`：是否将审计事件同步到数据库
+
+对应代码：
+
+- 配置读取：`ConfigManager::database()`
+- 数据库初始化：`DatabaseManager`（`databasemanager.h/.cpp`）
+
+---
+
 ## 4. 默认值与边界
 
 `ConfigManager::loadDefaults()` 内有默认 URL 与轮询默认值，并对轮询间隔做了边界约束：

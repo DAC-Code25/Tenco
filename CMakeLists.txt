@@ -4,7 +4,7 @@ project(Tenco LANGUAGES CXX)
 include(CTest)
 
 # Project-wide C++ standard
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -20,7 +20,7 @@ option(TENCO_ENABLE_OAK_CAMERA "Enable DepthAI/OpenCV OAK camera backend" OFF)
 option(TENCO_ENABLE_ABOUT_3D "Enable the interactive 3D model viewer on the About page when Qt Quick3D is available" ON)
 
 # Qt 6 is the primary supported build for this repository.
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network WebSockets)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network WebSockets Sql)
 if(TENCO_ENABLE_OAK_CAMERA)
     find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs videoio)
     find_package(depthai CONFIG REQUIRED)
@@ -40,6 +40,8 @@ qt_add_executable(Tenco
     main.cpp
     loggingmanager.h
     loggingmanager.cpp
+    databasemanager.h
+    databasemanager.cpp
     UI_Design.cpp
 
     mainwindow.h
@@ -100,6 +102,9 @@ qt_add_executable(Tenco
     routefollower.h
     routefollower.cpp
 
+    motioncommandarbiter.h
+    motioncommandarbiter.cpp
+
     routepathfinder.h
     routepathfinder.cpp
 
@@ -133,6 +138,7 @@ target_link_libraries(Tenco PRIVATE
     Qt6::Widgets
     Qt6::Network
     Qt6::WebSockets
+    Qt6::Sql
 )
 
 if(TENCO_ENABLE_OAK_CAMERA)

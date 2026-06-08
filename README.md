@@ -8,6 +8,7 @@
 - **底盘控制（WebSocket）**：发送 `cmd_vel` 速度指令；支持按钮长按连发与键盘 `W/A/S/D` 控制。
 - **视频（HTTP MJPEG）**：实时显示、断线重连、录像（`.mjpeg`）与截图（`.jpg`）。
 - **地图/路线**：地图网格、点/线/弧路径编辑、路线队列、分段下发与执行反馈；支持“新建/加载/另存为/保存”与未保存内容确认。
+- **数据存储**：本地 SQLite 持久化为基础，预留 PostgreSQL / TimescaleDB 中心化与时序扩展方案。
 - **窗口体验**：无边框窗口，支持拖动、置顶、最小化/最大化/关闭。
 
 ## 快速开始
@@ -88,6 +89,7 @@ ctest --preset release
 - `network.saveFileUrl`：HTTP（保存远端文件，如 GPS 配置）
 - `network.authToken`：可选，若配置则自动以 `Authorization: Bearer <token>` 访问 HTTP/WebSocket
 - `network.statusPollIntervalMs`：状态轮询间隔（ms）
+- `database.*`：数据库后端与连接参数。默认使用本地 SQLite，后续生产中心库建议使用 PostgreSQL；高频状态/轨迹历史可扩展到 TimescaleDB。
 
 ### 状态字段（轮询返回 address → UI 映射）
 

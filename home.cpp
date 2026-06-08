@@ -7,9 +7,11 @@
 #include "mjpegvideosource.h"
 #include "oakcameravideosource.h"
 #include "routefollower.h"
+#include "motioncommandarbiter.h"
 #include "home_status_presenter.h"
 #include "statusprotocol.h"
 #include "configmanager.h"
+#include "loggingmanager.h"
 #include "ui_mainwindow.h"         
 #include "imageswitch.h"         
 #include <QDir>              // 读取录像目录时需要主目录定位
@@ -22,6 +24,7 @@
 #include <QMessageBox>       // 输入校验提示与结果反馈
 #include <QLineEdit>         // 对经纬度输入框执行焦点与选中操作
 #include <QComboBox>       // 模式选择控件
+#include <QDoubleSpinBox>
 #include <QRegularExpression>// 校验经纬度格式
 #include <QNetworkRequest>   // 配置 HTTP 请求头与目标地址
 #include <QNetworkAccessManager> // HTTP 管理器
@@ -43,15 +46,39 @@
 #include <algorithm>
 #include <cmath>
 
+namespace {
+
+QString gimbalAxisAuditName(GimbalControlClient::Axis axis)
+{
+    switch (axis) {
+    case GimbalControlClient::Axis::Height:
+        return QStringLiteral("height");
+    case GimbalControlClient::Axis::Pitch:
+        return QStringLiteral("pitch");
+    case GimbalControlClient::Axis::Yaw:
+        return QStringLiteral("yaw");
+    }
+    return QStringLiteral("unknown");
+}
+
+QString gimbalDirectionAuditName(GimbalControlClient::Direction direction)
+{
+    switch (direction) {
+    case GimbalControlClient::Direction::Value1:
+        return QStringLiteral("value1");
+    case GimbalControlClient::Direction::Value2:
+        return QStringLiteral("value2");
+    }
+    return QStringLiteral("unknown");
+}
+
+}
+
 // 构造函数：缓存 UI 指针并准备网络与定时资源
 Home::Home(Ui::MainWindow *ui, QObject *parent)
     : QObject(parent)
     , ui(ui)
     , restartCheckTimer(new QTimer(this))
-    , forwardRepeatTimer(new QTimer(this))
-    , backwardRepeatTimer(new QTimer(this))
-    , turnLeftRepeatTimer(new QTimer(this))
-    , turnRightRepeatTimer(new QTimer(this))
     , rebootCountdownTimer(new QTimer(this))
     , cameraStatusTimer(new QTimer(this))
     , gimbalSafetyStopTimer(new QTimer(this))
@@ -59,6 +86,7 @@ Home::Home(Ui::MainWindow *ui, QObject *parent)
     , m_statusClient(new StatusClient(this))
     , m_chassisClient(new ChassisClient(this))
     , m_routeFollower(new RouteFollower(this))
+    , m_motionArbiter(new MotionCommandArbiter(this))
     , forwardButtonHeld(false)
     , forwardKeyHeld(false)
     , backwardButtonHeld(false)
@@ -70,11 +98,15 @@ Home::Home(Ui::MainWindow *ui, QObject *parent)
     , rebootRemainingSeconds(0)
 {
     initialize();
-    initializeMotionTimers();
+    initializeMotionControl();
     ConfigManager &config = ConfigManager::instance();
 
     if (m_routeFollower) {
-        connect(m_routeFollower, &RouteFollower::velocityCommand, this, &Home::sendVelocityCommand);
+        connect(m_routeFollower, &RouteFollower::velocityCommand, this, [this](double linear, double angular) {
+            if (m_motionArbiter) {
+                m_motionArbiter->setRouteCommand(linear, angular);
+            }
+        });
         connect(m_routeFollower, &RouteFollower::segmentCompleted, this, &Home::routeSegmentCompleted);
     }
 
@@ -145,6 +177,12 @@ void Home::initialize()
     connect(ui->rightButton, &QPushButton::pressed, this, &Home::handleTurnRightButtonPressed);
     connect(ui->rightButton, &QPushButton::released, this, &Home::handleTurnRightButtonReleased);
     connect(ui->stopButton, &QPushButton::clicked, this, &Home::handleStopButtonClicked);
+    connect(ui->doubleSpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double) {
+        updateManualCommandConfig();
+    });
+    connect(ui->doubleSpinBox_2, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double) {
+        updateManualCommandConfig();
+    });
     connect(ui->pushButton_3, &QPushButton::pressed, this, &Home::handleGimbalUpPressed);
     connect(ui->pushButton_3, &QPushButton::released, this, &Home::handleGimbalButtonReleased);
     connect(ui->pushButton_4, &QPushButton::pressed, this, &Home::handleGimbalDownPressed);
@@ -169,22 +207,21 @@ void Home::setupImageSwitches()
     connect(ui->imageSwitch1, &ImageSwitch::checkedChanged, this, &Home::handleImageSwitchToggled);  // 开关 1 切换后更新按钮手动控制权限
     connect(ui->imageSwitch2, &ImageSwitch::checkedChanged, this, &Home::handleImageSwitchToggled);  // 开关 2 切换后更新键盘手动控制权限
 }
-// 为四种运动指令配置重复发送的 QTimer
-void Home::initializeMotionTimers()
+void Home::initializeMotionControl()
 {
-    const int interval = m_manualMotionRepeatIntervalMs;  // 连发周期取配置，保证四个方向一致
-    forwardRepeatTimer->setInterval(interval);  // 前进指令的重复发送周期
-    forwardRepeatTimer->setSingleShot(false);  // 允许定时器持续触发
-    connect(forwardRepeatTimer, &QTimer::timeout, this, &Home::sendForwardCommand);  // 定时重发 sendForwardCommand() 保持匀速
-    backwardRepeatTimer->setInterval(interval);  // 后退同样采用统一周期
-    backwardRepeatTimer->setSingleShot(false);  // 后退连发保持持续超时
-    connect(backwardRepeatTimer, &QTimer::timeout, this, &Home::sendBackwardCommand);  // 定时重发后退速度命令
-    turnLeftRepeatTimer->setInterval(interval);  // 左转加速度的重复周期
-    turnLeftRepeatTimer->setSingleShot(false);  // 左转指令需要持续输出
-    connect(turnLeftRepeatTimer, &QTimer::timeout, this, &Home::sendTurnLeftCommand);  // 定时重发左转角速度
-    turnRightRepeatTimer->setInterval(interval);  // 右转共享同一重复周期
-    turnRightRepeatTimer->setSingleShot(false);  // 右转同样持续触发
-    connect(turnRightRepeatTimer, &QTimer::timeout, this, &Home::sendTurnRightCommand);  // 定时重发右转角速度
+    if (!m_motionArbiter) {
+        return;
+    }
+
+    m_motionArbiter->setHeartbeatIntervalMs(m_manualMotionRepeatIntervalMs);
+    connect(m_motionArbiter, &MotionCommandArbiter::velocityCommand, this, &Home::sendVelocityCommand);
+    connect(m_motionArbiter, &MotionCommandArbiter::safetyStopRequested, this, [this](const QString &reason) {
+        LoggingManager::audit(QStringLiteral("safety.motion_stop"),
+                              QStringLiteral("accepted"),
+                              {{QStringLiteral("reason"), reason}});
+        logMessage(tr("运动安全停车：%1").arg(reason));
+    });
+    updateManualCommandConfig();
 }
 
 void Home::applyRuntimeConfig()
@@ -200,43 +237,34 @@ void Home::applyRuntimeConfig()
 
 void Home::applyRouteFollowerConfig()
 {
-    if (!m_routeFollower) {
-        return;
-    }
     const auto &ctrl = ConfigManager::instance().control();
-    RouteFollower::ControlParams params;
-    params.maxLinearSpeed = ctrl.maxLinearSpeed;
-    params.maxAngularSpeed = ctrl.maxAngularSpeed;
-    params.arrivalDistanceThreshold = ctrl.arrivalDistanceThreshold;
-    params.arrivalAngleThresholdRad = qDegreesToRadians(ctrl.arrivalAngleThresholdDeg);
-    params.linearGain = ctrl.linearGain;
-    params.angularGain = ctrl.angularGain;
-    params.headingStopThresholdRad = qDegreesToRadians(ctrl.headingStopThresholdDeg);
-    params.headingSlowdownThresholdRad = qDegreesToRadians(ctrl.headingSlowdownThresholdDeg);
-    params.headingSlowdownFactor = ctrl.headingSlowdownFactor;
-    params.nearTargetDistanceMultiplier = ctrl.nearTargetDistanceMultiplier;
-    params.nearTargetSpeedMultiplier = ctrl.nearTargetSpeedMultiplier;
-    params.linearAccelerationLimit = ctrl.linearAccelerationLimit;
-    params.linearDecelerationLimit = ctrl.linearDecelerationLimit;
-    params.angularAccelerationLimit = ctrl.angularAccelerationLimit;
-    params.angularDecelerationLimit = ctrl.angularDecelerationLimit;
-    params.finalAdjustLinearSpeed = ctrl.finalAdjustLinearSpeed;
-    params.finalAdjustAngularSpeed = ctrl.finalAdjustAngularSpeed;
-    m_routeFollower->setControlParams(params);
-    m_routeFollower->setUpdateIntervalMs(ctrl.routeFollowerUpdateIntervalMs);
+    if (m_routeFollower) {
+        RouteFollower::ControlParams params;
+        params.maxLinearSpeed = ctrl.maxLinearSpeed;
+        params.maxAngularSpeed = ctrl.maxAngularSpeed;
+        params.arrivalDistanceThreshold = ctrl.arrivalDistanceThreshold;
+        params.arrivalAngleThresholdRad = qDegreesToRadians(ctrl.arrivalAngleThresholdDeg);
+        params.linearGain = ctrl.linearGain;
+        params.angularGain = ctrl.angularGain;
+        params.headingStopThresholdRad = qDegreesToRadians(ctrl.headingStopThresholdDeg);
+        params.headingSlowdownThresholdRad = qDegreesToRadians(ctrl.headingSlowdownThresholdDeg);
+        params.headingSlowdownFactor = ctrl.headingSlowdownFactor;
+        params.nearTargetDistanceMultiplier = ctrl.nearTargetDistanceMultiplier;
+        params.nearTargetSpeedMultiplier = ctrl.nearTargetSpeedMultiplier;
+        params.linearAccelerationLimit = ctrl.linearAccelerationLimit;
+        params.linearDecelerationLimit = ctrl.linearDecelerationLimit;
+        params.angularAccelerationLimit = ctrl.angularAccelerationLimit;
+        params.angularDecelerationLimit = ctrl.angularDecelerationLimit;
+        params.finalAdjustLinearSpeed = ctrl.finalAdjustLinearSpeed;
+        params.finalAdjustAngularSpeed = ctrl.finalAdjustAngularSpeed;
+        m_routeFollower->setControlParams(params);
+        m_routeFollower->setUpdateIntervalMs(ctrl.routeFollowerUpdateIntervalMs);
+    }
     m_manualMotionRepeatIntervalMs = qBound(20, ctrl.manualMotionRepeatIntervalMs, 1000);
-    if (forwardRepeatTimer) {
-        forwardRepeatTimer->setInterval(m_manualMotionRepeatIntervalMs);
+    if (m_motionArbiter) {
+        m_motionArbiter->setHeartbeatIntervalMs(m_manualMotionRepeatIntervalMs);
     }
-    if (backwardRepeatTimer) {
-        backwardRepeatTimer->setInterval(m_manualMotionRepeatIntervalMs);
-    }
-    if (turnLeftRepeatTimer) {
-        turnLeftRepeatTimer->setInterval(m_manualMotionRepeatIntervalMs);
-    }
-    if (turnRightRepeatTimer) {
-        turnRightRepeatTimer->setInterval(m_manualMotionRepeatIntervalMs);
-    }
+    updateManualCommandConfig();
 }
 
 void Home::applyStatusClientConfig()
@@ -770,16 +798,36 @@ void Home::jogGimbal(GimbalControlClient::Axis axis, GimbalControlClient::Direct
 {
     if (!m_gimbalControlClient || !m_gimbalControlClient->isConfigured()) {
         logMessage(tr("云台控制未启用或未配置"));
+        LoggingManager::audit(QStringLiteral("gimbal.jog"),
+                              QStringLiteral("rejected"),
+                              {{QStringLiteral("axis"), gimbalAxisAuditName(axis)},
+                               {QStringLiteral("direction"), gimbalDirectionAuditName(direction)},
+                               {QStringLiteral("action"), actionText},
+                               {QStringLiteral("reason"), QStringLiteral("not_configured")}});
         return;
     }
 
     QString reason;
     if (!canJogGimbal(axis, direction, &reason)) {
         logMessage(reason);
+        LoggingManager::audit(QStringLiteral("gimbal.jog"),
+                              QStringLiteral("rejected"),
+                              {{QStringLiteral("axis"), gimbalAxisAuditName(axis)},
+                               {QStringLiteral("direction"), gimbalDirectionAuditName(direction)},
+                               {QStringLiteral("action"), actionText},
+                               {QStringLiteral("reason"), reason}});
         stopGimbal();
         return;
     }
 
+    LoggingManager::audit(QStringLiteral("gimbal.jog"),
+                          QStringLiteral("accepted"),
+                          {{QStringLiteral("axis"), gimbalAxisAuditName(axis)},
+                           {QStringLiteral("direction"), gimbalDirectionAuditName(direction)},
+                           {QStringLiteral("action"), actionText},
+                           {QStringLiteral("height"), QString::number(m_lastGimbalStatus.height)},
+                           {QStringLiteral("yaw"), QString::number(m_lastGimbalStatus.yaw)},
+                           {QStringLiteral("pitch"), QString::number(m_lastGimbalStatus.pitch)}});
     m_gimbalMoving = true;
     m_activeGimbalAxis = axis;
     m_activeGimbalDirection = direction;
@@ -797,6 +845,11 @@ void Home::jogGimbal(GimbalControlClient::Axis axis, GimbalControlClient::Direct
 
 void Home::stopGimbal()
 {
+    const bool wasMoving = m_gimbalMoving;
+    const QString action = m_activeGimbalAction;
+    const GimbalControlClient::Axis axis = m_activeGimbalAxis;
+    const GimbalControlClient::Direction direction = m_activeGimbalDirection;
+
     m_gimbalMoving = false;
     gimbalKeyboardMotionActive = false;
     m_activeGimbalAction.clear();
@@ -805,6 +858,13 @@ void Home::stopGimbal()
     }
     if (m_gimbalControlClient && m_gimbalControlClient->isConfigured()) {
         m_gimbalControlClient->stopAll();
+    }
+    if (wasMoving) {
+        LoggingManager::audit(QStringLiteral("gimbal.stop"),
+                              QStringLiteral("accepted"),
+                              {{QStringLiteral("axis"), gimbalAxisAuditName(axis)},
+                               {QStringLiteral("direction"), gimbalDirectionAuditName(direction)},
+                               {QStringLiteral("action"), action}});
     }
     updateGimbalButtonState();
 }
@@ -899,11 +959,20 @@ void Home::logMessage(const QString &text)
 
 void Home::handleChassisConnected()
 {
+    if (m_motionArbiter && m_chassisClient) {
+        m_motionArbiter->setChassisConnected(m_chassisClient->isConnected());
+    }
     logMessage(tr("WebSocket 已连接"));
 }
 
 void Home::handleChassisDisconnected()
 {
+    if (m_motionArbiter) {
+        m_motionArbiter->setChassisConnected(false);
+    }
+    if (m_routeFollower) {
+        m_routeFollower->cancel();
+    }
     logMessage(tr("WebSocket 已断开，正在尝试重连..."));
 }
 
@@ -979,50 +1048,21 @@ bool Home::isManualControlEnabledForKeys() const
 {
     return ui && ui->imageSwitch1->getChecked() && ui->imageSwitch2->getChecked();  // 同时打开两个开关才允许键盘输入
 }
-// 根据按钮/键盘状态开启或关闭前进连发定时器
-void Home::updateForwardTimer()
+
+void Home::updateManualCommandConfig()
 {
-    if (shouldSendForward()) {  // 只要任一输入源要求前进，就保持定时器运行
-        if (!forwardRepeatTimer->isActive()) {  // 避免重复启动，节省资源
-            forwardRepeatTimer->start();  // 开始周期性发送前进命令
-        }
-    } else {  // 没有前进输入时立即停止连发
-        forwardRepeatTimer->stop();  // 确保速度指令不会残留
+    if (!m_motionArbiter) {
+        return;
     }
+
+    MotionCommandArbiter::ManualCommandConfig config;
+    config.linearSpeed = ui && ui->doubleSpinBox ? ui->doubleSpinBox->value() : 0.0;
+    config.angularSpeed = ui && ui->doubleSpinBox_2 ? ui->doubleSpinBox_2->value() : 0.0;
+    config.buttonsEnabled = isManualControlEnabledForButtons();
+    config.keysEnabled = isManualControlEnabledForKeys();
+    m_motionArbiter->setManualCommandConfig(config);
 }
-// 控制后退指令的连发定时器
-void Home::updateBackwardTimer()
-{
-    if (shouldSendBackward()) {  // 后退按钮或键盘触发时保持定时器运行
-        if (!backwardRepeatTimer->isActive()) {  // 仅在停止状态下重新启动
-            backwardRepeatTimer->start();  // 定时推送负向速度
-        }
-    } else {  // 无输入时停止后退命令
-        backwardRepeatTimer->stop();  // 避免继续发送后退速度
-    }
-}
-// 控制左转角速度的重复发送逻辑
-void Home::updateTurnLeftTimer()
-{
-    if (shouldSendTurnLeft()) {  // 左转按键或键盘激活时保持定时器
-        if (!turnLeftRepeatTimer->isActive()) {  // 避免重复 start()
-            turnLeftRepeatTimer->start();  // 周期性发送左转指令
-        }
-    } else {  // 无需左转时关闭定时器
-        turnLeftRepeatTimer->stop();  // 停止推送左转角速度
-    }
-}
-// 控制右转角速度的重复发送逻辑
-void Home::updateTurnRightTimer()
-{
-    if (shouldSendTurnRight()) {  // 右转输入存在时保持定时器运行
-        if (!turnRightRepeatTimer->isActive()) {  // 仅在未运行状态下启动
-            turnRightRepeatTimer->start();  // 周期性发送右转指令
-        }
-    } else {  // 无右转需求时停止
-        turnRightRepeatTimer->stop();  // 结束右转角速度输出
-    }
-}
+
 // 判断是否需要继续推送前进速度
 bool Home::shouldSendForward() const
 {
@@ -1055,43 +1095,6 @@ void Home::sendVelocityCommand(double xVel, double thetaVel)
     }
     m_chassisClient->sendVelocityCommand(xVel, thetaVel);
 }
-// 发送前进线速度，来源于 UI 数值框
-void Home::sendForwardCommand()
-{
-    if (!shouldSendForward()) {  // 再次确认输入源仍需要前进
-        return;  // 没有持续需求立即退出
-    }
-    const double speed = ui->doubleSpinBox->value();  // 使用界面上的速度调节值
-    sendVelocityCommand(speed, 0.0);  // x 轴正向速度，角速度为 0
-}
-// 发送后退速度，复用前进速度的绝对值
-void Home::sendBackwardCommand()
-{
-    if (!shouldSendBackward()) {  // 确认仍需后退
-        return;  // 当前无法执行重启操作
-    }
-    const double speed = ui->doubleSpinBox->value();  // 与前进共用一套速度设置
-    sendVelocityCommand(-speed, 0.0);  // 线速度取相反数表示后退
-}
-// 发送左转角速度
-void Home::sendTurnLeftCommand()
-{
-    if (!shouldSendTurnLeft()) {  // 确保输入仍保持
-        return;  // 无需继续刷新
-    }
-    const double angular = ui->doubleSpinBox_2->value();  // 角速度取自 UI 旋转速度设置
-    sendVelocityCommand(0.0, angular);  // 线速度为0，仅发送正向角速度
-}
-// 发送右转角速度
-void Home::sendTurnRightCommand()
-{
-    if (!shouldSendTurnRight()) {  // 输入已释放则直接返回
-        return;  // 保持轮询等待
-    }
-    const double angular = ui->doubleSpinBox_2->value();  // 复用角速度调节值
-    sendVelocityCommand(0.0, -angular);  // 角速度取负表示右转
-}
-
 // 开始录像
 void Home::startRecording()
 {
@@ -1188,6 +1191,7 @@ void Home::handleNetworkFailure(int httpStatus, const QString &errorString, cons
     if (!m_statusPresenter) {
         return;
     }
+    stopMotionForSafety(QStringLiteral("status_network_failure"));
     if (m_statusPresenter->handleNetworkFailure(httpStatus, errorString, responseBody)) {
         restartCheckTimer->start();
     }
@@ -1251,104 +1255,132 @@ void Home::handleSavePathButtonClicked()
 void Home::handleImageSwitchToggled(bool checked)
 {
     Q_UNUSED(checked);  // 仅通过 sender() 判断来源，checked 值不直接使用
-    // 每次切换都要重新评估所有方向的连发状态
-    updateForwardTimer();  // 启动或维持前进定时器
-    updateBackwardTimer();  // 启动后退连发
-    updateTurnLeftTimer();  // 启动左转连发
-    updateTurnRightTimer();  // 启动右转连发
-    // 如果有按键保持按下，立即补发一次指令
-    if (shouldSendForward()) {
-        sendForwardCommand();  // 补发前进速度避免停顿
-    }
-    // 后退方向同理
-    if (shouldSendBackward()) {
-        sendBackwardCommand();  // 补发后退速度
-    }
-    // 左转方向同理
-    if (shouldSendTurnLeft()) {
-        sendTurnLeftCommand();  // 补发左转角速度
-    }
-    // 右转方向同理
-    if (shouldSendTurnRight()) {
-        sendTurnRightCommand();  // 补发右转角速度
-    }
+    updateManualCommandConfig();
 }
 // 前进按钮按下：立即发送一次指令并启动连发
 void Home::handleForwardButtonPressed()
 {
     forwardButtonHeld = true;  // 标记按钮处于按下状态
-    sendForwardCommand();  // 立即发送一次前进命令，响应用户操作
-    updateForwardTimer();  // 依据当前状态停止前进定时器
+    updateManualCommandConfig();
+    if (m_motionArbiter) {
+        m_motionArbiter->setManualInputActive(MotionCommandArbiter::ManualInput::Forward, true, false);
+    }
+    LoggingManager::audit(QStringLiteral("chassis.manual_move"),
+                          QStringLiteral("start"),
+                          {{QStringLiteral("source"), QStringLiteral("button")},
+                           {QStringLiteral("direction"), QStringLiteral("forward")},
+                           {QStringLiteral("xVel"), QString::number(ui ? ui->doubleSpinBox->value() : 0.0, 'f', 3)},
+                           {QStringLiteral("thetaVel"), QStringLiteral("0")}});
     logMessage(tr("前进开始（按钮）"));
 }
 // 前进按钮抬起：停止连发
 void Home::handleForwardButtonReleased()
 {
     forwardButtonHeld = false;  // 清除按钮按下标记
-    // 更新所有定时器，确保立即停止输出
-    updateForwardTimer();
+    if (m_motionArbiter) {
+        m_motionArbiter->setManualInputActive(MotionCommandArbiter::ManualInput::Forward, false, false);
+    }
+    LoggingManager::audit(QStringLiteral("chassis.manual_move"),
+                          QStringLiteral("stop"),
+                          {{QStringLiteral("source"), QStringLiteral("button")},
+                           {QStringLiteral("direction"), QStringLiteral("forward")}});
     logMessage(tr("前进停止（按钮）"));
 }
 // 后退按钮按下：立即发送一次后退命令
 void Home::handleBackwardButtonPressed()
 {
     backwardButtonHeld = true;  // 记录按钮按下
-    sendBackwardCommand();  // 立刻推送后退速度
-    updateBackwardTimer();  // 停止后退定时器
+    updateManualCommandConfig();
+    if (m_motionArbiter) {
+        m_motionArbiter->setManualInputActive(MotionCommandArbiter::ManualInput::Backward, true, false);
+    }
+    LoggingManager::audit(QStringLiteral("chassis.manual_move"),
+                          QStringLiteral("start"),
+                          {{QStringLiteral("source"), QStringLiteral("button")},
+                           {QStringLiteral("direction"), QStringLiteral("backward")},
+                           {QStringLiteral("xVel"), QString::number(ui ? -ui->doubleSpinBox->value() : 0.0, 'f', 3)},
+                           {QStringLiteral("thetaVel"), QStringLiteral("0")}});
     logMessage(tr("后退开始（按钮）"));
 }
 // 后退按钮抬起：停止后退连发
 void Home::handleBackwardButtonReleased()
 {
     backwardButtonHeld = false;  // 清除按钮状态
-    updateBackwardTimer();
+    if (m_motionArbiter) {
+        m_motionArbiter->setManualInputActive(MotionCommandArbiter::ManualInput::Backward, false, false);
+    }
+    LoggingManager::audit(QStringLiteral("chassis.manual_move"),
+                          QStringLiteral("stop"),
+                          {{QStringLiteral("source"), QStringLiteral("button")},
+                           {QStringLiteral("direction"), QStringLiteral("backward")}});
     logMessage(tr("后退停止（按钮）"));
 }
 // 左转按钮按下：立即推送左转角速度
 void Home::handleTurnLeftButtonPressed()
 {
     turnLeftButtonHeld = true;  // 记录按钮按下
-    sendTurnLeftCommand();  // 立即发送左转角速度
-    updateTurnLeftTimer();  // 停止左转定时器
+    updateManualCommandConfig();
+    if (m_motionArbiter) {
+        m_motionArbiter->setManualInputActive(MotionCommandArbiter::ManualInput::TurnLeft, true, false);
+    }
+    LoggingManager::audit(QStringLiteral("chassis.manual_move"),
+                          QStringLiteral("start"),
+                          {{QStringLiteral("source"), QStringLiteral("button")},
+                           {QStringLiteral("direction"), QStringLiteral("turn_left")},
+                           {QStringLiteral("xVel"), QStringLiteral("0")},
+                           {QStringLiteral("thetaVel"), QString::number(ui ? ui->doubleSpinBox_2->value() : 0.0, 'f', 3)}});
     logMessage(tr("左转开始（按钮）"));
 }
 // 左转按钮抬起：停止左转连发
 void Home::handleTurnLeftButtonReleased()
 {
     turnLeftButtonHeld = false;  // 清除按钮状态
-    updateTurnLeftTimer();
+    if (m_motionArbiter) {
+        m_motionArbiter->setManualInputActive(MotionCommandArbiter::ManualInput::TurnLeft, false, false);
+    }
+    LoggingManager::audit(QStringLiteral("chassis.manual_move"),
+                          QStringLiteral("stop"),
+                          {{QStringLiteral("source"), QStringLiteral("button")},
+                           {QStringLiteral("direction"), QStringLiteral("turn_left")}});
     logMessage(tr("左转停止（按钮）"));
 }
 // 右转按钮按下：立即推送右转角速度
 void Home::handleTurnRightButtonPressed()
 {
     turnRightButtonHeld = true;  // 记录按钮按下
-    sendTurnRightCommand();  // 立即发送右转角速度
-    updateTurnRightTimer();  // 停止右转定时器
+    updateManualCommandConfig();
+    if (m_motionArbiter) {
+        m_motionArbiter->setManualInputActive(MotionCommandArbiter::ManualInput::TurnRight, true, false);
+    }
+    LoggingManager::audit(QStringLiteral("chassis.manual_move"),
+                          QStringLiteral("start"),
+                          {{QStringLiteral("source"), QStringLiteral("button")},
+                           {QStringLiteral("direction"), QStringLiteral("turn_right")},
+                           {QStringLiteral("xVel"), QStringLiteral("0")},
+                           {QStringLiteral("thetaVel"), QString::number(ui ? -ui->doubleSpinBox_2->value() : 0.0, 'f', 3)}});
     logMessage(tr("右转开始（按钮）"));
 }
 // 右转按钮抬起：停止右转连发
 void Home::handleTurnRightButtonReleased()
 {
     turnRightButtonHeld = false;  // 清除按钮状态
-    updateTurnRightTimer();
+    if (m_motionArbiter) {
+        m_motionArbiter->setManualInputActive(MotionCommandArbiter::ManualInput::TurnRight, false, false);
+    }
+    LoggingManager::audit(QStringLiteral("chassis.manual_move"),
+                          QStringLiteral("stop"),
+                          {{QStringLiteral("source"), QStringLiteral("button")},
+                           {QStringLiteral("direction"), QStringLiteral("turn_right")}});
     logMessage(tr("右转停止（按钮）"));
 }
 // 急停按钮：清除所有输入并发送零速度
 void Home::handleStopButtonClicked()
 {
-    forwardButtonHeld = backwardButtonHeld = false;  // 取消界面方向按钮的按压状态
-    turnLeftButtonHeld = turnRightButtonHeld = false;  // 停止左右转按钮连发
-    forwardKeyHeld = backwardKeyHeld = false;  // 清除键盘 W/S 状态
-    turnLeftKeyHeld = turnRightKeyHeld = false;  // 清除键盘 A/D 状态
-    updateForwardTimer();
-    updateBackwardTimer();
-    updateTurnLeftTimer();
-    updateTurnRightTimer();
-    if (isManualControlEnabledForButtons() || isManualControlEnabledForKeys()) {  // 允许手动控制时发送停驶指令
-        sendVelocityCommand(0.0, 0.0);  // 确保底盘停下来
-    }
+    stopMotionForSafety(QStringLiteral("home_stop_button"));
     stopGimbal();
+    LoggingManager::audit(QStringLiteral("safety.estop"),
+                          QStringLiteral("accepted"),
+                          {{QStringLiteral("source"), QStringLiteral("home_stop_button")}});
     logMessage(tr("急停"));
 }
 
@@ -1415,26 +1447,58 @@ bool Home::handleKeyPress(int key, Qt::KeyboardModifiers modifiers, bool isAutoR
     switch (key) {  // 根据物理按键决定方向
     case Qt::Key_W:  // W 键 -> 前进
         forwardKeyHeld = true;  // 记录键盘输入状态
-        sendForwardCommand();  // 即刻触发前进命令
-        updateForwardTimer();  // 启动前进连发
+        updateManualCommandConfig();
+        if (m_motionArbiter) {
+            m_motionArbiter->setManualInputActive(MotionCommandArbiter::ManualInput::Forward, true, true);
+        }
+        LoggingManager::audit(QStringLiteral("chassis.manual_move"),
+                              QStringLiteral("start"),
+                              {{QStringLiteral("source"), QStringLiteral("keyboard")},
+                               {QStringLiteral("direction"), QStringLiteral("forward")},
+                               {QStringLiteral("xVel"), QString::number(ui ? ui->doubleSpinBox->value() : 0.0, 'f', 3)},
+                               {QStringLiteral("thetaVel"), QStringLiteral("0")}});
         logMessage(tr("前进开始（键盘）"));
         return true;
     case Qt::Key_S:  // S 键 -> 后退
         backwardKeyHeld = true;  // 记录按键状态
-        sendBackwardCommand();  // 即刻触发后退
-        updateBackwardTimer();  // 启动后退连发
+        updateManualCommandConfig();
+        if (m_motionArbiter) {
+            m_motionArbiter->setManualInputActive(MotionCommandArbiter::ManualInput::Backward, true, true);
+        }
+        LoggingManager::audit(QStringLiteral("chassis.manual_move"),
+                              QStringLiteral("start"),
+                              {{QStringLiteral("source"), QStringLiteral("keyboard")},
+                               {QStringLiteral("direction"), QStringLiteral("backward")},
+                               {QStringLiteral("xVel"), QString::number(ui ? -ui->doubleSpinBox->value() : 0.0, 'f', 3)},
+                               {QStringLiteral("thetaVel"), QStringLiteral("0")}});
         logMessage(tr("后退开始（键盘）"));
         return true;
     case Qt::Key_A:  // A 键 -> 左转
         turnLeftKeyHeld = true;  // 标记左转按下
-        sendTurnLeftCommand();  // 立即发送左转角速度
-        updateTurnLeftTimer();  // 启动左转连发
+        updateManualCommandConfig();
+        if (m_motionArbiter) {
+            m_motionArbiter->setManualInputActive(MotionCommandArbiter::ManualInput::TurnLeft, true, true);
+        }
+        LoggingManager::audit(QStringLiteral("chassis.manual_move"),
+                              QStringLiteral("start"),
+                              {{QStringLiteral("source"), QStringLiteral("keyboard")},
+                               {QStringLiteral("direction"), QStringLiteral("turn_left")},
+                               {QStringLiteral("xVel"), QStringLiteral("0")},
+                               {QStringLiteral("thetaVel"), QString::number(ui ? ui->doubleSpinBox_2->value() : 0.0, 'f', 3)}});
         logMessage(tr("左转开始（键盘）"));
         return true;
     case Qt::Key_D:  // D 键 -> 右转
         turnRightKeyHeld = true;  // 标记右转按下
-        sendTurnRightCommand();  // 立即发送右转角速度
-        updateTurnRightTimer();  // 启动右转连发
+        updateManualCommandConfig();
+        if (m_motionArbiter) {
+            m_motionArbiter->setManualInputActive(MotionCommandArbiter::ManualInput::TurnRight, true, true);
+        }
+        LoggingManager::audit(QStringLiteral("chassis.manual_move"),
+                              QStringLiteral("start"),
+                              {{QStringLiteral("source"), QStringLiteral("keyboard")},
+                               {QStringLiteral("direction"), QStringLiteral("turn_right")},
+                               {QStringLiteral("xVel"), QStringLiteral("0")},
+                               {QStringLiteral("thetaVel"), QString::number(ui ? -ui->doubleSpinBox_2->value() : 0.0, 'f', 3)}});
         logMessage(tr("右转开始（键盘）"));
         return true;
     default:  // 其它按键交由基类处理
@@ -1450,31 +1514,76 @@ bool Home::handleKeyRelease(int key, Qt::KeyboardModifiers modifiers, bool isAut
     if (handleGimbalKeyRelease(key, modifiers)) {
         return true;
     }
-    // 未开启键盘控制时不处理也不记录
-    if (!isManualControlEnabledForKeys()) {
-        return false;
-    }
+    const bool keysEnabled = isManualControlEnabledForKeys();
     switch (key) {  // 根据释放的按键更新状态
     case Qt::Key_W:  // W 键抬起
+    {
+        const bool wasHeld = forwardKeyHeld;
         forwardKeyHeld = false;  // 清除标记
-        updateForwardTimer();  // 若没有其它输入则停止前进
-        logMessage(tr("前进停止（键盘）"));
-        return true;
+        if (m_motionArbiter) {
+            m_motionArbiter->setManualInputActive(MotionCommandArbiter::ManualInput::Forward, false, true);
+        }
+        if (wasHeld || keysEnabled) {
+            LoggingManager::audit(QStringLiteral("chassis.manual_move"),
+                                  QStringLiteral("stop"),
+                                  {{QStringLiteral("source"), QStringLiteral("keyboard")},
+                                   {QStringLiteral("direction"), QStringLiteral("forward")}});
+            logMessage(tr("前进停止（键盘）"));
+            return true;
+        }
+        return false;
+    }
     case Qt::Key_S:  // S 键抬起
+    {
+        const bool wasHeld = backwardKeyHeld;
         backwardKeyHeld = false;  // 清除后退状态
-        updateBackwardTimer();  // 更新后退定时器
-        logMessage(tr("后退停止（键盘）"));
-        return true;
+        if (m_motionArbiter) {
+            m_motionArbiter->setManualInputActive(MotionCommandArbiter::ManualInput::Backward, false, true);
+        }
+        if (wasHeld || keysEnabled) {
+            LoggingManager::audit(QStringLiteral("chassis.manual_move"),
+                                  QStringLiteral("stop"),
+                                  {{QStringLiteral("source"), QStringLiteral("keyboard")},
+                                   {QStringLiteral("direction"), QStringLiteral("backward")}});
+            logMessage(tr("后退停止（键盘）"));
+            return true;
+        }
+        return false;
+    }
     case Qt::Key_A:  // A 键抬起
+    {
+        const bool wasHeld = turnLeftKeyHeld;
         turnLeftKeyHeld = false;  // 清除左转状态
-        updateTurnLeftTimer();  // 停止左转连发
-        logMessage(tr("左转停止（键盘）"));
-        return true;
+        if (m_motionArbiter) {
+            m_motionArbiter->setManualInputActive(MotionCommandArbiter::ManualInput::TurnLeft, false, true);
+        }
+        if (wasHeld || keysEnabled) {
+            LoggingManager::audit(QStringLiteral("chassis.manual_move"),
+                                  QStringLiteral("stop"),
+                                  {{QStringLiteral("source"), QStringLiteral("keyboard")},
+                                   {QStringLiteral("direction"), QStringLiteral("turn_left")}});
+            logMessage(tr("左转停止（键盘）"));
+            return true;
+        }
+        return false;
+    }
     case Qt::Key_D:  // D 键抬起
+    {
+        const bool wasHeld = turnRightKeyHeld;
         turnRightKeyHeld = false;  // 清除右转状态
-        updateTurnRightTimer();  // 停止右转连发
-        logMessage(tr("右转停止（键盘）"));
-        return true;
+        if (m_motionArbiter) {
+            m_motionArbiter->setManualInputActive(MotionCommandArbiter::ManualInput::TurnRight, false, true);
+        }
+        if (wasHeld || keysEnabled) {
+            LoggingManager::audit(QStringLiteral("chassis.manual_move"),
+                                  QStringLiteral("stop"),
+                                  {{QStringLiteral("source"), QStringLiteral("keyboard")},
+                                   {QStringLiteral("direction"), QStringLiteral("turn_right")}});
+            logMessage(tr("右转停止（键盘）"));
+            return true;
+        }
+        return false;
+    }
     default:  // 其它按键交由基类处理
         return false;
     }
@@ -1857,18 +1966,59 @@ void Home::followRouteSegment(int fromPointId, int toPointId, const QList<QPoint
 {
     Q_UNUSED(fromPointId);
     Q_UNUSED(toPointId);
+    updateManualCommandConfig();
     if (m_routeFollower) {
         m_routeFollower->enqueueSegment(polyline, startTheta, endTheta);
     }
 }
 void Home::handleRouteQueueCompleted()
 {
-    cancelRouteExecution();
+    if (m_motionArbiter) {
+        m_motionArbiter->stopAll(QStringLiteral("route_completed"));
+    }
+    if (m_routeFollower) {
+        m_routeFollower->cancel();
+    }
+    if (m_motionArbiter) {
+        m_motionArbiter->clearRouteCommand();
+    } else {
+        sendVelocityCommand(0.0, 0.0);
+    }
 }
 void Home::cancelRouteExecution()
 {
+    if (m_motionArbiter) {
+        m_motionArbiter->stopAll(QStringLiteral("route_cancelled"));
+    }
     if (m_routeFollower) {
         m_routeFollower->cancel();
+    }
+    if (m_motionArbiter) {
+        m_motionArbiter->clearRouteCommand();
+    } else {
+        sendVelocityCommand(0.0, 0.0);
+    }
+}
+
+void Home::stopMotionForSafety(const QString &reason)
+{
+    forwardButtonHeld = false;
+    backwardButtonHeld = false;
+    turnLeftButtonHeld = false;
+    turnRightButtonHeld = false;
+    forwardKeyHeld = false;
+    backwardKeyHeld = false;
+    turnLeftKeyHeld = false;
+    turnRightKeyHeld = false;
+
+    if (m_motionArbiter) {
+        m_motionArbiter->stopAll(reason);
+    }
+    if (m_routeFollower) {
+        m_routeFollower->cancel();
+    }
+    if (m_motionArbiter) {
+        m_motionArbiter->clearRouteCommand();
     } else {
         sendVelocityCommand(0.0, 0.0);
     }
