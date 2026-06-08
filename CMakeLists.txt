@@ -99,6 +99,9 @@ qt_add_executable(Tenco
     videoclient.h
     videoclient.cpp
 
+    videoframeworker.h
+    videoframeworker.cpp
+
     routefollower.h
     routefollower.cpp
 

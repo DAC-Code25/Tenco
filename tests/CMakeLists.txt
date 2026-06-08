@@ -135,6 +135,21 @@ target_link_libraries(tenco_test_statusprotocol PRIVATE
 )
 add_test(NAME tenco_test_statusprotocol COMMAND tenco_test_statusprotocol)
 
+qt_add_executable(tenco_test_videoframeworker
+    test_videoframeworker.cpp
+    ../videoframeworker.h
+    ../videoframeworker.cpp
+)
+target_include_directories(tenco_test_videoframeworker PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+)
+target_link_libraries(tenco_test_videoframeworker PRIVATE
+    Qt6::Core
+    Qt6::Gui
+    Qt6::Test
+)
+add_test(NAME tenco_test_videoframeworker COMMAND tenco_test_videoframeworker)
+
 qt_add_executable(tenco_test_map_route_integration
     test_map_route_integration.cpp
     ../map.h

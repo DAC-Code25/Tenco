@@ -30,6 +30,7 @@ public:
     QUrl streamUrl() const override;
     void setReconnectIntervalMs(int intervalMs) override;
     void setAutoReconnect(bool enabled) override;
+    void setMaxDisplayFps(int fps);
     bool supportsTopics() const override;
 
 private:

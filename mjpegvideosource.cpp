@@ -90,6 +90,11 @@ void MjpegVideoSource::setAutoReconnect(bool enabled)
     m_client.setAutoReconnect(enabled);
 }
 
+void MjpegVideoSource::setMaxDisplayFps(int fps)
+{
+    m_client.setMaxDisplayFps(fps);
+}
+
 bool MjpegVideoSource::supportsTopics() const
 {
     return m_supportsTopics;

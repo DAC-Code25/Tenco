@@ -372,6 +372,9 @@ void Home::initializeVideoDisplay()
     m_videoSource->setStreamUrlTemplate(videoCfg.streamUrl);
     m_videoSource->setReconnectIntervalMs(videoCfg.reconnectIntervalMs);
     m_videoSource->setAutoReconnect(true);
+    if (auto *mjpegSource = qobject_cast<MjpegVideoSource *>(m_videoSource)) {
+        mjpegSource->setMaxDisplayFps(videoCfg.previewFps);
+    }
 
     m_activeVideoTopic.clear();
     const bool isMjpegBackend = videoCfg.backend == QStringLiteral("mjpeg_http");

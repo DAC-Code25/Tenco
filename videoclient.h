@@ -9,9 +9,11 @@
 #include <QString>
 #include <QUrl>
 
-class QFile;
+#include "videoframeworker.h"
+
 class QNetworkAccessManager;
 class QTimer;
+class QThread;
 
 // Handles MJPEG streaming over HTTP and exposes decoded frames via signals.
 class VideoClient : public QObject
@@ -43,6 +45,8 @@ public:
 
     void setReconnectIntervalMs(int intervalMs);
     int reconnectIntervalMs() const { return m_reconnectIntervalMs; }
+    void setMaxDisplayFps(int fps);
+    int maxDisplayFps() const { return m_workerSettings.maxDisplayFps; }
 
     void start();
     void stop();
@@ -54,7 +58,8 @@ public:
     QString recordingFilePath() const { return m_recordFilePath; }
 
     bool saveSnapshot(const QString &directory, QString *outPath = nullptr) const;
-    QImage lastFrame() const { return m_lastFrame; }
+    QImage lastFrame() const;
+    VideoFrameWorker::Metrics metrics() const;
 
 signals:
     void frameReceived(const QImage &frame);
@@ -67,18 +72,20 @@ private slots:
     void restartStream();
 
 private:
-    static constexpr int kMaxBufferSize = 3 * 1024 * 1024;
-
     void setState(State state, const QString &message = QString());
     void scheduleReconnect();
     void cleanupReply();
     int currentReconnectDelayMs() const;
+    void initializeFrameWorker();
+    void resetFrameWorkerStream();
 
     QNetworkAccessManager *m_manager = nullptr;
     QNetworkReply *m_reply = nullptr;
     QTimer *m_reconnectTimer = nullptr;
+    QThread *m_frameThread = nullptr;
+    VideoFrameWorker *m_frameWorker = nullptr;
+    VideoFrameWorker::Settings m_workerSettings;
 
-    QByteArray m_buffer;
     QString m_streamTemplate;
     QUrl m_url;
 
@@ -89,7 +96,6 @@ private:
     State m_state = State::Stopped;
     bool m_seenFirstFrame = false;
 
-    QFile *m_recordFile = nullptr;
     QString m_recordFilePath;
     bool m_isRecording = false;
 

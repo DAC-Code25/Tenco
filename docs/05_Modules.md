@@ -86,6 +86,9 @@
 - `mjpegvideosource.h/.cpp`
   - 适配现有 HTTP MJPEG 客户端，作为分布式部署下的远程预览通道
   - 同时兼容“固定 MJPEG 地址”和“带 topic 查询参数的模板地址”两种配置方式
+- `videoframeworker.h/.cpp`
+  - 在 worker 线程中解析 MJPEG JPEG 边界、解码 `QImage`、写入原始 `.mjpeg` 录像
+  - 维护最新帧、限帧显示、丢帧统计和解码/录像指标，避免网络回调和 UI 承担重活
 - `oakcameravideosource.h/.cpp`
   - OAK-D-Pro-W / DepthAI 本地 USB 相机后端
   - 负责设备枚举、预览帧采集、still 拍照、主机侧录像、异常自动重连
@@ -93,8 +96,8 @@
   - 主要用于本机直连调试，不是当前“上位机在当前机器、相机在工控机 USB 上”场景的最终生产主路径
 - `videoclient.h/.cpp`
   - HTTP GET 拉流（multipart/x-mixed-replace）
-  - 通过扫描 JPEG 起止标记（FFD8/FFD9）提取帧并解码为 `QImage`
-  - 自动重连、录像（原始 JPEG 帧写入 `.mjpeg`）、截图（保存 `.jpg`）
+  - 负责连接、重连和把网络字节流转交给 `VideoFrameWorker`
+  - 自动重连、录像控制、截图（保存 `.jpg`）
 
 ---
 

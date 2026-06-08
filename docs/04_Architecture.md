@@ -76,18 +76,21 @@ sequenceDiagram
 sequenceDiagram
   participant User as 用户输入
   participant UI as Home
+  participant A as MotionCommandArbiter
   participant WS as ChassisClient(QWebSocket)
   participant Robot as 设备端
 
   User->>UI: 按钮长按/WASD
-  UI->>UI: 启动40ms定时器(连发)
+  UI->>A: setManualInputActive(...)
+  A->>A: 仲裁/心跳/零速
+  A-->>UI: velocityCommand(xVel, thetaVel)
   UI->>WS: sendVelocityCommand(xVel, thetaVel)
   WS->>Robot: 发送 JSON(packet,msg)
 ```
 
 对应代码：
 
-- 连发定时器：`Home::*RepeatTimer`（`home.h/.cpp`）
+- 运动仲裁：`MotionCommandArbiter`（`motioncommandarbiter.h/.cpp`）
 - 协议封装：`ChassisClient::sendVelocityCommand()`（`chassisclient.cpp`）
 
 ---
@@ -98,6 +101,7 @@ sequenceDiagram
 sequenceDiagram
   participant UI as Home
   participant V as VideoClient
+  participant W as VideoFrameWorker
   participant HTTP as MJPEG Server
 
   UI->>V: setStreamUrl(url)
@@ -105,7 +109,9 @@ sequenceDiagram
   V->>HTTP: GET streamUrl
   loop readyRead
     HTTP-->>V: multipart bytes
-    V->>V: 扫描FFD8/FFD9提取JPEG
+    V->>W: enqueueBytes(chunk)
+    W->>W: 扫描JPEG/解码/限帧/录像
+    W-->>V: frameReady(QImage)
     V-->>UI: frameReceived(QImage)
     UI->>UI: QLabel 显示/保存 lastFrame
   end
@@ -113,7 +119,8 @@ sequenceDiagram
 
 对应代码：
 
-- 拉流与解码：`videoclient.h/.cpp`
+- 拉流与重连：`videoclient.h/.cpp`
+- 解码、录像、最新帧、限帧与指标：`videoframeworker.h/.cpp`
 - UI 显示/录像/截图：`home.cpp`
 
 ---

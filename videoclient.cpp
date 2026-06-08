@@ -2,14 +2,15 @@
 
 #include <QDateTime>
 #include <QDir>
-#include <QFile>
-#include <QJsonDocument>
+#include <QMetaObject>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QThread>
 #include <QTimer>
 #include <QUrlQuery>
 #include <QLoggingCategory>
+#include <QtGlobal>
 
 #include <algorithm>
 #include <cmath>
@@ -19,12 +20,20 @@ Q_LOGGING_CATEGORY(lcVideoClient, "tenco.net.video")
 VideoClient::VideoClient(QObject *parent)
     : QObject(parent)
 {
+    initializeFrameWorker();
 }
 
 VideoClient::~VideoClient()
 {
     stop();
     stopRecording();
+    if (m_frameWorker) {
+        QMetaObject::invokeMethod(m_frameWorker, "reset", Qt::BlockingQueuedConnection);
+    }
+    if (m_frameThread) {
+        m_frameThread->quit();
+        m_frameThread->wait();
+    }
 }
 
 void VideoClient::setStreamUrlTemplate(const QString &templateUrl)
@@ -75,6 +84,17 @@ void VideoClient::setReconnectIntervalMs(int intervalMs)
     m_reconnectAttempt = 0;
 }
 
+void VideoClient::setMaxDisplayFps(int fps)
+{
+    m_workerSettings.maxDisplayFps = qBound(1, fps, 120);
+    if (m_frameWorker) {
+        const VideoFrameWorker::Settings settings = m_workerSettings;
+        QMetaObject::invokeMethod(m_frameWorker, [worker = m_frameWorker, settings]() {
+            worker->configure(settings);
+        }, Qt::QueuedConnection);
+    }
+}
+
 bool VideoClient::isActive() const
 {
     return m_reply && m_reply->isRunning();
@@ -94,7 +114,7 @@ void VideoClient::start()
         m_manager = new QNetworkAccessManager(this);
     }
 
-    m_buffer.clear();
+    resetFrameWorkerStream();
     m_seenFirstFrame = false;
     if (m_reconnectTimer && m_reconnectTimer->isActive()) {
         m_reconnectTimer->stop();
@@ -128,7 +148,10 @@ void VideoClient::stop()
     }
 
     cleanupReply();
-    m_buffer.clear();
+    if (m_isRecording) {
+        stopRecording();
+    }
+    resetFrameWorkerStream();
     setState(State::Stopped, tr("视频流已停止"));
 }
 
@@ -155,65 +178,12 @@ void VideoClient::handleReadyRead()
     if (chunk.isEmpty()) {
         return;
     }
-    m_buffer.append(chunk);
-    if (m_buffer.size() > kMaxBufferSize) {
-        m_buffer = m_buffer.right(kMaxBufferSize / 2);
+    if (!m_frameWorker) {
+        return;
     }
-
-    static const QByteArray kJpegStart("\xFF\xD8", 2);
-    static const QByteArray kJpegEnd("\xFF\xD9", 2);
-
-    while (true) {
-        int startIndex = m_buffer.indexOf(kJpegStart);
-        if (startIndex < 0) {
-            m_buffer = m_buffer.right(kMaxBufferSize / 2);
-            return;
-        }
-        if (startIndex > 0) {
-            m_buffer.remove(0, startIndex);
-            startIndex = 0;
-        }
-
-        const int endIndex = m_buffer.indexOf(kJpegEnd, startIndex + kJpegStart.size());
-        if (endIndex < 0) {
-            return;
-        }
-
-        const int frameSize = endIndex - startIndex + kJpegEnd.size();
-        const QByteArray frameData = m_buffer.mid(startIndex, frameSize);
-        m_buffer.remove(0, startIndex + frameSize);
-
-        QImage image;
-        if (!image.loadFromData(frameData, "JPG")) {
-            continue;
-        }
-
-        if (image.format() != QImage::Format_RGB32 && image.format() != QImage::Format_ARGB32) {
-            image = image.convertToFormat(QImage::Format_RGB32);
-        }
-
-        m_lastFrame = image;
-        emit frameReceived(m_lastFrame);
-
-        if (!m_seenFirstFrame) {
-            m_seenFirstFrame = true;
-            m_reconnectAttempt = 0;
-            setState(State::Streaming, tr("视频流已连接"));
-        }
-
-        if (m_isRecording) {
-            if (m_recordFile && m_recordFile->isOpen()) {
-                const qint64 written = m_recordFile->write(frameData);
-                if (written != frameData.size()) {
-                    setState(State::Error, tr("录像写入失败，已停止录像"));
-                    stopRecording();
-                }
-            } else {
-                setState(State::Error, tr("录像文件未就绪，已停止录像"));
-                stopRecording();
-            }
-        }
-    }
+    QMetaObject::invokeMethod(m_frameWorker, [worker = m_frameWorker, chunk]() {
+        worker->enqueueBytes(chunk);
+    }, Qt::QueuedConnection);
 }
 
 void VideoClient::handleStreamFinished()
@@ -270,6 +240,50 @@ int VideoClient::currentReconnectDelayMs() const
     return static_cast<int>(std::min(candidate, static_cast<qint64>(m_reconnectMaxIntervalMs)));
 }
 
+void VideoClient::initializeFrameWorker()
+{
+    if (m_frameWorker) {
+        return;
+    }
+
+    qRegisterMetaType<VideoFrameWorker::Metrics>("VideoFrameWorker::Metrics");
+    m_frameThread = new QThread(this);
+    m_frameThread->setObjectName(QStringLiteral("VideoFrameWorkerThread"));
+    m_frameWorker = new VideoFrameWorker;
+    m_frameWorker->configure(m_workerSettings);
+    m_frameWorker->moveToThread(m_frameThread);
+
+    connect(m_frameThread, &QThread::finished, m_frameWorker, &QObject::deleteLater);
+    connect(m_frameWorker, &VideoFrameWorker::frameReady, this, [this](const QImage &frame) {
+        m_lastFrame = frame;
+        if (!m_seenFirstFrame) {
+            m_seenFirstFrame = true;
+            m_reconnectAttempt = 0;
+            setState(State::Streaming, tr("视频流已连接"));
+        }
+        emit frameReceived(m_lastFrame);
+    });
+    connect(m_frameWorker, &VideoFrameWorker::workerError, this, [this](const QString &message) {
+        m_isRecording = false;
+        m_recordFilePath.clear();
+        setState(State::Error, message);
+    });
+    m_frameThread->start();
+}
+
+void VideoClient::resetFrameWorkerStream()
+{
+    m_lastFrame = QImage();
+    if (!m_frameWorker) {
+        return;
+    }
+    if (QThread::currentThread() == m_frameWorker->thread()) {
+        m_frameWorker->resetStream();
+        return;
+    }
+    QMetaObject::invokeMethod(m_frameWorker, "resetStream", Qt::BlockingQueuedConnection);
+}
+
 void VideoClient::setState(State state, const QString &message)
 {
     if (m_state == state && message.isEmpty()) {
@@ -291,25 +305,26 @@ bool VideoClient::startRecording(const QString &directory, QString *outPath)
     if (directory.trimmed().isEmpty()) {
         return false;
     }
-
-    QDir dir(directory);
-    if (!dir.exists()) {
-        dir.mkpath(".");
-    }
-
-    const QString fileName = QStringLiteral("video_%1.mjpeg").arg(QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss"));
-    const QString fullPath = dir.filePath(fileName);
-
-    auto *file = new QFile(fullPath, this);
-    if (!file->open(QIODevice::WriteOnly)) {
-        file->deleteLater();
+    if (!m_frameWorker) {
         return false;
     }
 
-    m_recordFile = file;
-    m_recordFilePath = fullPath;
-    m_isRecording = true;
+    QString path;
+    bool ok = false;
+    auto startWorkerRecording = [&]() {
+        ok = m_frameWorker->startRecording(directory, &path);
+    };
+    if (QThread::currentThread() == m_frameWorker->thread()) {
+        startWorkerRecording();
+    } else {
+        QMetaObject::invokeMethod(m_frameWorker, startWorkerRecording, Qt::BlockingQueuedConnection);
+    }
+    if (!ok) {
+        return false;
+    }
 
+    m_recordFilePath = path;
+    m_isRecording = true;
     if (outPath) {
         *outPath = m_recordFilePath;
     }
@@ -318,26 +333,40 @@ bool VideoClient::startRecording(const QString &directory, QString *outPath)
 
 QString VideoClient::stopRecording()
 {
-    const QString savedPath = m_recordFilePath;
+    QString savedPath;
+    if (m_frameWorker) {
+        auto stopWorkerRecording = [&]() {
+            savedPath = m_frameWorker->stopRecording();
+        };
+        if (QThread::currentThread() == m_frameWorker->thread()) {
+            stopWorkerRecording();
+        } else {
+            QMetaObject::invokeMethod(m_frameWorker, stopWorkerRecording, Qt::BlockingQueuedConnection);
+        }
+    } else {
+        savedPath = m_recordFilePath;
+    }
 
     m_isRecording = false;
     m_recordFilePath.clear();
-
-    if (m_recordFile) {
-        if (m_recordFile->isOpen()) {
-            m_recordFile->flush();
-            m_recordFile->close();
-        }
-        m_recordFile->deleteLater();
-        m_recordFile = nullptr;
-    }
 
     return savedPath;
 }
 
 bool VideoClient::saveSnapshot(const QString &directory, QString *outPath) const
 {
-    if (m_lastFrame.isNull()) {
+    QImage frame = m_lastFrame;
+    if (m_frameWorker) {
+        auto readLastFrame = [&]() {
+            frame = m_frameWorker->lastFrame();
+        };
+        if (QThread::currentThread() == m_frameWorker->thread()) {
+            readLastFrame();
+        } else {
+            QMetaObject::invokeMethod(m_frameWorker, readLastFrame, Qt::BlockingQueuedConnection);
+        }
+    }
+    if (frame.isNull()) {
         return false;
     }
     if (directory.trimmed().isEmpty()) {
@@ -351,7 +380,7 @@ bool VideoClient::saveSnapshot(const QString &directory, QString *outPath) const
 
     const QString fileName = QStringLiteral("photo_%1.jpg").arg(QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss"));
     const QString fullPath = dir.filePath(fileName);
-    if (!m_lastFrame.save(fullPath, "JPG", 90)) {
+    if (!frame.save(fullPath, "JPG", 90)) {
         return false;
     }
 
@@ -359,4 +388,38 @@ bool VideoClient::saveSnapshot(const QString &directory, QString *outPath) const
         *outPath = fullPath;
     }
     return true;
+}
+
+QImage VideoClient::lastFrame() const
+{
+    if (!m_frameWorker) {
+        return m_lastFrame;
+    }
+    QImage frame;
+    auto readLastFrame = [&]() {
+        frame = m_frameWorker->lastFrame();
+    };
+    if (QThread::currentThread() == m_frameWorker->thread()) {
+        readLastFrame();
+    } else {
+        QMetaObject::invokeMethod(m_frameWorker, readLastFrame, Qt::BlockingQueuedConnection);
+    }
+    return frame.isNull() ? m_lastFrame : frame;
+}
+
+VideoFrameWorker::Metrics VideoClient::metrics() const
+{
+    if (!m_frameWorker) {
+        return VideoFrameWorker::Metrics{};
+    }
+    VideoFrameWorker::Metrics snapshot;
+    auto readMetrics = [&]() {
+        snapshot = m_frameWorker->metrics();
+    };
+    if (QThread::currentThread() == m_frameWorker->thread()) {
+        readMetrics();
+    } else {
+        QMetaObject::invokeMethod(m_frameWorker, readMetrics, Qt::BlockingQueuedConnection);
+    }
+    return snapshot;
 }

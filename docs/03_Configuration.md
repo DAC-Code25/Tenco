@@ -90,7 +90,7 @@
 - `video.controlBaseUrl`：工控机相机控制服务基地址，例如 `http://192.168.31.13:18080`
 - `video.streamOptions`：可选的视频流列表；配置后首页 `video_topic_name` 会作为“视频流选择器”使用，每个选项直接绑定一条 MJPEG URL
 - `video.deviceId`：OAK 设备 ID，多相机场景下用于绑定固定设备
-- `video.previewWidth` / `video.previewHeight` / `video.previewFps`：预览参数，主要供本机直连 OAK 或工控机服务配置对齐使用
+- `video.previewWidth` / `video.previewHeight` / `video.previewFps`：预览参数；`previewFps` 也作为 MJPEG worker 向 UI 发帧的限帧上限
 - `video.recordMode`：录像模式，当前支持 `host_opencv`
 - `video.recordCodec`：录像编码，当前支持 `MJPG` / `XVID` / `MP4V`
 - `video.reconnectIntervalMs`：断线重连间隔
