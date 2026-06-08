@@ -102,6 +102,9 @@ qt_add_executable(Tenco
     routefollower.h
     routefollower.cpp
 
+    motioncommandarbiter.h
+    motioncommandarbiter.cpp
+
     routepathfinder.h
     routepathfinder.cpp
 

@@ -125,6 +125,7 @@ sequenceDiagram
   participant Map as Map
   participant Home as Home
   participant F as RouteFollower
+  participant A as MotionCommandArbiter
   participant WS as ChassisClient
 
   Map->>Home: routeSegmentDispatched(polyline,startTheta,endTheta)
@@ -132,6 +133,8 @@ sequenceDiagram
   loop 每 100ms (可配置)
     Home->>F: updatePose(x,y,theta)  (来自状态轮询)
     F-->>Home: velocityCommand(lin,ang)
+    Home->>A: setRouteCommand(lin,ang)
+    A-->>Home: velocityCommand(lin,ang)
     Home->>WS: sendVelocityCommand(lin,ang)
   end
   F-->>Home: segmentCompleted(success)
@@ -144,4 +147,5 @@ sequenceDiagram
 - Map 发起分段：`Map::dispatchNextEdge()`（`map.cpp`） → `routeSegmentDispatched` 信号
 - Home 编排：`Home::followRouteSegment()`（`home.cpp`）
 - 跟随算法：`routefollower.h/.cpp`
+- 运动安全仲裁：`motioncommandarbiter.h/.cpp`，统一手动/路线速度、心跳、零速和安全停车 reason
 - 发送速度：`ChassisClient`（`chassisclient.h/.cpp`）

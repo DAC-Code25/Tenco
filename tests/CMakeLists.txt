@@ -14,6 +14,20 @@ target_link_libraries(tenco_test_routefollower PRIVATE
 )
 add_test(NAME tenco_test_routefollower COMMAND tenco_test_routefollower)
 
+qt_add_executable(tenco_test_motioncommandarbiter
+    test_motioncommandarbiter.cpp
+    ../motioncommandarbiter.h
+    ../motioncommandarbiter.cpp
+)
+target_include_directories(tenco_test_motioncommandarbiter PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+)
+target_link_libraries(tenco_test_motioncommandarbiter PRIVATE
+    Qt6::Core
+    Qt6::Test
+)
+add_test(NAME tenco_test_motioncommandarbiter COMMAND tenco_test_motioncommandarbiter)
+
 qt_add_executable(tenco_test_routepathfinder
     test_routepathfinder.cpp
     ../routepathfinder.h
