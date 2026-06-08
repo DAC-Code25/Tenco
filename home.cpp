@@ -50,6 +50,10 @@
 
 namespace {
 
+using ManualDirection = HomeManualInputState::Direction;
+using ManualSource = HomeManualInputState::Source;
+using GimbalKeyAction = HomeGimbalKeyState::Action;
+
 QString gimbalAxisAuditName(GimbalControlClient::Axis axis)
 {
     switch (axis) {
@@ -89,14 +93,6 @@ Home::Home(Ui::MainWindow *ui, QObject *parent)
     , m_chassisClient(new ChassisClient(this))
     , m_routeFollower(new RouteFollower(this))
     , m_motionArbiter(new MotionCommandArbiter(this))
-    , forwardButtonHeld(false)
-    , forwardKeyHeld(false)
-    , backwardButtonHeld(false)
-    , backwardKeyHeld(false)
-    , turnLeftButtonHeld(false)
-    , turnLeftKeyHeld(false)
-    , turnRightButtonHeld(false)
-    , turnRightKeyHeld(false)
     , rebootRemainingSeconds(0)
 {
     initialize();
@@ -819,7 +815,7 @@ void Home::stopGimbal()
     const GimbalControlClient::Direction direction = m_activeGimbalDirection;
 
     m_gimbalMoving = false;
-    gimbalKeyboardMotionActive = false;
+    m_gimbalKeyState.clearActiveAction();
     m_activeGimbalAction.clear();
     if (gimbalSafetyStopTimer) {
         gimbalSafetyStopTimer->stop();
@@ -1033,26 +1029,30 @@ void Home::updateManualCommandConfig()
 // 判断是否需要继续推送前进速度
 bool Home::shouldSendForward() const
 {
-    return (forwardButtonHeld && isManualControlEnabledForButtons()) ||  // UI 按钮被按住且权限开启
-           (forwardKeyHeld && isManualControlEnabledForKeys());  // 或者键盘 W 键被按住且键盘权限已开
+    return m_manualInputState.isActive(ManualDirection::Forward,
+                                       isManualControlEnabledForButtons(),
+                                       isManualControlEnabledForKeys());
 }
 // 判断是否要发送后退速度
 bool Home::shouldSendBackward() const
 {
-    return (backwardButtonHeld && isManualControlEnabledForButtons()) ||  // UI 后退按钮按住
-           (backwardKeyHeld && isManualControlEnabledForKeys());  // 或键盘 S 键按住
+    return m_manualInputState.isActive(ManualDirection::Backward,
+                                       isManualControlEnabledForButtons(),
+                                       isManualControlEnabledForKeys());
 }
 // 判断是否要发送左转角速度
 bool Home::shouldSendTurnLeft() const
 {
-    return (turnLeftButtonHeld && isManualControlEnabledForButtons()) ||  // 左转按钮被按住
-           (turnLeftKeyHeld && isManualControlEnabledForKeys());  // 或键盘 A 键按住
+    return m_manualInputState.isActive(ManualDirection::TurnLeft,
+                                       isManualControlEnabledForButtons(),
+                                       isManualControlEnabledForKeys());
 }
 // 判断是否要发送右转角速度
 bool Home::shouldSendTurnRight() const
 {
-    return (turnRightButtonHeld && isManualControlEnabledForButtons()) ||  // 右转按钮按住
-           (turnRightKeyHeld && isManualControlEnabledForKeys());  // 或键盘 D 键按住
+    return m_manualInputState.isActive(ManualDirection::TurnRight,
+                                       isManualControlEnabledForButtons(),
+                                       isManualControlEnabledForKeys());
 }
 // 通过 WebSocket 向底盘发送速度指令 JSON
 void Home::sendVelocityCommand(double xVel, double thetaVel)
@@ -1227,7 +1227,7 @@ void Home::handleImageSwitchToggled(bool checked)
 // 前进按钮按下：立即发送一次指令并启动连发
 void Home::handleForwardButtonPressed()
 {
-    forwardButtonHeld = true;  // 标记按钮处于按下状态
+    m_manualInputState.setHeld(ManualDirection::Forward, ManualSource::Button, true);
     updateManualCommandConfig();
     if (m_motionArbiter) {
         m_motionArbiter->setManualInputActive(MotionCommandArbiter::ManualInput::Forward, true, false);
@@ -1243,7 +1243,7 @@ void Home::handleForwardButtonPressed()
 // 前进按钮抬起：停止连发
 void Home::handleForwardButtonReleased()
 {
-    forwardButtonHeld = false;  // 清除按钮按下标记
+    m_manualInputState.setHeld(ManualDirection::Forward, ManualSource::Button, false);
     if (m_motionArbiter) {
         m_motionArbiter->setManualInputActive(MotionCommandArbiter::ManualInput::Forward, false, false);
     }
@@ -1256,7 +1256,7 @@ void Home::handleForwardButtonReleased()
 // 后退按钮按下：立即发送一次后退命令
 void Home::handleBackwardButtonPressed()
 {
-    backwardButtonHeld = true;  // 记录按钮按下
+    m_manualInputState.setHeld(ManualDirection::Backward, ManualSource::Button, true);
     updateManualCommandConfig();
     if (m_motionArbiter) {
         m_motionArbiter->setManualInputActive(MotionCommandArbiter::ManualInput::Backward, true, false);
@@ -1272,7 +1272,7 @@ void Home::handleBackwardButtonPressed()
 // 后退按钮抬起：停止后退连发
 void Home::handleBackwardButtonReleased()
 {
-    backwardButtonHeld = false;  // 清除按钮状态
+    m_manualInputState.setHeld(ManualDirection::Backward, ManualSource::Button, false);
     if (m_motionArbiter) {
         m_motionArbiter->setManualInputActive(MotionCommandArbiter::ManualInput::Backward, false, false);
     }
@@ -1285,7 +1285,7 @@ void Home::handleBackwardButtonReleased()
 // 左转按钮按下：立即推送左转角速度
 void Home::handleTurnLeftButtonPressed()
 {
-    turnLeftButtonHeld = true;  // 记录按钮按下
+    m_manualInputState.setHeld(ManualDirection::TurnLeft, ManualSource::Button, true);
     updateManualCommandConfig();
     if (m_motionArbiter) {
         m_motionArbiter->setManualInputActive(MotionCommandArbiter::ManualInput::TurnLeft, true, false);
@@ -1301,7 +1301,7 @@ void Home::handleTurnLeftButtonPressed()
 // 左转按钮抬起：停止左转连发
 void Home::handleTurnLeftButtonReleased()
 {
-    turnLeftButtonHeld = false;  // 清除按钮状态
+    m_manualInputState.setHeld(ManualDirection::TurnLeft, ManualSource::Button, false);
     if (m_motionArbiter) {
         m_motionArbiter->setManualInputActive(MotionCommandArbiter::ManualInput::TurnLeft, false, false);
     }
@@ -1314,7 +1314,7 @@ void Home::handleTurnLeftButtonReleased()
 // 右转按钮按下：立即推送右转角速度
 void Home::handleTurnRightButtonPressed()
 {
-    turnRightButtonHeld = true;  // 记录按钮按下
+    m_manualInputState.setHeld(ManualDirection::TurnRight, ManualSource::Button, true);
     updateManualCommandConfig();
     if (m_motionArbiter) {
         m_motionArbiter->setManualInputActive(MotionCommandArbiter::ManualInput::TurnRight, true, false);
@@ -1330,7 +1330,7 @@ void Home::handleTurnRightButtonPressed()
 // 右转按钮抬起：停止右转连发
 void Home::handleTurnRightButtonReleased()
 {
-    turnRightButtonHeld = false;  // 清除按钮状态
+    m_manualInputState.setHeld(ManualDirection::TurnRight, ManualSource::Button, false);
     if (m_motionArbiter) {
         m_motionArbiter->setManualInputActive(MotionCommandArbiter::ManualInput::TurnRight, false, false);
     }
@@ -1413,7 +1413,7 @@ bool Home::handleKeyPress(int key, Qt::KeyboardModifiers modifiers, bool isAutoR
     }
     switch (key) {  // 根据物理按键决定方向
     case Qt::Key_W:  // W 键 -> 前进
-        forwardKeyHeld = true;  // 记录键盘输入状态
+        m_manualInputState.setHeld(ManualDirection::Forward, ManualSource::Keyboard, true);
         updateManualCommandConfig();
         if (m_motionArbiter) {
             m_motionArbiter->setManualInputActive(MotionCommandArbiter::ManualInput::Forward, true, true);
@@ -1427,7 +1427,7 @@ bool Home::handleKeyPress(int key, Qt::KeyboardModifiers modifiers, bool isAutoR
         logMessage(tr("前进开始（键盘）"));
         return true;
     case Qt::Key_S:  // S 键 -> 后退
-        backwardKeyHeld = true;  // 记录按键状态
+        m_manualInputState.setHeld(ManualDirection::Backward, ManualSource::Keyboard, true);
         updateManualCommandConfig();
         if (m_motionArbiter) {
             m_motionArbiter->setManualInputActive(MotionCommandArbiter::ManualInput::Backward, true, true);
@@ -1441,7 +1441,7 @@ bool Home::handleKeyPress(int key, Qt::KeyboardModifiers modifiers, bool isAutoR
         logMessage(tr("后退开始（键盘）"));
         return true;
     case Qt::Key_A:  // A 键 -> 左转
-        turnLeftKeyHeld = true;  // 标记左转按下
+        m_manualInputState.setHeld(ManualDirection::TurnLeft, ManualSource::Keyboard, true);
         updateManualCommandConfig();
         if (m_motionArbiter) {
             m_motionArbiter->setManualInputActive(MotionCommandArbiter::ManualInput::TurnLeft, true, true);
@@ -1455,7 +1455,7 @@ bool Home::handleKeyPress(int key, Qt::KeyboardModifiers modifiers, bool isAutoR
         logMessage(tr("左转开始（键盘）"));
         return true;
     case Qt::Key_D:  // D 键 -> 右转
-        turnRightKeyHeld = true;  // 标记右转按下
+        m_manualInputState.setHeld(ManualDirection::TurnRight, ManualSource::Keyboard, true);
         updateManualCommandConfig();
         if (m_motionArbiter) {
             m_motionArbiter->setManualInputActive(MotionCommandArbiter::ManualInput::TurnRight, true, true);
@@ -1485,8 +1485,8 @@ bool Home::handleKeyRelease(int key, Qt::KeyboardModifiers modifiers, bool isAut
     switch (key) {  // 根据释放的按键更新状态
     case Qt::Key_W:  // W 键抬起
     {
-        const bool wasHeld = forwardKeyHeld;
-        forwardKeyHeld = false;  // 清除标记
+        const bool wasHeld = m_manualInputState.isHeld(ManualDirection::Forward, ManualSource::Keyboard);
+        m_manualInputState.setHeld(ManualDirection::Forward, ManualSource::Keyboard, false);
         if (m_motionArbiter) {
             m_motionArbiter->setManualInputActive(MotionCommandArbiter::ManualInput::Forward, false, true);
         }
@@ -1502,8 +1502,8 @@ bool Home::handleKeyRelease(int key, Qt::KeyboardModifiers modifiers, bool isAut
     }
     case Qt::Key_S:  // S 键抬起
     {
-        const bool wasHeld = backwardKeyHeld;
-        backwardKeyHeld = false;  // 清除后退状态
+        const bool wasHeld = m_manualInputState.isHeld(ManualDirection::Backward, ManualSource::Keyboard);
+        m_manualInputState.setHeld(ManualDirection::Backward, ManualSource::Keyboard, false);
         if (m_motionArbiter) {
             m_motionArbiter->setManualInputActive(MotionCommandArbiter::ManualInput::Backward, false, true);
         }
@@ -1519,8 +1519,8 @@ bool Home::handleKeyRelease(int key, Qt::KeyboardModifiers modifiers, bool isAut
     }
     case Qt::Key_A:  // A 键抬起
     {
-        const bool wasHeld = turnLeftKeyHeld;
-        turnLeftKeyHeld = false;  // 清除左转状态
+        const bool wasHeld = m_manualInputState.isHeld(ManualDirection::TurnLeft, ManualSource::Keyboard);
+        m_manualInputState.setHeld(ManualDirection::TurnLeft, ManualSource::Keyboard, false);
         if (m_motionArbiter) {
             m_motionArbiter->setManualInputActive(MotionCommandArbiter::ManualInput::TurnLeft, false, true);
         }
@@ -1536,8 +1536,8 @@ bool Home::handleKeyRelease(int key, Qt::KeyboardModifiers modifiers, bool isAut
     }
     case Qt::Key_D:  // D 键抬起
     {
-        const bool wasHeld = turnRightKeyHeld;
-        turnRightKeyHeld = false;  // 清除右转状态
+        const bool wasHeld = m_manualInputState.isHeld(ManualDirection::TurnRight, ManualSource::Keyboard);
+        m_manualInputState.setHeld(ManualDirection::TurnRight, ManualSource::Keyboard, false);
         if (m_motionArbiter) {
             m_motionArbiter->setManualInputActive(MotionCommandArbiter::ManualInput::TurnRight, false, true);
         }
@@ -1558,35 +1558,9 @@ bool Home::handleKeyRelease(int key, Qt::KeyboardModifiers modifiers, bool isAut
 
 bool Home::handleGimbalKeyPress(int key, Qt::KeyboardModifiers modifiers)
 {
-    if (key == Qt::Key_Control) {
-        gimbalLeftCtrlHeld = true;
+    if (m_gimbalKeyState.handlePress(key, modifiers)) {
         updateGimbalKeyboardMotion();
         return true;
-    }
-
-    if (modifiers.testFlag(Qt::ControlModifier)) {
-        gimbalLeftCtrlHeld = true;
-    }
-
-    switch (key) {
-    case Qt::Key_Up:
-        gimbalKeyUpHeld = true;
-        updateGimbalKeyboardMotion();
-        return true;
-    case Qt::Key_Down:
-        gimbalKeyDownHeld = true;
-        updateGimbalKeyboardMotion();
-        return true;
-    case Qt::Key_Left:
-        gimbalKeyLeftHeld = true;
-        updateGimbalKeyboardMotion();
-        return true;
-    case Qt::Key_Right:
-        gimbalKeyRightHeld = true;
-        updateGimbalKeyboardMotion();
-        return true;
-    default:
-        break;
     }
     return false;
 }
@@ -1594,29 +1568,9 @@ bool Home::handleGimbalKeyPress(int key, Qt::KeyboardModifiers modifiers)
 bool Home::handleGimbalKeyRelease(int key, Qt::KeyboardModifiers modifiers)
 {
     Q_UNUSED(modifiers);
-    switch (key) {
-    case Qt::Key_Control:
-        gimbalLeftCtrlHeld = false;
+    if (m_gimbalKeyState.handleRelease(key)) {
         updateGimbalKeyboardMotion();
         return true;
-    case Qt::Key_Up:
-        gimbalKeyUpHeld = false;
-        updateGimbalKeyboardMotion();
-        return true;
-    case Qt::Key_Down:
-        gimbalKeyDownHeld = false;
-        updateGimbalKeyboardMotion();
-        return true;
-    case Qt::Key_Left:
-        gimbalKeyLeftHeld = false;
-        updateGimbalKeyboardMotion();
-        return true;
-    case Qt::Key_Right:
-        gimbalKeyRightHeld = false;
-        updateGimbalKeyboardMotion();
-        return true;
-    default:
-        break;
     }
     return false;
 }
@@ -1627,55 +1581,58 @@ void Home::updateGimbalKeyboardMotion()
         return;
     }
 
-    const auto applyKeyboardMotion = [this](GimbalControlClient::Axis axis,
+    const auto applyKeyboardMotion = [this](GimbalKeyAction action,
+                                            GimbalControlClient::Axis axis,
                                             GimbalControlClient::Direction direction,
                                             const QString &actionText) {
-        const bool motionChanged = gimbalKeyboardMotionActive &&
-                                   (m_activeGimbalKeyboardAxis != axis || m_activeGimbalKeyboardDirection != direction);
+        const bool motionChanged = m_gimbalKeyState.hasActiveMotion() &&
+                                   m_gimbalKeyState.activeAction() != action;
         if (motionChanged) {
             stopGimbal();
         }
-        m_activeGimbalKeyboardAxis = axis;
-        m_activeGimbalKeyboardDirection = direction;
-        gimbalKeyboardMotionActive = true;
+        m_gimbalKeyState.setActiveAction(action);
         jogGimbal(axis, direction, actionText);
     };
 
-    if (gimbalLeftCtrlHeld && gimbalKeyUpHeld && !gimbalKeyDownHeld) {
-        applyKeyboardMotion(GimbalControlClient::Axis::Pitch,
+    switch (m_gimbalKeyState.currentAction()) {
+    case GimbalKeyAction::PitchUp:
+        applyKeyboardMotion(GimbalKeyAction::PitchUp,
+                            GimbalControlClient::Axis::Pitch,
                             GimbalControlClient::Direction::Value2,
                             tr("云台上仰"));
         return;
-    }
-    if (gimbalLeftCtrlHeld && gimbalKeyDownHeld && !gimbalKeyUpHeld) {
-        applyKeyboardMotion(GimbalControlClient::Axis::Pitch,
+    case GimbalKeyAction::PitchDown:
+        applyKeyboardMotion(GimbalKeyAction::PitchDown,
+                            GimbalControlClient::Axis::Pitch,
                             GimbalControlClient::Direction::Value1,
                             tr("云台下俯"));
         return;
-    }
-    if (!gimbalLeftCtrlHeld && gimbalKeyUpHeld && !gimbalKeyDownHeld) {
-        applyKeyboardMotion(GimbalControlClient::Axis::Height,
+    case GimbalKeyAction::HeightUp:
+        applyKeyboardMotion(GimbalKeyAction::HeightUp,
+                            GimbalControlClient::Axis::Height,
                             GimbalControlClient::Direction::Value1,
                             tr("云台上升"));
         return;
-    }
-    if (!gimbalLeftCtrlHeld && gimbalKeyDownHeld && !gimbalKeyUpHeld) {
-        applyKeyboardMotion(GimbalControlClient::Axis::Height,
+    case GimbalKeyAction::HeightDown:
+        applyKeyboardMotion(GimbalKeyAction::HeightDown,
+                            GimbalControlClient::Axis::Height,
                             GimbalControlClient::Direction::Value2,
                             tr("云台下降"));
         return;
-    }
-    if (gimbalKeyLeftHeld && !gimbalKeyRightHeld) {
-        applyKeyboardMotion(GimbalControlClient::Axis::Yaw,
+    case GimbalKeyAction::YawLeft:
+        applyKeyboardMotion(GimbalKeyAction::YawLeft,
+                            GimbalControlClient::Axis::Yaw,
                             GimbalControlClient::Direction::Value2,
                             tr("云台左旋"));
         return;
-    }
-    if (gimbalKeyRightHeld && !gimbalKeyLeftHeld) {
-        applyKeyboardMotion(GimbalControlClient::Axis::Yaw,
+    case GimbalKeyAction::YawRight:
+        applyKeyboardMotion(GimbalKeyAction::YawRight,
+                            GimbalControlClient::Axis::Yaw,
                             GimbalControlClient::Direction::Value1,
                             tr("云台右旋"));
         return;
+    case GimbalKeyAction::None:
+        break;
     }
 
     stopGimbalKeyboardMotion();
@@ -1683,10 +1640,10 @@ void Home::updateGimbalKeyboardMotion()
 
 void Home::stopGimbalKeyboardMotion()
 {
-    if (!gimbalKeyboardMotionActive) {
+    if (!m_gimbalKeyState.hasActiveMotion()) {
         return;
     }
-    gimbalKeyboardMotionActive = false;
+    m_gimbalKeyState.clearActiveAction();
     if (m_gimbalMoving) {
         stopGimbal();
     }
@@ -1969,14 +1926,7 @@ void Home::cancelRouteExecution()
 
 void Home::stopMotionForSafety(const QString &reason)
 {
-    forwardButtonHeld = false;
-    backwardButtonHeld = false;
-    turnLeftButtonHeld = false;
-    turnRightButtonHeld = false;
-    forwardKeyHeld = false;
-    backwardKeyHeld = false;
-    turnLeftKeyHeld = false;
-    turnRightKeyHeld = false;
+    m_manualInputState.clearMotionInputs();
 
     if (m_motionArbiter) {
         m_motionArbiter->stopAll(reason);

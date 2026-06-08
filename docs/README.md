@@ -24,6 +24,7 @@
 16. `develop/motion_command_arbiter_plan.md`：统一运动安全层设计、仲裁规则、集成点和测试矩阵
 17. `develop/video_worker_pipeline_plan.md`：MJPEG worker 化、最新帧、丢帧限帧、录像与指标方案
 18. `develop/core_architecture_optimization_plan.md`：核心架构与性能优化 V1，覆盖模块化、公共网络策略、配置治理、异步日志和低风险职责拆分
+19. `develop/home_map_maintainability_v2_plan.md`：Home/Map 可维护性 V2，覆盖输入状态、云台键盘状态和地图几何工具抽取
 
 ## 专题开发方案
 
@@ -32,3 +33,4 @@
 - `develop/motion_command_arbiter_plan.md`：统一运动安全层设计、仲裁规则、集成点和测试矩阵。
 - `develop/video_worker_pipeline_plan.md`：MJPEG worker 化、最新帧、丢帧限帧、录像与指标方案。
 - `develop/core_architecture_optimization_plan.md`：CMake 内部库拆分、Home/Map 协作者抽取、网络公共策略、配置 schema/环境变量覆盖、路线规划参数化和异步日志方案。
+- `develop/home_map_maintainability_v2_plan.md`：继续降低 `home.cpp` / `map.cpp` 状态复杂度，抽出可单测输入状态与地图几何工具。

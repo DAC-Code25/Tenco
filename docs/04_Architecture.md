@@ -7,6 +7,8 @@
 - **业务模块层（已拆分）**
   - `HomeStatusPresenter`：状态包解析与状态区 UI 映射
   - `HomeControlCoordinator`：路线跟随/手动控制参数映射
+  - `HomeManualInputState`：按钮/键盘手动运动输入状态
+  - `HomeGimbalKeyState`：云台键盘组合键状态与动作解析
   - `HomeVideoPresenter`：首页视频 QLabel 占位、缩放、最新帧显示
   - `StatusClient`：状态轮询编排（线程封装）
   - `HomeNetworkWorker`：真正执行 HTTP 轮询的 worker（跑在 QThread）
@@ -17,6 +19,7 @@
   - `RouteFollower`：路线段跟随算法（输出速度命令，不直接发网络）
   - `RoutePathFinder`：路径搜索（加权最短路）
   - `MapRoutePlanner`：地图路径边到 `RoutePathFinder` 的适配，并应用 `routePlanning` 配置
+  - `MapGeometry`：地图/标准坐标转换、角度归一化、polyline 长度等纯几何工具
   - `MapDocument`：地图 JSON 文档模型编解码
 - **配置层**：`ConfigManager`（`config.json`）
 - **日志层**：`LoggingManager`（Qt message handler + 异步文件写入）

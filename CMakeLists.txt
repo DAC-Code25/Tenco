@@ -86,6 +86,8 @@ qt_add_library(tenco_map_model STATIC
     rowmissiontypes.cpp
     mapdocument.h
     mapdocument.cpp
+    mapgeometry.h
+    mapgeometry.cpp
     maprouteplanner.h
     maprouteplanner.cpp
 )
@@ -156,6 +158,10 @@ qt_add_executable(Tenco
     home.cpp
     homecontrolcoordinator.h
     homecontrolcoordinator.cpp
+    homegimbalkeystate.h
+    homegimbalkeystate.cpp
+    homemanualinputstate.h
+    homemanualinputstate.cpp
     home_status_presenter.h
     home_status_presenter.cpp
     homevideopresenter.h
