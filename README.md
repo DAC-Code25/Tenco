@@ -151,3 +151,17 @@ ctest --preset release
   - 或运行时指定风格：`-style fusion` / 设置环境变量 `QT_STYLE_OVERRIDE=fusion`
 - **WebSocket 报 “The proxy type is invalid for this operation”**：通常是系统代理导致。可关闭系统代理，或在代码中为 `QWebSocket` 显式设置 `NoProxy`。
 - **状态轮询日志反复出现 `http=0` / `Operation canceled` / `device not open`**：通常表示 `network.statusReadUrl` 不可达、接口响应超时，或设备未启动；当前实现对状态轮询设置了超时与失败退避，因此这类日志更接近“网络失败”而不是“地图/界面崩溃”。
+  
+## 界面展示
+<img width="1193" height="778" alt="image" src="https://github.com/user-attachments/assets/b53abb44-51bb-4851-b58d-397784401042" />
+<img width="4690" height="2933" alt="Snipaste_2025-12-31_15-15-56" src="https://github.com/user-attachments/assets/1f440180-421f-4566-86f2-067dcb48e243" />
+<img width="4698" height="2935" alt="Snipaste_2025-12-31_15-16-40" src="https://github.com/user-attachments/assets/7c7df090-4116-4f6e-b258-776524c03043" />
+<img width="1198" height="781" alt="image" src="https://github.com/user-attachments/assets/08882cef-4f7c-493e-a1dc-0479681a4e2d" />
+<img width="1200" height="775" alt="image" src="https://github.com/user-attachments/assets/8741b1cb-2b0d-4f8c-9273-678ec1732e0e" />
+<img width="1197" height="778" alt="image" src="https://github.com/user-attachments/assets/ce5777b9-2b83-40ac-b031-c01dabf94c11" />
+<img width="1202" height="780" alt="image" src="https://github.com/user-attachments/assets/b629dcb8-c4bf-4302-8a47-ad8703c7aae7" />
+
+
+
+
+
