@@ -144,19 +144,19 @@ Help::Help(Ui::MainWindow *ui, QObject *parent)
     m_documents = {
         {tr("OAK 相机接入方案"),
          tr("工控机 OAK 相机接入、HTTP 接口、视频流和 systemd 托管说明。"),
-         QStringLiteral("docs/develop/usb_oak_camera_integration_plan.md")},
+         QStringLiteral("docs/develop/USB_OAK相机接入开发方案.md")},
         {tr("首页云台控制方案"),
          tr("PLC Modbus、云台/升降控制、键盘快捷键和安全限位说明。"),
-         QStringLiteral("docs/develop/home_gimbal_control_plan.md")},
+         QStringLiteral("docs/develop/首页云台控制开发方案.md")},
         {tr("直线/多垄作业控制方案"),
          tr("双端点示教、直线保持、多垄切换、工控机控制闭环和鲁棒性说明。"),
-         QStringLiteral("docs/develop/row_work_controller_plan.md")},
+         QStringLiteral("docs/develop/多垄穿梭作业闭环系统开发方案.md")},
         {tr("维护配置管理方案"),
          tr("维护页配置项、保存/应用、备份恢复、热加载和生产维护说明。"),
-         QStringLiteral("docs/develop/maintenance_config_plan.md")},
+         QStringLiteral("docs/develop/维护界面配置管理开发方案.md")},
         {tr("帮助界面开发方案"),
          tr("帮助页定位、分类导航、故障排查、文档入口和运行信息说明。"),
-         QStringLiteral("docs/develop/help_page_plan.md")}
+         QStringLiteral("docs/develop/帮助界面开发方案.md")}
     };
 
     buildUi();
