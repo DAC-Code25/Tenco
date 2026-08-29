@@ -195,7 +195,7 @@
 }
 ```
 
-OAK/DepthAI 的完整落地方案见 `docs/develop/usb_oak_camera_integration_plan.md`。
+OAK/DepthAI 的完整落地方案见 `docs/develop/USB_OAK相机接入开发方案.md`。
 
 ### 3.6 network（网络接口）
 
@@ -225,7 +225,7 @@ OAK/DepthAI 的完整落地方案见 `docs/develop/usb_oak_camera_integration_pl
 
 ### 3.7 database（数据存储）
 
-用于控制本地数据库与后续中心数据库连接。当前推荐默认使用 `sqlite`，用于单机离线可用、地图/任务/审计/状态缓存等本地持久化；生产中心化方案见 `docs/develop/database_system_plan.md`。
+用于控制本地数据库与后续中心数据库连接。当前推荐默认使用 `sqlite`，用于单机离线可用、地图/任务/审计/状态缓存等本地持久化；生产中心化方案见 `docs/develop/数据库系统开发方案.md`。
 
 关键字段：
 

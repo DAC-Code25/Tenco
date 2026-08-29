@@ -1,22 +1,30 @@
 # 构建、运行与调试
 
-## 1. 构建依赖
+## 1. 固定构建依赖
 
-- Qt 6（推荐 Qt 6.5+）
-- Qt 模块：`Core`, `Gui`, `Widgets`, `Network`, `WebSockets`
-- CMake 3.16+
-- 编译器：
-  - Windows：MinGW 或 MSVC（以你安装的 Qt Kit 为准）
+- Qt 6.5.3：`D:/Qt/6.5.3/mingw_64`
+- Qt 模块：`Core`, `Gui`, `Widgets`, `Network`, `WebSockets`, `Sql`；关于页三维能力还会按可用性加载 `Quick`, `QuickWidgets`, `Quick3D`, `Quick3DAssetUtils`
+- CMake：`D:/Qt/Tools/CMake_64/bin/cmake.exe`
+- Ninja：`D:/Qt/Tools/Ninja/ninja.exe`
+- MinGW 11.2 64-bit：`D:/Qt/Tools/mingw1120_64`
+- C 编译器：`D:/Qt/Tools/mingw1120_64/bin/gcc.exe`
+- C++ 编译器：`D:/Qt/Tools/mingw1120_64/bin/g++.exe`
 
 工程入口：`CMakeLists.txt`
+
+以上是用户在 Qt Creator 中确认并要求后续固定使用的本地验证环境。CI 可以继续使用工作流声明的 Qt 版本做额外兼容性验证，但不能替代本机固定 Kit 验收。
 
 ---
 
 ## 2. 使用 Qt Creator 构建运行（推荐）
 
 1. Qt Creator 打开 `CMakeLists.txt`
-2. 选择 Kit（例如 Desktop Qt 6.8.3 MinGW 64-bit）
-3. Build → Run
+2. 选择 `Desktop Qt 6.5.3 MinGW 64-bit`
+3. Active build configuration 选择 `Debug`
+4. 构建目录设置为 `D:\QTProject\Tenco\build\Desktop_Qt_6_5_3_MinGW_64_bit-Debug`
+5. 确认生成器为 Ninja，`BUILD_TESTING=ON`、`TENCO_BUILD_TESTS=ON`
+6. QML debugging and profiling 选择 `Enable`
+7. Build → Run
 
 注意：CMake 已设置统一输出目录：
 
@@ -24,17 +32,40 @@
 
 ---
 
-## 3. 命令行构建（可选）
+## 3. 固定 Kit 的命令行等价构建
 
-前提：`cmake`、编译器、Qt 工具链可用。
+以下命令与当前 Qt Creator Kit 的关键配置等价，自动化代理完成修改后必须依次执行配置、完整构建和测试。
 
 ```powershell
-cmake -S . -B build\cmake -G Ninja -DTENCO_BUILD_TESTS=ON
-cmake --build build\cmake --config Debug -j
-ctest --test-dir build\cmake -C Debug --output-on-failure
+$env:PATH = 'D:/Qt/6.5.3/mingw_64/bin;D:/Qt/Tools/mingw1120_64/bin;D:/Qt/Tools/Ninja;' + $env:PATH
+
+& 'D:/Qt/Tools/CMake_64/bin/cmake.exe' `
+  -S 'D:/QTProject/Tenco' `
+  -B 'D:/QTProject/Tenco/build/Desktop_Qt_6_5_3_MinGW_64_bit-Debug' `
+  -G Ninja `
+  -DCMAKE_MAKE_PROGRAM:FILEPATH='D:/Qt/Tools/Ninja/ninja.exe' `
+  -DCMAKE_BUILD_TYPE:STRING=Debug `
+  -DBUILD_TESTING:BOOL=ON `
+  -DTENCO_BUILD_TESTS:BOOL=ON `
+  -DCMAKE_PREFIX_PATH:PATH='D:/Qt/6.5.3/mingw_64' `
+  -DCMAKE_C_COMPILER:FILEPATH='D:/Qt/Tools/mingw1120_64/bin/gcc.exe' `
+  -DCMAKE_CXX_COMPILER:FILEPATH='D:/Qt/Tools/mingw1120_64/bin/g++.exe' `
+  '-DCMAKE_CXX_FLAGS:STRING=-DQT_QML_DEBUG'
+
+& 'D:/Qt/Tools/CMake_64/bin/cmake.exe' `
+  --build 'D:/QTProject/Tenco/build/Desktop_Qt_6_5_3_MinGW_64_bit-Debug' `
+  --parallel
+
+& 'D:/Qt/Tools/CMake_64/bin/ctest.exe' `
+  --test-dir 'D:/QTProject/Tenco/build/Desktop_Qt_6_5_3_MinGW_64_bit-Debug' `
+  --output-on-failure
 ```
 
-也可以使用预设（推荐）：
+`BUILD_TESTING` 是 CTest 总开关，`TENCO_BUILD_TESTS` 是本项目的测试开关，两者必须同时开启。
+
+首行 `PATH` 注入不可省略：Qt Creator 会自动提供 Kit 运行环境，但普通 PowerShell 不会。缺少 Qt/MinGW 运行时路径时，测试进程通常会以 Windows `0xc0000135` 在断言执行前退出。
+
+预设仍可用于补充验证或 CI，但不替代以上固定 Kit：
 
 ```powershell
 cmake --preset default
