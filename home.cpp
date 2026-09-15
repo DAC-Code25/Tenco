@@ -6,9 +6,7 @@
 #include "abstractvideosource.h"
 #include "mjpegvideosource.h"
 #include "oakcameravideosource.h"
-#include "routefollower.h"
 #include "motioncommandarbiter.h"
-#include "homecontrolcoordinator.h"
 #include "home_status_presenter.h"
 #include "homevideopresenter.h"
 #include "statusprotocol.h"
@@ -91,7 +89,6 @@ Home::Home(Ui::MainWindow *ui, QObject *parent)
     , rebootProgressDialog(nullptr)
     , m_statusClient(new StatusClient(this))
     , m_chassisClient(new ChassisClient(this))
-    , m_routeFollower(new RouteFollower(this))
     , m_motionArbiter(new MotionCommandArbiter(this))
     , rebootRemainingSeconds(0)
 {
@@ -100,20 +97,9 @@ Home::Home(Ui::MainWindow *ui, QObject *parent)
     initializeMotionControl();
     ConfigManager &config = ConfigManager::instance();
 
-    if (m_routeFollower) {
-        connect(m_routeFollower, &RouteFollower::velocityCommand, this, [this](double linear, double angular) {
-            if (m_motionArbiter) {
-                m_motionArbiter->setRouteCommand(linear, angular);
-            }
-        });
-        connect(m_routeFollower, &RouteFollower::segmentCompleted, this, &Home::routeSegmentCompleted);
-    }
-
     m_statusPresenter = std::make_unique<HomeStatusPresenter>(
         ui,
-        m_routeFollower,
-        [this](const QString &text) { logMessage(text); },
-        [this](double x, double y, double theta) { emit vehiclePoseUpdated(x, y, theta); });
+        [this](const QString &text) { logMessage(text); });
 
     // Status polling (HTTP, worker thread).
     if (m_statusClient) {
@@ -146,7 +132,7 @@ Home::Home(Ui::MainWindow *ui, QObject *parent)
 }
 Home::~Home()
 {
-    cancelRouteExecution();
+    stopMotionForSafety(QStringLiteral("home_closing"));
     if (m_videoSource) {
         m_videoSource->stop();
         m_videoSource->stopRecording();
@@ -225,7 +211,7 @@ void Home::initializeMotionControl()
 
 void Home::applyRuntimeConfig()
 {
-    applyRouteFollowerConfig();
+    applyManualControlConfig();
     applyStatusClientConfig();
     applyChassisClientConfig();
     applyVideoConfig();
@@ -234,14 +220,12 @@ void Home::applyRuntimeConfig()
     logMessage(tr("运行配置已应用"));
 }
 
-void Home::applyRouteFollowerConfig()
+void Home::applyManualControlConfig()
 {
-    const auto &ctrl = ConfigManager::instance().control();
-    if (m_routeFollower) {
-        m_routeFollower->setControlParams(HomeControlCoordinator::routeFollowerParamsFromConfig(ctrl));
-        m_routeFollower->setUpdateIntervalMs(ctrl.routeFollowerUpdateIntervalMs);
-    }
-    m_manualMotionRepeatIntervalMs = HomeControlCoordinator::boundedManualHeartbeatMs(ctrl);
+    const auto &ctrl = ConfigManager::instance().manualControl();
+    m_manualMotionRepeatIntervalMs = qBound(20, ctrl.manualMotionRepeatIntervalMs, 100);
+    if (ui && ui->doubleSpinBox) ui->doubleSpinBox->setRange(0, ctrl.maxLinearSpeed);
+    if (ui && ui->doubleSpinBox_2) ui->doubleSpinBox_2->setRange(0, ctrl.maxAngularSpeed);
     if (m_motionArbiter) {
         m_motionArbiter->setHeartbeatIntervalMs(m_manualMotionRepeatIntervalMs);
     }
@@ -934,9 +918,6 @@ void Home::handleChassisDisconnected()
     if (m_motionArbiter) {
         m_motionArbiter->setChassisConnected(false);
     }
-    if (m_routeFollower) {
-        m_routeFollower->cancel();
-    }
     logMessage(tr("WebSocket 已断开，正在尝试重连..."));
 }
 
@@ -1020,10 +1001,10 @@ void Home::updateManualCommandConfig()
     }
 
     m_motionArbiter->setManualCommandConfig(
-        HomeControlCoordinator::manualCommandConfig(ui && ui->doubleSpinBox ? ui->doubleSpinBox->value() : 0.0,
+        MotionCommandArbiter::ManualCommandConfig{ui && ui->doubleSpinBox ? ui->doubleSpinBox->value() : 0.0,
                                                     ui && ui->doubleSpinBox_2 ? ui->doubleSpinBox_2->value() : 0.0,
                                                     isManualControlEnabledForButtons(),
-                                                    isManualControlEnabledForKeys()));
+                                                    isManualControlEnabledForKeys()});
 }
 
 // 判断是否需要继续推送前进速度
@@ -1165,43 +1146,9 @@ void Home::handleNetworkFailure(int httpStatus, const QString &errorString, cons
 }
 void Home::submitModeCommand()
 {
-    if (!ui) {
-        return;
-    }
-
-    const QString writeUrlStr = ConfigManager::instance().network().writeInsUrl.trimmed();
-    const QUrl writeUrl(writeUrlStr);
-    if (!writeUrl.isValid()) {
-        logMessage(tr("写寄存器接口地址无效：%1").arg(writeUrlStr));
-        return;
-    }
-
-    QWidget *targetWidget = ui->comboBox_Mode;
-    QString address = "3c", type = "int8";
-    int len = 1;
-    if (m_chassisClient) {
-        m_chassisClient->sendStopLocation();
-    }
-    QJsonArray writeReq;
-    QJsonObject dataObj;
-    dataObj["address"] = address;
-    dataObj["type"] = type;
-    dataObj["len"] = len;
-    auto combo = qobject_cast<QComboBox *>(targetWidget);
-    dataObj["data"] = QJsonArray{combo->currentIndex()};
-    writeReq.append(dataObj);
-    QNetworkRequest req(writeUrl);
-    req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-    const QString authToken = ConfigManager::instance().network().authToken.trimmed();
-    if (!authToken.isEmpty()) {
-        req.setRawHeader("Authorization", QByteArray("Bearer ") + authToken.toUtf8());
-    }
-    auto manager = new QNetworkAccessManager(this);
-    QNetworkReply *reply = manager->post(req, QJsonDocument(writeReq).toJson());
-    connect(reply, &QNetworkReply::finished, this, [reply, manager]() {
-        reply->deleteLater();
-        manager->deleteLater();
-    });
+    if (!ui) return;
+    if (ui->comboBox_Mode->currentIndex() == 1) emit manualTakeoverRequested();
+    else logMessage(tr("自动模式请在任务页面明确启动或恢复；维护操作需先停稳并释放控制权"));
 }
 void Home::handleSavePathButtonClicked()
 {
@@ -1344,6 +1291,7 @@ void Home::handleTurnRightButtonReleased()
 void Home::handleStopButtonClicked()
 {
     stopMotionForSafety(QStringLiteral("home_stop_button"));
+    emit emergencyStopRequested();
     stopGimbal();
     LoggingManager::audit(QStringLiteral("safety.estop"),
                           QStringLiteral("accepted"),
@@ -1781,101 +1729,14 @@ void Home::restartControl()
 }
 void Home::submitOriginCommand()
 {
-    if (!ui) {
-        return;
+    if (!ui) return;
+    bool latOk = false, lonOk = false;
+    const double lat = ui->lineEdit->text().toDouble(&latOk);
+    const double lon = ui->lineEdit_8->text().toDouble(&lonOk);
+    if (!latOk || !lonOk || !std::isfinite(lat) || !std::isfinite(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+        logMessage(tr("请输入有效的经纬度")); return;
     }
-    QWidget *messageParent = ui->centralwidget;
-
-    const QString saveUrlStr = ConfigManager::instance().network().saveFileUrl.trimmed();
-    const QUrl saveUrl(saveUrlStr);
-    if (!saveUrl.isValid()) {
-        QMessageBox::critical(messageParent, tr("错误"), tr("保存文件接口地址无效：%1").arg(saveUrlStr));
-        return;
-    }
-
-    const QString latStr = ui->lineEdit->text().trimmed();   // 基站纬度输入
-    const QString lonStr = ui->lineEdit_8->text().trimmed(); // 基站经度输入
-    static const QRegularExpression coordReg(QStringLiteral("^-?\\d+(?:\\.\\d+)?$"));
-    auto reportInvalidInput = [&](QLineEdit *field, const QString &message) {
-        QMessageBox::warning(messageParent, tr("输入错误"), message);
-        if (field) {
-            field->setFocus();
-            field->selectAll();
-        }
-    };
-    if (!coordReg.match(latStr).hasMatch() || !coordReg.match(lonStr).hasMatch()) {
-        reportInvalidInput(nullptr, tr("请输入有效的经纬度数值。"));
-        return;
-    }
-    bool okLat = false;
-    bool okLon = false;
-    const double latitude = latStr.toDouble(&okLat);
-    const double longitude = lonStr.toDouble(&okLon);
-    if (!okLat || !okLon) {
-        reportInvalidInput(nullptr, tr("经纬度转换失败。"));
-        return;
-    }
-    if (latitude < -90.0 || latitude > 90.0) {
-        reportInvalidInput(ui->lineEdit, tr("纬度范围应在 -90 至 90 之间。"));
-        return;
-    }
-    if (longitude < -180.0 || longitude > 180.0) {
-        reportInvalidInput(ui->lineEdit_8, tr("经度范围应在 -180 至 180 之间。"));
-        return;
-    }
-    QJsonObject jsonData;
-    jsonData["accuracy"] = "4";
-    jsonData["distanceCorrection"] = "1";
-    jsonData["isUSB"] = "1";
-    jsonData["latitude"] = QString::number(latitude, 'f', 7);
-    jsonData["longitude"] = QString::number(longitude, 'f', 7);
-    jsonData["lowVelAd"] = "1";
-    jsonData["maxStar"] = "25";
-    jsonData["poseTheta"] = "0";
-    jsonData["poseX"] = "-0.3";
-    jsonData["poseY"] = "0";
-    jsonData["slave_usbproductIdentifier"] = "0xea60";
-    jsonData["slave_usbvendorIdentifier"] = "0x10c4";
-    jsonData["thetadir"] = "1";
-    jsonData["twoGPS_offsetTheta"] = "0";
-    jsonData["usbproductIdentifier"] = "0x23a3";
-    jsonData["usbvendorIdentifier"] = "0x067b";
-    jsonData["useGlobalTheta"] = "1";
-    jsonData["usetwoGPS"] = "1";
-    jsonData["xdir"] = "1";
-    jsonData["ydir"] = "-1";
-    const QJsonDocument jsonDoc(jsonData);
-    const QString jsonBody = jsonDoc.toJson(QJsonDocument::Indented);
-    QByteArray postBody;
-    postBody.append("path=/home/ego/User/parameter/gps.json");
-    postBody.append("&body=");
-    postBody.append(jsonBody.toUtf8());
-    QNetworkRequest request;
-    request.setUrl(saveUrl);
-    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/x-www-form-urlencoded");
-    const QString authToken = ConfigManager::instance().network().authToken.trimmed();
-    if (!authToken.isEmpty()) {
-        request.setRawHeader("Authorization", QByteArray("Bearer ") + authToken.toUtf8());
-    }
-    request.setRawHeader("Connection", "keep-alive");
-    request.setRawHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36");
-    request.setHeader(QNetworkRequest::ContentLengthHeader, QByteArray::number(postBody.length()));
-    auto manager = new QNetworkAccessManager(this);
-    QNetworkReply *reply = manager->post(request, postBody);
-    connect(reply, &QNetworkReply::finished, this, [reply, manager, messageParent]() {
-        const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-        if (httpStatus == 200) {
-            QMessageBox::information(messageParent, tr("成功"), tr("基站位置已更新。"));
-        } else {
-            const QByteArray response = reply->isOpen() ? reply->readAll() : QByteArray();
-            const QString errorMsg = response.isEmpty()
-                                         ? tr("请求失败 (HTTP 状态: %1)").arg(httpStatus)
-                                         : tr("服务器返回: %1 (HTTP 状态: %2)").arg(QString::fromUtf8(response)).arg(httpStatus);
-            QMessageBox::critical(messageParent, tr("错误"), errorMsg);
-        }
-        reply->deleteLater();
-        manager->deleteLater();
-    });
+    emit originUpdateRequested(lat, lon);
 }
 // 检查控制器是否已经重连成功
 void Home::checkConnectionRestored()
@@ -1886,44 +1747,6 @@ void Home::checkConnectionRestored()
     qDebug() << "Connection restored";
     restartCheckTimer->stop();  // 停止重连轮询
 }
-void Home::followRouteSegment(int fromPointId, int toPointId, const QList<QPointF> &polyline, double startTheta, double endTheta)
-{
-    Q_UNUSED(fromPointId);
-    Q_UNUSED(toPointId);
-    updateManualCommandConfig();
-    if (m_routeFollower) {
-        m_routeFollower->enqueueSegment(polyline, startTheta, endTheta);
-    }
-}
-void Home::handleRouteQueueCompleted()
-{
-    if (m_motionArbiter) {
-        m_motionArbiter->stopAll(QStringLiteral("route_completed"));
-    }
-    if (m_routeFollower) {
-        m_routeFollower->cancel();
-    }
-    if (m_motionArbiter) {
-        m_motionArbiter->clearRouteCommand();
-    } else {
-        sendVelocityCommand(0.0, 0.0);
-    }
-}
-void Home::cancelRouteExecution()
-{
-    if (m_motionArbiter) {
-        m_motionArbiter->stopAll(QStringLiteral("route_cancelled"));
-    }
-    if (m_routeFollower) {
-        m_routeFollower->cancel();
-    }
-    if (m_motionArbiter) {
-        m_motionArbiter->clearRouteCommand();
-    } else {
-        sendVelocityCommand(0.0, 0.0);
-    }
-}
-
 void Home::stopMotionForSafety(const QString &reason)
 {
     m_manualInputState.clearMotionInputs();
@@ -1931,12 +1754,6 @@ void Home::stopMotionForSafety(const QString &reason)
     if (m_motionArbiter) {
         m_motionArbiter->stopAll(reason);
     }
-    if (m_routeFollower) {
-        m_routeFollower->cancel();
-    }
-    if (m_motionArbiter) {
-        m_motionArbiter->clearRouteCommand();
-    } else {
-        sendVelocityCommand(0.0, 0.0);
-    }
 }
+
+void Home::clearManualInputsForHandoff() { m_manualInputState.clearMotionInputs(); }

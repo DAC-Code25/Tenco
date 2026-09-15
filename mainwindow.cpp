@@ -1,5 +1,10 @@
 #include "mainwindow.h" // 主窗口类声明
 #include "ui_mainwindow.h" // Qt Designer 生成的 UI 头文件
+#include "controlsessioncoordinator.h"
+#include "externaleventcoordinator.h"
+#include <QStandardPaths>
+#include <QStatusBar>
+#include "configmanager.h"
 #include "home.h" // 首页业务逻辑封装
 #include "map.h" // 地图页业务逻辑封装
 #include "maintenance.h" // 维护页业务逻辑封装
@@ -8,6 +13,8 @@
 
 #include <QIcon> //  按钮图标所需
 #include <QApplication>
+#include <QInputDialog>
+#include <QMessageBox>
 #include <QPoint> //
 #include <QRect> // 自定义拖动区域判断 右键菜单槽函数参数类型
 #include <QSize> // 控件尺寸定义
@@ -77,16 +84,50 @@ MainWindow::MainWindow(QWidget *parent) // 主窗口构造函数
 
     qApp->installEventFilter(this);
 
-    if (homePage && mapPage) {
-        //建立信号槽连接（发送者，绑定符号，接收者，绑定符号）
-        connect(homePage, &Home::vehiclePoseUpdated, mapPage, &Map::updateVehiclePose); //位姿推送
-        connect(mapPage, &Map::routeSegmentDispatched, homePage, &Home::followRouteSegment); //任务队列推送
-        connect(mapPage, &Map::routeQueueCompletedOnce, homePage, &Home::handleRouteQueueCompleted); //队列完成推送
-        connect(mapPage, &Map::routeExecutionCancelled, homePage, &Home::cancelRouteExecution); //路线取消推送
-        connect(homePage, &Home::routeSegmentCompleted, mapPage, &Map::handleRouteSegmentCompleted); //跟随结果推送
-        connect(mapPage, &Map::rowWorkAutoStartRequested, homePage, &Home::cancelRouteExecution);
-        connect(mapPage, &Map::rowWorkAutoStopRequested, homePage, &Home::cancelRouteExecution);
-    }
+    poseClient = new PoseClient(this);
+    trackingClient = new TrackingClient(this);
+    connect(trackingClient, &TrackingClient::configurationChanged, maintenancePage, &Maintenance::setIpcConfiguration);
+    connect(trackingClient, &TrackingClient::availabilityChanged, this, [this](bool ready, const QString&) {
+        maintenancePage->setIpcConfiguration(ready ? trackingClient->configuration() : QJsonObject{});
+    });
+    controlCoordinator = new ControlSessionCoordinator(trackingClient, poseClient, homePage->chassisClient(), homePage->motionArbiter(), this);
+    mapPage->setControlCoordinator(controlCoordinator);
+    externalEvents = new ExternalEventCoordinator(trackingClient, this);
+    connect(externalEvents, &ExternalEventCoordinator::message, this, [this](const QString& text) { statusBar()->showMessage(text, 15000); });
+    connect(mapPage, &Map::externalActionResolved, this, [this](const QString &eventId, bool success) {
+        if (!externalEvents->resolveCurrent(eventId, success)) statusBar()->showMessage(tr("当前检查点动作无法确认，请检查会话、事件及拍摄状态"), 5000);
+    });
+    connect(homePage, &Home::manualTakeoverRequested, controlCoordinator, &ControlSessionCoordinator::requestManual);
+    connect(homePage, &Home::originUpdateRequested, this, [this](double lat, double lon) {
+        const auto config = trackingClient->configuration();
+        const auto active = config["origin"].toObject()["active"].toObject();
+        if (!trackingClient->fresh() || !trackingClient->hasSession() || active.isEmpty()) {
+            QMessageBox::warning(this, tr("更新原点"), tr("请先连接任务服务并获取操作权")); return;
+        }
+        bool ok = false;
+        const double altitude = QInputDialog::getDouble(this, tr("更新融合原点"), tr("WGS84 海拔（m）"), active["altitude"].toDouble(), -1000, 10000, 3, &ok);
+        if (!ok) return;
+        QJsonObject origin{{"schemaVersion", 1}, {"originRevision", TrackingJson::newId()}, {"latitude", lat},
+            {"longitude", lon}, {"altitude", altitude}, {"datum", "WGS84"}, {"frameId", "map"}};
+        if (!trackingClient->updateOrigin(origin, active["originRevision"].toString()))
+            QMessageBox::warning(this, tr("更新原点"), tr("原点更新未提交，请确认停稳、任务状态和操作会话"));
+    });
+    connect(trackingClient, &TrackingClient::originChanged, this, [this](const QJsonObject& origin) {
+        QMessageBox::information(this, tr("更新原点"), origin["restartRequired"].toBool() ?
+            tr("新原点已保存为待生效；请在停机维护时重启融合服务并重新确认地图绑定") : tr("原点已生效"));
+    });
+    connect(homePage, &Home::emergencyStopRequested, controlCoordinator, &ControlSessionCoordinator::emergencyStop);
+    connect(controlCoordinator, &ControlSessionCoordinator::manualInputsCleared, homePage, &Home::clearManualInputsForHandoff);
+    connect(poseClient, &PoseClient::poseChanged, this, [this](const ControlPoseSnapshot& pose) {
+        ui->lineEdit_Position->setText(tr("ENU X=%1, Y=%2, yaw=%3 rad · %4 ms")
+            .arg(pose.position.x(), 0, 'f', 3).arg(pose.position.y(), 0, 'f', 3)
+            .arg(pose.yaw, 0, 'f', 3).arg(pose.positionAgeMs, 0, 'f', 0));
+    });
+    connect(poseClient, &PoseClient::availabilityChanged, this, [this](bool valid, const QString& reason) {
+        if (!valid) ui->lineEdit_Position->setText(reason);
+    });
+    connect(&ConfigManager::instance(), &ConfigManager::configChanged, this, &MainWindow::configureIpcClients);
+    configureIpcClients();
 
     //四个界面控制按钮
     zhidingDefaultIcon = ui->zhiding->icon();
@@ -113,7 +154,15 @@ MainWindow::MainWindow(QWidget *parent) // 主窗口构造函数
 
 MainWindow::~MainWindow() // 析构函数
 {
-    delete ui; // 释放 UI 资源
+    if (controlCoordinator) controlCoordinator->shutdown();
+    if (trackingClient) trackingClient->stop();
+    if (poseClient) poseClient->stop();
+    delete mapPage; mapPage = nullptr;
+    delete homePage; homePage = nullptr;
+    delete maintenancePage; maintenancePage = nullptr;
+    delete helpPage; helpPage = nullptr;
+    delete aboutPage; aboutPage = nullptr;
+    delete ui; // 页面服务先退出，再释放 UI
 }
 
 // 首页按钮槽函数
@@ -283,6 +332,8 @@ void MainWindow::changeEvent(QEvent *event) //监听窗口状态变化 同步改
 
 void MainWindow::closeEvent(QCloseEvent *event)
 {
+    if (m_closeDrained) { QMainWindow::closeEvent(event); return; }
+    if (m_closing) { event->ignore(); return; }
     if (maintenancePage && maintenancePage->hasUnsavedChanges()) {
         if (!maintenancePage->confirmLeaveIfDirty(this)) {
             event->ignore();
@@ -290,7 +341,13 @@ void MainWindow::closeEvent(QCloseEvent *event)
         }
     }
 
-    QMainWindow::closeEvent(event);
+    if (mapPage && !mapPage->confirmClose()) {
+        event->ignore(); return;
+    }
+    // Drain the stop request while the event loop remains alive. A cancelled close never disables renewals.
+    m_closing = true; setEnabled(false); event->ignore();
+    if (controlCoordinator) controlCoordinator->shutdown();
+    QTimer::singleShot(1200, this, [this] { m_closeDrained = true; close(); });
 }
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event)
@@ -418,3 +475,16 @@ void MainWindow::keyReleaseEvent(QKeyEvent *event) //键盘松开事件
 
 
 
+
+void MainWindow::configureIpcClients()
+{
+    const auto& config = ConfigManager::instance();
+    const auto& pose = config.poseSource(); const auto& tracking = config.tracking();
+    if (controlCoordinator) controlCoordinator->shutdown();
+    poseClient->configure(QUrl(pose.baseUrl), config.network().authToken, pose.requestTimeoutMs);
+    trackingClient->configure(QUrl(tracking.baseUrl), config.network().authToken, tracking.requestTimeoutMs);
+    if (pose.enabled) poseClient->start(); else poseClient->stop();
+    if (tracking.enabled) trackingClient->start(); else trackingClient->stop();
+    if (externalEvents) externalEvents->configure(QUrl(config.video().controlBaseUrl), config.network().authToken,
+        QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) + "/checkpoint-actions", config.video().cameraRequestTimeoutMs);
+}

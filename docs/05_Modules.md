@@ -27,7 +27,7 @@
     - ChassisClient：速度下发/重启/停止定位
     - AbstractVideoSource / MjpegVideoSource：视频预览
     - CameraControlClient：工控机相机拍照/录像/状态查询
-    - RouteFollower：路线段跟随（从 Map 来的 polyline）
+    - ControlSessionCoordinator：任务会话和手动/自动交接
 
 - `home_status_presenter.h/.cpp`
   - 处理状态轮询包解析、通信状态灯更新、状态字段到 UI 的映射
@@ -60,15 +60,15 @@
 
 - `motioncommandarbiter.h/.cpp`
   - UI 无关的运动命令安全仲裁层
-  - 汇总按钮、键盘和路线跟随输出，作为底盘 `cmd_vel` 的唯一速度出口
-  - 统一手动心跳、输入释放零速、急停、路线取消、断连停车、失焦停车 reason 与单测覆盖
+  - 汇总手动按钮和键盘，取得底盘 Manual 许可后直连发送 `cmd_vel`
+  - 统一手动心跳、输入清除、控制权撤销、断连和失焦停止
 
 - `chassisclient.h/.cpp`
   - WebSocket 连接、自动重连、NoProxy
   - 协议封装：
     - `sendVelocityCommand(xVel, thetaVel)`：`cmd_vel`
     - `sendRebootCommand()`：重启
-    - `sendStopLocation()`：停止定位
+    - requestManual/releaseManual/stopLatched：控制权与急停协议
 
 ---
 
@@ -101,16 +101,12 @@
 
 ---
 
-## 6. 路线跟随算法（UI 无关）
+## 6. 任务编译与客户端
 
-- `routefollower.h/.cpp`
-  - 输入：位姿（x,y,theta）+ 一段 polyline + 起止朝向约束
-  - 输出：`velocityCommand(linear, angular)`（不做网络发送）
-  - 具备限速、限加减速、近点减速、起始/末端朝向校准等策略
-
-这块非常适合写单元测试（见 `docs/08_Testing_and_CI.md`）。
-
----
+- taskcompiler.*、mapframeadapter.*：坐标绑定、常规路线、检查点、往返和多垄步骤编译。
+- poseclient.*、trackingclient.*、jsonhttpclient.*：位姿/状态、会话、命令查询和事件。自动速度在工控机计算。
+- controlsessioncoordinator.*：坐标版本/计划匹配、自动交接、直连接管、急停及故障复位。
+- externaleventcoordinator.*：停车后的拍摄及持久化去重，响应未知时人工核对。
 
 ## 7. 路径规划（UI 无关）
 
@@ -126,7 +122,7 @@
   - QGraphicsScene 地图编辑器：点、路径（直线/圆弧）、路线队列
   - 地图文件：JSON 序列化/反序列化（内部调用 `mapdocument.*`）
   - 顶栏支持“新建/加载/另存为/保存”；新建时会按当前是否有未保存内容决定直接提示、保存到文件或丢弃重置
-  - 路线分段派发：通过信号 `routeSegmentDispatched(...)` 交给 Home 执行
+  - 完整任务上传：通过统一任务客户端交给工控机执行
   - 路径搜索基于**有向图**：几何上连通的点，如果路径方向不连续，也可能被判定为“没有可用路径”
 - `mapgraphicsview.h/.cpp`
   - 视图交互：缩放、平移、鼠标点击映射到场景坐标

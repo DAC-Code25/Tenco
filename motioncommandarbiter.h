@@ -38,12 +38,14 @@ public:
     bool chassisConnected() const { return m_chassisConnected; }
 
     void setManualInputActive(ManualInput input, bool active, bool fromKeyboard);
-    void setRouteCommand(double linear, double angular);
-    void clearRouteCommand();
+    void setManualPermission(bool granted);
+    bool manualPermission() const { return m_manualPermission; }
+    void prepareAutomatic();
     void emergencyStop(const QString &reason);
     void stopAll(const QString &reason);
 
 signals:
+    void manualTakeoverRequested();
     void velocityCommand(double linear, double angular);
     void safetyStopRequested(const QString &reason);
 
@@ -63,7 +65,6 @@ private:
     bool hasEffectiveManualInput(ManualInput input) const;
     bool hasAnyHeldInput() const;
     Command currentManualCommand() const;
-    Command currentRouteCommand() const;
     void clearHeldInputs();
     void evaluateManualCommand(bool forceEmit);
     void emitVelocity(const Command &command, bool forceEmit);
@@ -78,9 +79,7 @@ private:
     std::array<bool, 4> m_buttonInputs{};
     std::array<bool, 4> m_keyInputs{};
 
-    bool m_routeActive = false;
-    double m_routeLinear = 0.0;
-    double m_routeAngular = 0.0;
+    bool m_manualPermission = false;
 
     bool m_hasLastCommand = false;
     Command m_lastCommand;
