@@ -131,11 +131,12 @@ class IpcClientsTest : public QObject {
         QTemporaryDir journal;
         quint64 seq = 0;
         int photos = 0, acks = 0, ackQueries = 0;
+        QHash<QString, QString> acceptedRequests;
         bool waiting = false;
         const QJsonObject event{{"eventId", "execution/8"}, {"executionId", "execution"},
                                 {"stepId", "photo"},        {"type", "external_action_requested"},
                                 {"reason", "capture"},      {"seq", "1"}};
-        server.handler = [&](auto *socket, const QByteArray &path, const QJsonObject &) {
+        server.handler = [&](auto *socket, const QByteArray &path, const QJsonObject &body) {
             if (path.startsWith("/api/v1/status")) {
                 auto status = statusObject(++seq, "boot");
                 if (waiting) {
@@ -152,6 +153,7 @@ class IpcClientsTest : public QObject {
                 HttpFixture::reply(socket, {{"apiVersion", 1}});
             else if (path.startsWith("/api/v1/events/") && path.endsWith("/ack")) {
                 ++acks;
+                acceptedRequests.insert(body["requestId"].toString(), "ack");
                 HttpFixture::reply(socket, {{"commandId", "ack"}}, 202);
             } else if (path.startsWith("/api/v1/events"))
                 HttpFixture::reply(socket, {{"apiVersion", 1},
@@ -170,16 +172,23 @@ class IpcClientsTest : public QObject {
                                             {"stateVersion", "1"},
                                             {"motionPermit", "permit"},
                                             {"permitValidForMs", 500}});
-            else if (path.endsWith("/tasks"))
+            else if (path.endsWith("/tasks")) {
+                acceptedRequests.insert(body["requestId"].toString(), "prepare");
                 HttpFixture::reply(socket, {{"commandId", "prepare"}}, 202);
-            else if (path.startsWith("/api/v1/commands")) {
-                if (path == "/api/v1/commands/ack") ++ackQueries;
-                // A query racing the POST response discovers the command ID first.
-                const bool discovery = acks > 0 && path.startsWith("/api/v1/commands?");
-                HttpFixture::reply(socket, {{"state", discovery ? "pending" : "applied"},
-                    {"commandId", acks > 0 ? "ack" : "resolved"}});
-            }
-            else if (path.endsWith("/camera/photo")) {
+            } else if (path.startsWith("/api/v1/commands")) {
+                if (path == "/api/v1/commands/ack")
+                    ++ackQueries;
+                const bool discovery = path.startsWith("/api/v1/commands?");
+                const auto id =
+                    discovery ? acceptedRequests.value(
+                                    QUrlQuery(QUrl(QString::fromUtf8(path))).queryItemValue("requestId"))
+                              : QString::fromUtf8(path.mid(QByteArray("/api/v1/commands/").size()));
+                if (id.isEmpty())
+                    HttpFixture::reply(socket, {}, 404);
+                else
+                    HttpFixture::reply(socket,
+                                       {{"state", discovery ? "pending" : "applied"}, {"commandId", id}});
+            } else if (path.endsWith("/camera/photo")) {
                 ++photos;
                 socket->abort();
             } else
