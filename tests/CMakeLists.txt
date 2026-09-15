@@ -14,7 +14,10 @@ function(tenco_add_test target_name)
         ${CMAKE_CURRENT_SOURCE_DIR}/..
     )
     target_link_libraries(${target_name} PRIVATE Qt6::Core Qt6::Test)
-    add_test(NAME ${target_name} COMMAND ${target_name})
+    add_test(NAME ${target_name} COMMAND ${CMAKE_COMMAND}
+        "-DTEST_EXECUTABLE=$<TARGET_FILE:${target_name}>"
+        "-DTEST_REPORT=${CMAKE_CURRENT_BINARY_DIR}/${target_name}.txt"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/run_qt_test.cmake")
 endfunction()
 
 tenco_add_test(tenco_test_taskcompiler test_taskcompiler.cpp)
