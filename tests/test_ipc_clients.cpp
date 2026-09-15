@@ -130,7 +130,7 @@ class IpcClientsTest : public QObject {
         HttpFixture server;
         QTemporaryDir journal;
         quint64 seq = 0;
-        int photos = 0, acks = 0;
+        int photos = 0, acks = 0, ackQueries = 0;
         bool waiting = false;
         const QJsonObject event{{"eventId", "execution/8"}, {"executionId", "execution"},
                                 {"stepId", "photo"},        {"type", "external_action_requested"},
@@ -150,7 +150,7 @@ class IpcClientsTest : public QObject {
                 HttpFixture::reply(socket, {{"apiVersion", 1}, {"bootId", "boot"}, {"ready", true}});
             else if (path.endsWith("/configuration"))
                 HttpFixture::reply(socket, {{"apiVersion", 1}});
-            else if (path.endsWith("/ack")) {
+            else if (path.startsWith("/api/v1/events/") && path.endsWith("/ack")) {
                 ++acks;
                 HttpFixture::reply(socket, {{"commandId", "ack"}}, 202);
             } else if (path.startsWith("/api/v1/events"))
@@ -172,8 +172,13 @@ class IpcClientsTest : public QObject {
                                             {"permitValidForMs", 500}});
             else if (path.endsWith("/tasks"))
                 HttpFixture::reply(socket, {{"commandId", "prepare"}}, 202);
-            else if (path.startsWith("/api/v1/commands"))
-                HttpFixture::reply(socket, {{"state", "applied"}, {"commandId", "resolved"}});
+            else if (path.startsWith("/api/v1/commands")) {
+                if (path == "/api/v1/commands/ack") ++ackQueries;
+                // A query racing the POST response discovers the command ID first.
+                const bool discovery = acks > 0 && path.startsWith("/api/v1/commands?");
+                HttpFixture::reply(socket, {{"state", discovery ? "pending" : "applied"},
+                    {"commandId", acks > 0 ? "ack" : "resolved"}});
+            }
             else if (path.endsWith("/camera/photo")) {
                 ++photos;
                 socket->abort();
@@ -206,6 +211,7 @@ class IpcClientsTest : public QObject {
         QVERIFY(!recovered.resolveCurrent("execution/old", true));
         QVERIFY(recovered.resolveCurrent("execution/8", true));
         QTRY_COMPARE(acks, 1);
+        QTRY_COMPARE(ackQueries, 1);
         QVERIFY(!recovered.resolveCurrent("execution/8", false));
         QTest::qWait(400);
         QCOMPARE(photos, 1);
