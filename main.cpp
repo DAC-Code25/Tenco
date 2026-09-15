@@ -10,6 +10,9 @@
 #include <QIcon>
 #include <QLoggingCategory>
 #include <QSurfaceFormat>
+#ifdef TENCO_TEST_HOOKS
+#include "tests/gui_smoke.h"
+#endif
 
 #ifdef TENCO_ENABLE_ABOUT_3D
 #include <QtQuick3D/qquick3d.h>
@@ -57,6 +60,10 @@ int main(int argc, char *argv[])
         QStringLiteral("Override config file path."),
         QStringLiteral("path"));
     parser.addOption(configOption);
+#ifdef TENCO_TEST_HOOKS
+    const QCommandLineOption smokeOption("smoke-output", "Run GUI smoke with loopback-only test config.", "path");
+    parser.addOption(smokeOption);
+#endif
     parser.process(a);
 
     if (parser.isSet(configOption)) {
@@ -66,6 +73,14 @@ int main(int argc, char *argv[])
         }
     }
 
+#ifdef TENCO_TEST_HOOKS
+    if (parser.isSet(smokeOption)) {
+        const auto& config = ConfigManager::instance();
+        if (!parser.isSet(configOption) || QUrl(config.network().websocketUrl).host() != "127.0.0.1" ||
+            QUrl(config.network().statusReadUrl).host() != "127.0.0.1" || config.gimbal().enabled ||
+            config.video().autoStart || config.tracking().enabled || config.poseSource().enabled) return 2;
+    }
+#endif
     LoggingManager::initialize(loggingSettingsFromConfig());
     QObject::connect(&ConfigManager::instance(), &ConfigManager::configChanged, []() {
         LoggingManager::reconfigure(loggingSettingsFromConfig());
@@ -91,6 +106,9 @@ int main(int argc, char *argv[])
     w.setWindowFlags(Qt::FramelessWindowHint); // 移除系统默认标题栏
 
     w.show();
+#ifdef TENCO_TEST_HOOKS
+    if (parser.isSet(smokeOption)) installGuiSmoke(a, w, parser.value(smokeOption));
+#endif
     const int code = a.exec();
     DatabaseManager::instance().shutdown();
     LoggingManager::shutdown();

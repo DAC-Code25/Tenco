@@ -1,10 +1,14 @@
+#include <functional>
 #include "map.h"
 
 #include "mapgraphicsview.h"
 #include "mapdocument.h"
 #include "mapgeometry.h"
 #include "maprouteplanner.h"
-#include "rowworkclient.h"
+#include "controlsessioncoordinator.h"
+#include "taskcompiler.h"
+#include <QDialog>
+#include <QDialogButtonBox>
 #include "ui_mainwindow.h"
 #include "configmanager.h"
 #include "loggingmanager.h"
@@ -90,12 +94,14 @@ constexpr int kMinArcSegments = 24;
 constexpr int kVehiclePoseRefreshMinIntervalMs = 120;
 constexpr double kVehiclePoseMinDistanceDeltaMeters = 0.02;
 constexpr double kVehiclePoseMinAngleDeltaRad = 1.5 * M_PI / 180.0;
-constexpr int kMapSchemaVersion = 4;
+constexpr int kMapSchemaVersion = 2;
 constexpr int kRowWorkCheckpointTableNameColumn = 0;
 constexpr int kRowWorkCheckpointTableProgressColumn = 1;
 constexpr int kRowWorkCheckpointTableDwellColumn = 2;
 constexpr int kRowWorkCheckpointTableForwardColumn = 3;
 constexpr int kRowWorkCheckpointTableBackwardColumn = 4;
+constexpr int kRowWorkCheckpointTableCaptureColumn = 5;
+constexpr int kRowWorkCheckpointTableTimeoutColumn = 6;
 constexpr int kRowMissionStepEnabledColumn = 0;
 constexpr int kRowMissionStepNameColumn = 1;
 constexpr int kRowMissionStepTypeColumn = 2;
@@ -161,7 +167,6 @@ Map::Map(Ui::MainWindow *ui, QObject *parent)
     initializeUi();
     ensureScene();
     ensureVehicleItem();
-    ensureRowWorkClient();
     connect(&ConfigManager::instance(), &ConfigManager::configChanged, this, &Map::applyRuntimeConfig);
     m_vehiclePoseRefreshClock.start();
     handleModuleActivated();
@@ -169,10 +174,10 @@ Map::Map(Ui::MainWindow *ui, QObject *parent)
 
 void Map::applyRuntimeConfig()
 {
+    if (m_tracking) m_tracking->invalidatePreparedPlan();
     const auto &geo = ConfigManager::instance().geo();
     m_baseLatitudeDeg = geo.baseLatitudeDeg;
     m_baseLongitudeDeg = geo.baseLongitudeDeg;
-    ensureRowWorkClient();
     refreshRowWorkControlState();
     setRowWorkStatusText(tr("地图运行配置已应用"));
 }
@@ -218,7 +223,6 @@ void Map::handleModuleActivated()
                                .arg(m_baseLongitudeDeg, 0, 'f', 6));
     }
 
-    applyVehiclePoseFromUi();
 }
 
 void Map::updateVehiclePose(double x, double y, double theta)
@@ -253,47 +257,6 @@ void Map::updateVehiclePose(double x, double y, double theta)
     }
 }
 
-void Map::applyVehiclePoseFromUi()
-{
-    if (!ui || !ui->lineEdit_Position) {
-        return;
-    }
-
-    const QString rawText = ui->lineEdit_Position->text().trimmed();
-    if (rawText.isEmpty()) {
-        return;
-    }
-
-    const QStringList parts = rawText.split(',', Qt::SkipEmptyParts);
-    if (parts.size() < 3) {
-        return;
-    }
-
-    auto parseComponent = [](const QString &component) -> std::optional<double> {
-        const int equalsIndex = component.indexOf('=');
-        if (equalsIndex < 0) {
-            return std::nullopt;
-        }
-        QString valueStr = component.mid(equalsIndex + 1).trimmed();
-        valueStr.remove(QChar(0x00B0));
-        bool ok = false;
-        const double value = valueStr.toDouble(&ok);
-        if (!ok) {
-            return std::nullopt;
-        }
-        return value;
-    };
-
-    const auto xOpt = parseComponent(parts.at(0));
-    const auto yOpt = parseComponent(parts.at(1));
-    const auto thetaOpt = parseComponent(parts.at(2));
-
-    if (!xOpt || !yOpt || !thetaOpt) {
-        return;
-    }
-
-    updateVehiclePose(xOpt.value(), yOpt.value(), thetaOpt.value());
-}
 
 void Map::handleTogglePathsVisibility()
 {
@@ -306,87 +269,6 @@ void Map::handleTogglePathsVisibility()
     setRouteStatusText(m_pathsVisible ? tr("路径线路已显示") : tr("路径线路已隐藏"));
 }
 
-void Map::handleRouteSegmentCompleted(bool success)
-{
-    if (!m_waitingForSegmentCompletion) {
-        return;
-    }
-
-    m_waitingForSegmentCompletion = false;
-
-    if (!success) {
-        QString replanError;
-        if (tryDynamicReplanAfterFailure(&replanError)) {
-            if (m_activeRouteIndex >= m_routeQueue.size()) {
-                m_activeRouteIndex = -1;
-                updateRouteControlState();
-                emit routeQueueCompletedOnce();
-                if (m_routeLoopCheck && m_routeLoopCheck->isChecked()) {
-                    scheduleNextCycle();
-                }
-                return;
-            }
-
-            const int replanFromId = m_routeQueue.at(m_activeRouteIndex).fromId;
-            setRouteStatusText(tr("当前段执行失败，已从点%1动态重规划").arg(replanFromId), true);
-            updateRouteControlState();
-            if (!m_pauseRequested) {
-                dispatchNextEdge();
-            }
-            return;
-        }
-
-        const QString statusText = replanError.isEmpty()
-                                       ? tr("路线执行失败，且无法重规划，已停止")
-                                       : tr("路线执行失败，且无法重规划：%1").arg(replanError);
-        setRouteStatusText(statusText, true);
-        m_activeRouteIndex = -1;
-        m_pauseRequested = false;
-        updateRouteControlState();
-        emit routeExecutionCancelled();
-        return;
-    }
-
-    if (m_activeRouteIndex >= 0 && m_activeRouteIndex < m_routeQueue.size()) {
-        const RouteStep &step = m_routeQueue.at(m_activeRouteIndex);
-        m_vehicleCurrentPointId = step.toId;
-        if (const MapPoint *point = pointById(step.toId)) {
-            m_vehiclePoseX = point->mapPosition.x();
-            m_vehiclePoseY = point->mapPosition.y();
-            m_vehiclePoseTheta = point->theta;
-            refreshVehicleGraphics();
-            updateVehiclePointBinding();
-            m_lastRenderedVehiclePoseX = m_vehiclePoseX;
-            m_lastRenderedVehiclePoseY = m_vehiclePoseY;
-            m_lastRenderedVehiclePoseTheta = m_vehiclePoseTheta;
-            m_hasRenderedVehiclePose = true;
-            if (m_vehiclePoseRefreshClock.isValid()) {
-                m_vehiclePoseRefreshClock.restart();
-            } else {
-                m_vehiclePoseRefreshClock.start();
-            }
-        }
-    }
-
-    ++m_activeRouteIndex;
-
-    if (m_pauseRequested) {
-        updateRouteControlState();
-        return;
-    }
-
-    if (m_activeRouteIndex >= m_routeQueue.size()) {
-        m_activeRouteIndex = -1;
-        updateRouteControlState();
-        emit routeQueueCompletedOnce();
-        if (m_routeLoopCheck && m_routeLoopCheck->isChecked()) {
-            scheduleNextCycle();
-        }
-        return;
-    }
-
-    dispatchNextEdge();
-}
 
 bool Map::eventFilter(QObject *watched, QEvent *event)
 {
@@ -1113,9 +995,6 @@ void Map::handleRouteRemove()
     }
 
     m_routeQueue.removeAt(row);
-    if (m_activeRouteIndex >= m_routeQueue.size()) {
-        m_activeRouteIndex = m_routeQueue.size() - 1;
-    }
 
     refreshRouteQueueUi();
     updateRouteControlState();
@@ -1128,158 +1007,52 @@ void Map::handleRouteClear()
     }
 
     m_routeQueue.clear();
-    resetRouteProgress();
     refreshRouteQueueUi();
     updateRouteControlState();
 }
 
 void Map::handleRouteStart()
 {
-    if (m_hasRowWorkStatus && m_rowWorkStatus.isActive() && m_rowWorkStatus.state != QStringLiteral("PlanReady")) {
-        QMessageBox::warning(m_mapPage, tr("发送路线"), tr("当前直线作业正在运行，请先停止后再发送普通路线"));
-        LoggingManager::audit(QStringLiteral("route.start"),
-                              QStringLiteral("rejected"),
-                              {{QStringLiteral("reason"), QStringLiteral("row_work_active")},
-                               {QStringLiteral("rowWorkState"), m_rowWorkStatus.state}});
-        return;
+    refreshPlanningRevision();
+    if (!m_coordinator || m_routeQueue.isEmpty()) return;
+    QList<TaskRouteSection> sections;
+    for (auto step : m_routeQueue) {
+        if (!rebuildRouteStep(step)) { setRouteStatusText(tr("路线中存在无法连通的步骤"), true); return; }
+        TaskRouteSection section;
+        section.id = QStringLiteral("route-%1-%2").arg(step.fromId).arg(step.toId);
+        section.points = composePolyline(step.pathIds);
+        if (const auto* end = pointById(step.toId)) section.goalMapYaw = end->theta;
+        sections.append(section);
     }
-
-    if (m_routeQueue.isEmpty()) {
-        QMessageBox::information(m_mapPage, tr("发送路线"), tr("请先添加需要发送的路线"));
-        LoggingManager::audit(QStringLiteral("route.start"),
-                              QStringLiteral("rejected"),
-                              {{QStringLiteral("reason"), QStringLiteral("empty_queue")}});
-        return;
+    auto options = taskOptions();
+    options.repeatUntilStopped = m_routeLoopCheck && m_routeLoopCheck->isChecked();
+    const auto compiled = TaskCompiler::route(sections, m_binding, options, tr("常规路线"));
+    if (!compiled.ok()) { setRouteStatusText(compiled.error, true); return; }
+    auto plan = compiled.plan;
+    if (options.repeatUntilStopped && m_routeLoopIntervalSpin && m_routeLoopIntervalSpin->value() > 0) {
+        auto steps = plan["steps"].toArray();
+        steps.append(QJsonObject{{"stepId", "cycle-wait"}, {"type", "wait"}, {"completion",
+            QJsonObject{{"type", "timer"}, {"durationMs", m_routeLoopIntervalSpin->value() * 1000}}}});
+        plan["steps"] = steps;
     }
-
-    if (!isRouteQueueContinuous()) {
-        QMessageBox::warning(m_mapPage, tr("发送路线"), tr("路线不连续，请检查起止点"));
-        LoggingManager::audit(QStringLiteral("route.start"),
-                              QStringLiteral("rejected"),
-                              {{QStringLiteral("reason"), QStringLiteral("discontinuous_queue")},
-                               {QStringLiteral("segments"), QString::number(m_routeQueue.size())}});
-        return;
-    }
-
-    if (!m_vehicleCurrentPointId.has_value()) {
-        QMessageBox::warning(m_mapPage, tr("发送路线"), tr("无法确定小车当前所在点，请先定位"));
-        LoggingManager::audit(QStringLiteral("route.start"),
-                              QStringLiteral("rejected"),
-                              {{QStringLiteral("reason"), QStringLiteral("unknown_vehicle_point")}});
-        return;
-    }
-
-    const int requiredStart = m_routeQueue.first().fromId;
-    if (m_vehicleCurrentPointId.value() != requiredStart) {
-        QMessageBox::warning(m_mapPage, tr("发送路线"),
-                             tr("首段路线起点为点%1，请先将小车定位到该点").arg(requiredStart));
-        LoggingManager::audit(QStringLiteral("route.start"),
-                              QStringLiteral("rejected"),
-                              {{QStringLiteral("reason"), QStringLiteral("start_point_mismatch")},
-                               {QStringLiteral("currentPoint"), QString::number(m_vehicleCurrentPointId.value())},
-                               {QStringLiteral("requiredStart"), QString::number(requiredStart)}});
-        return;
-    }
-
-    if (m_waitingForSegmentCompletion) {
-        LoggingManager::audit(QStringLiteral("route.start"),
-                              QStringLiteral("rejected"),
-                              {{QStringLiteral("reason"), QStringLiteral("segment_running")}});
-        return;
-    }
-
-    if (m_routeTimer) {
-        m_routeTimer->stop();
-    }
-
-    m_pauseRequested = false;
-    resetRouteProgress();
-    m_activeRouteIndex = 0;
-    LoggingManager::audit(QStringLiteral("route.start"),
-                          QStringLiteral("accepted"),
-                          {{QStringLiteral("segments"), QString::number(m_routeQueue.size())},
-                           {QStringLiteral("startPoint"), QString::number(requiredStart)},
-                           {QStringLiteral("loop"), m_routeLoopCheck && m_routeLoopCheck->isChecked() ? QStringLiteral("true") : QStringLiteral("false")}});
-    dispatchNextEdge();
+    if (m_coordinator->upload(plan)) setRouteStatusText(tr("任务已提交校验，Ready 后请点击启动已就绪任务"));
 }
 
 void Map::handleRoutePause()
 {
-    if (m_routeQueue.isEmpty()) {
-        LoggingManager::audit(QStringLiteral("route.pause"),
-                              QStringLiteral("rejected"),
-                              {{QStringLiteral("reason"), QStringLiteral("empty_queue")}});
-        return;
-    }
-
-    m_pauseRequested = true;
-    if (!m_waitingForSegmentCompletion) {
-    } else {
-    }
-    updateRouteControlState();
-    emit routeExecutionPauseRequested();
-    LoggingManager::audit(QStringLiteral("route.pause"),
-                          QStringLiteral("accepted"),
-                          {{QStringLiteral("activeIndex"), QString::number(m_activeRouteIndex)},
-                           {QStringLiteral("segments"), QString::number(m_routeQueue.size())}});
+    if (m_coordinator) m_coordinator->pauseTask();
 }
 
 void Map::handleRouteResume()
 {
-    if (m_routeQueue.isEmpty()) {
-        QMessageBox::information(m_mapPage, tr("恢复路线"), tr("路线队列为空"));
-        LoggingManager::audit(QStringLiteral("route.resume"),
-                              QStringLiteral("rejected"),
-                              {{QStringLiteral("reason"), QStringLiteral("empty_queue")}});
-        return;
-    }
-
-    m_pauseRequested = false;
-    updateRouteControlState();
-    emit routeExecutionResumeRequested();
-    LoggingManager::audit(QStringLiteral("route.resume"),
-                          QStringLiteral("accepted"),
-                          {{QStringLiteral("activeIndex"), QString::number(m_activeRouteIndex)},
-                           {QStringLiteral("segments"), QString::number(m_routeQueue.size())}});
-
-    if (!m_waitingForSegmentCompletion) {
-        dispatchNextEdge();
-    }
+    if (m_coordinator) { refreshPlanningRevision(); m_coordinator->resumeTask(); }
 }
 
 void Map::handleRouteStop()
 {
-    const int segmentCount = m_routeQueue.size();
-    const int activeIndex = m_activeRouteIndex;
-    if (m_routeTimer) {
-        m_routeTimer->stop();
-    }
-
-    m_pauseRequested = false;
-    m_waitingForSegmentCompletion = false;
-    m_activeRouteIndex = -1;
-    m_routeQueue.clear();
-    refreshRouteQueueUi();
-    updateRouteControlState();
-    setRouteStatusText(tr("已停止并清空路线"), true);
-    emit routeExecutionCancelled();
-    LoggingManager::audit(QStringLiteral("route.stop"),
-                          QStringLiteral("accepted"),
-                          {{QStringLiteral("activeIndex"), QString::number(activeIndex)},
-                           {QStringLiteral("segments"), QString::number(segmentCount)}});
+    if (m_coordinator) m_coordinator->abortTask();
 }
 
-void Map::handleRouteTimerTick()
-{
-    if (m_routeQueue.isEmpty()) {
-        updateRouteControlState();
-        return;
-    }
-
-    resetRouteProgress();
-    m_pauseRequested = false;
-    dispatchNextEdge();
-}
 
 void Map::handleLocateCurrentPosition()
 {
@@ -1861,6 +1634,31 @@ void Map::initializeUi()
     rightLayout->setContentsMargins(8, 8, 8, 8);
     rightLayout->setSpacing(8);
 
+    auto* ipcBox = new QGroupBox(tr("工控机任务控制"), rightPanel);
+    auto* ipcLayout = new QGridLayout(ipcBox);
+    int ipcButtonIndex = 0;
+    auto addIpcButton = [this, ipcBox, ipcLayout, &ipcButtonIndex](const QString& text, auto action) {
+        auto* button = new QPushButton(text, ipcBox);
+        ipcLayout->addWidget(button, ipcButtonIndex / 2, ipcButtonIndex % 2); ++ipcButtonIndex;
+        connect(button, &QPushButton::clicked, this, action);
+    };
+    addIpcButton(tr("获取任务操作权"), [this] { if (m_coordinator) m_coordinator->acquireSession(); });
+    addIpcButton(tr("确认地图坐标与原点"), [this] { confirmFrameBinding(); });
+    addIpcButton(tr("启动已就绪任务"), [this] { if (m_coordinator) { refreshPlanningRevision(); m_coordinator->startTask(); } });
+    addIpcButton(tr("手动接管"), [this] { if (m_coordinator) m_coordinator->requestManual(); });
+    addIpcButton(tr("急停"), [this] { if (m_coordinator) m_coordinator->emergencyStop(); });
+    addIpcButton(tr("解除锁存与复位故障"), [this] { if (m_coordinator) m_coordinator->resetFault(); });
+    addIpcButton(tr("人工核对检查点拍摄结果"), [this] {
+        if (!m_tracking || m_tracking->snapshot().waitingEventId.isEmpty()) return;
+        const auto eventId = m_tracking->snapshot().waitingEventId;
+        const auto answer = QMessageBox::question(m_mapPage, tr("检查点拍摄结果"),
+            tr("请核对检查点 %1 的照片。选择“是”确认拍摄成功；“否”报告失败；取消保持等待。")
+                .arg(eventId), QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel, QMessageBox::Cancel);
+        if (answer != QMessageBox::Cancel) emit externalActionResolved(eventId, answer == QMessageBox::Yes);
+    });
+    m_trackingStatusLabel = new QLabel(tr("任务状态未知"), ipcBox); m_trackingStatusLabel->setWordWrap(true);
+    ipcLayout->addWidget(m_trackingStatusLabel, (ipcButtonIndex + 1) / 2, 0, 1, 2);
+    rightLayout->addWidget(ipcBox);
     auto taskTabWidget = new QTabWidget(rightPanel);
     taskTabWidget->setObjectName(QStringLiteral("mapTaskTabWidget"));
     taskTabWidget->setDocumentMode(true);
@@ -1926,7 +1724,7 @@ void Map::initializeUi()
 
     auto loopLayout = new QHBoxLayout();
     loopLayout->setSpacing(4);
-    m_routeLoopCheck = new QCheckBox(tr("循环发送"), routePage);
+    m_routeLoopCheck = new QCheckBox(tr("循环执行"), routePage);
     m_routeLoopCheck->setObjectName(QStringLiteral("mapRouteLoopCheck"));
     loopLayout->addWidget(m_routeLoopCheck);
     m_routeLoopIntervalSpin = new QSpinBox(routePage);
@@ -2029,9 +1827,9 @@ void Map::initializeUi()
 
     m_rowWorkCheckpointTable = new QTableWidget(rowWorkCheckpointBox);
     m_rowWorkCheckpointTable->setObjectName(QStringLiteral("mapRowWorkCheckpointTable"));
-    m_rowWorkCheckpointTable->setColumnCount(5);
+    m_rowWorkCheckpointTable->setColumnCount(7);
     m_rowWorkCheckpointTable->setHorizontalHeaderLabels(
-        {tr("名称"), tr("距起点(m)"), tr("停留(ms)"), tr("正向"), tr("反向")});
+        {tr("名称"), tr("距起点(m)"), tr("停留(ms)"), tr("正向"), tr("反向"), tr("拍摄"), tr("拍摄超时(ms)")});
     m_rowWorkCheckpointTable->horizontalHeader()->setDefaultAlignment(Qt::AlignCenter);
     m_rowWorkCheckpointTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
     m_rowWorkCheckpointTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
@@ -2067,16 +1865,9 @@ void Map::initializeUi()
     m_rowWorkMaxSpeedSpin->setSingleStep(0.01);
     rowWorkParamsLayout->addRow(tr("最大速度(m/s)"), m_rowWorkMaxSpeedSpin);
 
-    m_rowWorkEndpointSlowdownSpin = new QDoubleSpinBox(rowWorkParamsBox);
-    m_rowWorkEndpointSlowdownSpin->setObjectName(QStringLiteral("mapRowWorkEndpointSlowdownSpin"));
-    m_rowWorkEndpointSlowdownSpin->setRange(0.1, 20.0);
-    m_rowWorkEndpointSlowdownSpin->setDecimals(2);
-    m_rowWorkEndpointSlowdownSpin->setSingleStep(0.1);
-    rowWorkParamsLayout->addRow(tr("端点减速距离(m)"), m_rowWorkEndpointSlowdownSpin);
-
     m_rowWorkEndpointArrivalSpin = new QDoubleSpinBox(rowWorkParamsBox);
     m_rowWorkEndpointArrivalSpin->setObjectName(QStringLiteral("mapRowWorkEndpointArrivalSpin"));
-    m_rowWorkEndpointArrivalSpin->setRange(0.05, 5.0);
+    m_rowWorkEndpointArrivalSpin->setRange(0.01, 1.0);
     m_rowWorkEndpointArrivalSpin->setDecimals(2);
     m_rowWorkEndpointArrivalSpin->setSingleStep(0.01);
     rowWorkParamsLayout->addRow(tr("端点到达阈值(m)"), m_rowWorkEndpointArrivalSpin);
@@ -2357,6 +2148,9 @@ void Map::initializeUi()
     missionLayout->addStretch();
 
     rowWorkMissionScrollArea->setWidget(m_rowWorkMissionPage);
+    auto* uploadMission = new QPushButton(tr("上传完整多垄任务"), m_rowWorkMissionPage);
+    connect(uploadMission, &QPushButton::clicked, this, [this] { uploadMissionTask(); });
+    missionLayout->addWidget(uploadMission);
     m_rowWorkModeTabWidget->addTab(rowWorkMissionScrollArea, tr("多垄任务"));
 
     rowWorkLayout->addWidget(m_rowWorkModeTabWidget, 1);
@@ -2427,6 +2221,26 @@ void Map::initializeUi()
     connect(m_rowWorkPauseButton, &QPushButton::clicked, this, &Map::handleRowWorkPause);
     connect(m_rowWorkResumeButton, &QPushButton::clicked, this, &Map::handleRowWorkResume);
     connect(m_rowWorkStopButton, &QPushButton::clicked, this, &Map::handleRowWorkStop);
+    connect(m_rowWorkBaseSpeedSpin, &QDoubleSpinBox::valueChanged, this, [this](double value) {
+        if (!canEditRowWorkPlan()) { refreshRowWorkUi(); return; }
+        m_rowWorkPlan.params.baseLinearSpeed = value; updateRowWorkPlanVersion();
+    });
+    connect(m_rowWorkMaxSpeedSpin, &QDoubleSpinBox::valueChanged, this, [this](double value) {
+        if (!canEditRowWorkPlan()) { refreshRowWorkUi(); return; }
+        m_rowWorkPlan.params.maxLinearSpeed = value; updateRowWorkPlanVersion();
+    });
+    connect(m_rowWorkEndpointArrivalSpin, &QDoubleSpinBox::valueChanged, this, [this](double value) {
+        if (!canEditRowWorkPlan()) { refreshRowWorkUi(); return; }
+        m_rowWorkPlan.params.endpointArrivalDistance = value; updateRowWorkPlanVersion();
+    });
+    connect(m_rowWorkCheckpointToleranceSpin, &QDoubleSpinBox::valueChanged, this, [this](double value) {
+        if (!canEditRowWorkPlan()) { refreshRowWorkUi(); return; }
+        m_rowWorkPlan.params.checkpointArrivalTolerance = value; updateRowWorkPlanVersion();
+    });
+    connect(m_rowWorkTurnAngularSpeedSpin, &QDoubleSpinBox::valueChanged, this, [this](double value) {
+        if (!canEditRowWorkPlan()) { refreshRowWorkUi(); return; }
+        m_rowWorkPlan.params.turnAngularSpeed = value; updateRowWorkPlanVersion();
+    });
     connect(m_rowWorkLoopCheck, &QCheckBox::toggled, this, &Map::handleRowWorkLoopChanged);
     connect(m_rowWorkCheckpointTable, &QTableWidget::cellChanged, this, &Map::handleRowWorkCheckpointCellChanged);
     connect(m_rowMissionNameEdit, &QLineEdit::editingFinished, this, &Map::handleRowMissionNameEdited);
@@ -2453,11 +2267,6 @@ void Map::initializeUi()
 
     handleEditModeToggled(m_editModeButton && m_editModeButton->isChecked());
 
-    if (!m_routeTimer) {
-        m_routeTimer = new QTimer(this);
-    }
-    m_routeTimer->setSingleShot(true);
-    connect(m_routeTimer, &QTimer::timeout, this, &Map::handleRouteTimerTick);
 
     refreshRowWorkUi();
 }
@@ -3265,91 +3074,8 @@ bool Map::rebuildRouteStep(RouteStep &step)
     return true;
 }
 
-bool Map::rebuildRemainingRouteFrom(int startIndex, int startPointId, QString *errorMessage)
-{
-    if (startIndex < 0 || startIndex > m_routeQueue.size()) {
-        if (errorMessage) {
-            *errorMessage = tr("重规划起始索引无效");
-        }
-        return false;
-    }
-    if (!m_points.contains(startPointId)) {
-        if (errorMessage) {
-            *errorMessage = tr("重规划起点 点%1 不存在").arg(startPointId);
-        }
-        return false;
-    }
 
-    QList<RouteStep> rebuiltQueue = m_routeQueue.mid(0, startIndex);
-    int currentStartId = startPointId;
 
-    for (int i = startIndex; i < m_routeQueue.size(); ++i) {
-        const int targetId = m_routeQueue.at(i).toId;
-        if (!m_points.contains(targetId)) {
-            if (errorMessage) {
-                *errorMessage = tr("重规划目标 点%1 不存在").arg(targetId);
-            }
-            return false;
-        }
-        if (currentStartId == targetId) {
-            continue;
-        }
-
-        RouteStep rebuiltStep;
-        rebuiltStep.fromId = currentStartId;
-        rebuiltStep.toId = targetId;
-        if (!rebuildRouteStep(rebuiltStep)) {
-            if (errorMessage) {
-                *errorMessage = tr("点%1至点%2没有可用路径").arg(currentStartId).arg(targetId);
-            }
-            return false;
-        }
-
-        rebuiltQueue.append(rebuiltStep);
-        currentStartId = targetId;
-    }
-
-    m_routeQueue = rebuiltQueue;
-    refreshRouteQueueUi();
-    return true;
-}
-
-std::optional<int> Map::resolveDynamicReplanStartPoint() const
-{
-    if (m_vehicleCurrentPointId.has_value() && m_points.contains(m_vehicleCurrentPointId.value())) {
-        return m_vehicleCurrentPointId;
-    }
-    if (!m_hasVehiclePose) {
-        return std::nullopt;
-    }
-
-    const int nearestId =
-        findNearestPointId(QPointF(m_vehiclePoseX, m_vehiclePoseY), kRouteReplanSnapThresholdMeters, nullptr);
-    if (nearestId <= 0 || !m_points.contains(nearestId)) {
-        return std::nullopt;
-    }
-    return nearestId;
-}
-
-bool Map::tryDynamicReplanAfterFailure(QString *errorMessage)
-{
-    if (m_activeRouteIndex < 0 || m_activeRouteIndex >= m_routeQueue.size()) {
-        if (errorMessage) {
-            *errorMessage = tr("当前没有可重规划的执行段");
-        }
-        return false;
-    }
-
-    const std::optional<int> startPointId = resolveDynamicReplanStartPoint();
-    if (!startPointId.has_value()) {
-        if (errorMessage) {
-            *errorMessage = tr("当前位姿无法匹配到可用地图点");
-        }
-        return false;
-    }
-
-    return rebuildRemainingRouteFrom(m_activeRouteIndex, startPointId.value(), errorMessage);
-}
 
 void Map::refreshPointUi()
 {
@@ -3519,27 +3245,15 @@ void Map::refreshRouteQueueUi()
 }
 void Map::updateRouteControlState()
 {
-    const bool hasQueue = !m_routeQueue.isEmpty();
-    const bool running = m_waitingForSegmentCompletion || (m_activeRouteIndex >= 0 && m_activeRouteIndex < m_routeQueue.size());
-
-    if (m_routeStartButton) {
-        m_routeStartButton->setEnabled(hasQueue && !running && !m_pauseRequested);
-    }
-    if (m_routePauseButton) {
-        m_routePauseButton->setEnabled(running && !m_pauseRequested);
-    }
-    if (m_routeResumeButton) {
-        m_routeResumeButton->setEnabled(hasQueue && !running && m_pauseRequested);
-    }
-    if (m_routeStopButton) {
-        m_routeStopButton->setEnabled(hasQueue || running);
-    }
-    if (m_routeRemoveButton) {
-        m_routeRemoveButton->setEnabled(hasQueue && !running);
-    }
-    if (m_routeClearButton) {
-        m_routeClearButton->setEnabled(hasQueue && !running);
-    }
+    const bool editable = canEditRowWorkPlan();
+    const bool online = m_tracking && m_tracking->fresh();
+    const auto state = online ? m_tracking->snapshot() : TrackingSnapshot{};
+    if (m_routeStartButton) { m_routeStartButton->setText(tr("上传整条路线")); m_routeStartButton->setEnabled(editable && !m_routeQueue.isEmpty()); }
+    if (m_routePauseButton) m_routePauseButton->setEnabled(online && state.isExecuting());
+    if (m_routeResumeButton) m_routeResumeButton->setEnabled(online && state.state == "Paused");
+    if (m_routeStopButton) m_routeStopButton->setEnabled(online && !state.executionId.isEmpty() && !state.isTerminal());
+    if (m_routeRemoveButton) m_routeRemoveButton->setEnabled(editable && !m_routeQueue.isEmpty());
+    if (m_routeClearButton) m_routeClearButton->setEnabled(editable && !m_routeQueue.isEmpty());
 }
 
 void Map::setRouteStatusText(const QString &text, bool warning)
@@ -3667,98 +3381,7 @@ void Map::updateVehiclePointBinding()
     }
 }
 
-void Map::resetRouteProgress()
-{
-    for (RouteStep &step : m_routeQueue) {
-        step.progressEdgeIndex = 0;
-    }
-    m_activeRouteIndex = -1;
-    m_waitingForSegmentCompletion = false;
-}
 
-void Map::dispatchNextEdge()
-{
-    if (m_routeQueue.isEmpty()) {
-        m_activeRouteIndex = -1;
-        m_waitingForSegmentCompletion = false;
-        updateRouteControlState();
-        return;
-    }
-
-    if (m_pauseRequested) {
-        updateRouteControlState();
-        return;
-    }
-
-    if (m_activeRouteIndex < 0 || m_activeRouteIndex >= m_routeQueue.size()) {
-        m_activeRouteIndex = 0;
-    }
-
-    QString replanError;
-    if (m_activeRouteIndex >= 0 && m_activeRouteIndex < m_routeQueue.size()) {
-        const int startPointId = m_routeQueue.at(m_activeRouteIndex).fromId;
-        if (!rebuildRemainingRouteFrom(m_activeRouteIndex, startPointId, &replanError)) {
-            setRouteStatusText(replanError.isEmpty() ? tr("剩余路线重规划失败") : replanError, true);
-            m_activeRouteIndex = -1;
-            m_waitingForSegmentCompletion = false;
-            updateRouteControlState();
-            return;
-        }
-        if (m_activeRouteIndex >= m_routeQueue.size()) {
-            m_waitingForSegmentCompletion = false;
-            m_activeRouteIndex = -1;
-            updateRouteControlState();
-            emit routeQueueCompletedOnce();
-            if (m_routeLoopCheck && m_routeLoopCheck->isChecked()) {
-                scheduleNextCycle();
-            }
-            return;
-        }
-    }
-
-    while (m_activeRouteIndex < m_routeQueue.size()) {
-        RouteStep &step = m_routeQueue[m_activeRouteIndex];
-        if (step.pathIds.isEmpty()) {
-            if (!rebuildRouteStep(step)) {
-                setRouteStatusText(tr("点%1至点%2没有可用路径").arg(step.fromId).arg(step.toId), true);
-                m_activeRouteIndex = -1;
-                updateRouteControlState();
-                return;
-            }
-        }
-
-        const QList<QPointF> polyline = composePolyline(step.pathIds);
-        if (polyline.isEmpty()) {
-            setRouteStatusText(tr("路线数据无效"), true);
-            m_activeRouteIndex = -1;
-            updateRouteControlState();
-            return;
-        }
-
-        double startTheta = 0.0;
-        if (const MapPoint *startPoint = pointById(step.fromId)) {
-            startTheta = startPoint->theta;
-        }
-        double endTheta = 0.0;
-        if (const MapPoint *endPoint = pointById(step.toId)) {
-            endTheta = endPoint->theta;
-        }
-
-        setRouteStatusText(tr("发送: 点%1 → 点%2").arg(step.fromId).arg(step.toId));
-        m_waitingForSegmentCompletion = true;
-        updateRouteControlState();
-        emit routeSegmentDispatched(step.fromId, step.toId, polyline, startTheta, endTheta);
-        return;
-    }
-
-    m_waitingForSegmentCompletion = false;
-    m_activeRouteIndex = -1;
-    updateRouteControlState();
-    emit routeQueueCompletedOnce();
-    if (m_routeLoopCheck && m_routeLoopCheck->isChecked()) {
-        scheduleNextCycle();
-    }
-}
 
 bool Map::isRouteQueueContinuous() const
 {
@@ -3773,27 +3396,11 @@ bool Map::isRouteQueueContinuous() const
     return true;
 }
 
-void Map::scheduleNextCycle()
-{
-    if (!m_routeLoopCheck || !m_routeLoopCheck->isChecked() || !m_routeTimer) {
-        updateRouteControlState();
-        return;
-    }
-
-    const int intervalSec = m_routeLoopIntervalSpin ? m_routeLoopIntervalSpin->value() : 0;
-    if (intervalSec <= 0) {
-        resetRouteProgress();
-        dispatchNextEdge();
-        return;
-    }
-
-    m_routeTimer->start(intervalSec * 1000);
-    setRouteStatusText(tr("等待下一轮 (%1 秒)").arg(intervalSec));
-    updateRouteControlState();
-}
 
 void Map::resetToBlankMap()
 {
+    m_binding = {};
+    if (m_coordinator) m_coordinator->setBinding(m_binding);
     clearMapData();
 
     m_gridWidth = kDefaultGridWidth;
@@ -3828,16 +3435,14 @@ void Map::resetToBlankMap()
     }
 
     m_rowWorkPlan = RowWorkPlan{};
+    m_rowWorkPlan.frameBinding = m_binding;
     m_rowWorkPlan.planId = RowWorkJson::generatePlanId();
     m_rowWorkPlan.frameId = QStringLiteral("map");
     m_rowWorkPlan.params.loopEnabled = true;
     m_rowMissionPlan = RowMissionPlan{};
+    m_rowMissionPlan.frameBinding = m_binding;
     m_rowMissionPlan.missionId = RowMissionJson::generateMissionId();
     m_rowMissionPlan.frameId = QStringLiteral("map");
-    m_hasRowWorkStatus = false;
-    m_rowWorkStatus = RowWorkStatus{};
-    m_rowWorkStatusDirty = true;
-    m_rowWorkPendingStartAfterUpload = false;
 
     applyPresentationUpdates(true);
     updateMapNameDisplay();
@@ -3893,6 +3498,7 @@ QByteArray Map::buildComparableMapState() const
 {
     QJsonObject root;
     root.insert(QStringLiteral("schemaVersion"), kMapSchemaVersion);
+    root.insert("frameBinding", m_binding.toJson());
     root.insert(QStringLiteral("gridWidth"), m_gridWidth);
     root.insert(QStringLiteral("gridHeight"), m_gridHeight);
     root.insert(QStringLiteral("cellSizeMeters"), m_cellSizeMeters);
@@ -3950,9 +3556,42 @@ void Map::syncCommittedMapState()
     m_committedMapState = buildComparableMapState();
 }
 
+void Map::refreshPlanningRevision()
+{
+    // Exclude embedded bindings: advancing the revision must not itself count as another edit.
+    std::function<QJsonValue(const QJsonValue&)> stripBindings = [&](const QJsonValue& value) -> QJsonValue {
+        if (value.isArray()) { QJsonArray out; for (const auto& child : value.toArray()) out.append(stripBindings(child)); return out; }
+        if (!value.isObject()) return value;
+        auto out = value.toObject(); out.remove("frameBinding");
+        for (auto it = out.begin(); it != out.end(); ++it) it.value() = stripBindings(it.value());
+        return out;
+    };
+    auto content = stripBindings(QJsonDocument::fromJson(buildComparableMapState()).object()).toObject();
+    QJsonArray route;
+    for (const auto& step : m_routeQueue) route.append(QJsonArray{step.fromId, step.toId});
+    content["routeQueue"] = route;
+    content["routeLoop"] = m_routeLoopCheck && m_routeLoopCheck->isChecked();
+    content["routeInterval"] = m_routeLoopIntervalSpin ? m_routeLoopIntervalSpin->value() : 0;
+    const auto fingerprint = QJsonDocument(content).toJson(QJsonDocument::Compact);
+    if (m_planningFingerprint == fingerprint) return;
+    const bool changed = !m_planningFingerprint.isEmpty();
+    m_planningFingerprint = fingerprint;
+    if (!changed) return;
+    ++m_binding.context.mapRevision;
+    if (m_coordinator) m_coordinator->setBinding(m_binding);
+}
+
 bool Map::hasUnsavedMapChanges() const
 {
     return buildComparableMapState() != m_committedMapState;
+}
+
+bool Map::confirmClose()
+{
+    if (!hasUnsavedMapChanges()) return true;
+    const auto answer = QMessageBox::question(m_mapPage, tr("保存地图"), tr("是否保存地图修改后退出？"),
+        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Save);
+    return answer == QMessageBox::Discard || (answer == QMessageBox::Save && saveCurrentMapInteractive(false));
 }
 
 void Map::clearMapData()
@@ -3973,22 +3612,19 @@ void Map::clearMapData()
     m_vehicleCurrentPointId.reset();
 
     m_routeQueue.clear();
-    resetRouteProgress();
 
     m_rowWorkPlan = RowWorkPlan{};
+    m_rowWorkPlan.frameBinding = m_binding;
     m_rowWorkPlan.planId = RowWorkJson::generatePlanId();
     m_rowWorkPlan.frameId = QStringLiteral("map");
     m_rowWorkPlan.params.loopEnabled = true;
     m_rowMissionPlan = RowMissionPlan{};
+    m_rowMissionPlan.frameBinding = m_binding;
     m_rowMissionPlan.missionId = RowMissionJson::generateMissionId();
     m_rowMissionPlan.frameId = QStringLiteral("map");
-    m_hasRowWorkStatus = false;
-    m_rowWorkStatus = RowWorkStatus{};
-    m_rowWorkStatusDirty = false;
     m_rowWorkCheckpointTableUpdating = false;
     m_rowWorkClickPlacementMode = false;
     m_rowWorkPendingCaptureTarget = RowWorkPendingCaptureTarget::None;
-    m_rowWorkPendingStartAfterUpload = false;
 
     refreshPointUi();
     refreshPathUi();
@@ -3998,8 +3634,9 @@ void Map::clearMapData()
     refreshRowWorkUi();
 }
 
-bool Map::saveMapToFile(const QString &filePath) const
+bool Map::saveMapToFile(const QString &filePath)
 {
+    refreshPlanningRevision();
     if (filePath.isEmpty()) {
         return false;
     }
@@ -4064,6 +3701,7 @@ QJsonObject Map::serializeMap() const
 {
     MapDocument doc;
     doc.schemaVersion = kMapSchemaVersion;
+    doc.frameBinding = m_binding;
     doc.savedAtIsoUtc = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
     doc.gridWidth = m_gridWidth;
     doc.gridHeight = m_gridHeight;
@@ -4115,6 +3753,8 @@ bool Map::deserializeMap(const QJsonObject &object)
         return false;
     }
 
+    m_binding = doc.frameBinding;
+    if (m_coordinator) m_coordinator->setBinding(m_binding);
     if (m_gridWidthSpin) {
         m_gridWidthSpin->setValue(doc.gridWidth);
     }
@@ -4156,6 +3796,7 @@ bool Map::deserializeMap(const QJsonObject &object)
         m_rowWorkPlan = doc.rowWorkPlan;
     } else {
         m_rowWorkPlan = RowWorkPlan{};
+    m_rowWorkPlan.frameBinding = m_binding;
         m_rowWorkPlan.planId = RowWorkJson::generatePlanId();
         m_rowWorkPlan.frameId = QStringLiteral("map");
         m_rowWorkPlan.params.loopEnabled = true;
@@ -4164,13 +3805,12 @@ bool Map::deserializeMap(const QJsonObject &object)
         m_rowMissionPlan = doc.rowMissionPlan;
     } else {
         m_rowMissionPlan = RowMissionPlan{};
+    m_rowMissionPlan.frameBinding = m_binding;
         m_rowMissionPlan.missionId = RowMissionJson::generateMissionId();
         m_rowMissionPlan.frameId = QStringLiteral("map");
     }
-    m_rowWorkStatusDirty = doc.hasRowWorkPlan;
     m_rowWorkClickPlacementMode = false;
     m_rowWorkPendingCaptureTarget = RowWorkPendingCaptureTarget::None;
-    m_rowWorkPendingStartAfterUpload = false;
     if (m_rowWorkAddCheckpointFromMapButton) {
         QSignalBlocker blocker(m_rowWorkAddCheckpointFromMapButton);
         m_rowWorkAddCheckpointFromMapButton->setChecked(false);
@@ -4187,137 +3827,8 @@ bool Map::deserializeMap(const QJsonObject &object)
     return true;
 }
 
-void Map::ensureRowWorkClient()
-{
-    const auto &rowWorkCfg = ConfigManager::instance().rowWork();
-    if (!rowWorkCfg.enabled) {
-        if (m_rowWorkClient) {
-            m_rowWorkClient->stopStatusPolling();
-        }
-        return;
-    }
 
-    if (!m_rowWorkClient) {
-        m_rowWorkClient = new RowWorkClient(this);
-        connectRowWorkClientSignals();
-    }
 
-    m_rowWorkClient->setBaseUrl(QUrl(rowWorkCfg.gatewayBaseUrl));
-    m_rowWorkClient->setAuthorizationToken(ConfigManager::instance().network().authToken);
-    m_rowWorkClient->setStatusPollIntervalMs(rowWorkCfg.statusPollIntervalMs);
-    m_rowWorkClient->setCommandTimeoutMs(rowWorkCfg.commandTimeoutMs);
-    if (rowWorkCfg.autoRefreshPlanStatus) {
-        m_rowWorkClient->startStatusPolling();
-    } else {
-        m_rowWorkClient->stopStatusPolling();
-    }
-}
-
-void Map::connectRowWorkClientSignals()
-{
-    if (!m_rowWorkClient) {
-        return;
-    }
-
-    connect(m_rowWorkClient, &RowWorkClient::statusReceived, this, &Map::handleRowWorkStatusUpdate);
-    connect(m_rowWorkClient, &RowWorkClient::poseCaptured, this, [this](const RowWorkPose &pose,
-                                                                        int sampleDurationMs,
-                                                                        int sampleCount,
-                                                                        const QString &message) {
-        Q_UNUSED(sampleDurationMs);
-        Q_UNUSED(sampleCount);
-
-        switch (m_rowWorkPendingCaptureTarget) {
-        case RowWorkPendingCaptureTarget::StartPose:
-            m_rowWorkPlan.hasStartPose = true;
-            m_rowWorkPlan.startPose = pose;
-            updateRowWorkPlanVersion();
-            setRowWorkStatusText(message.isEmpty()
-                                     ? tr("已记录起点 A")
-                                     : tr("%1（起点）").arg(message));
-            break;
-        case RowWorkPendingCaptureTarget::EndPose:
-            m_rowWorkPlan.hasEndPose = true;
-            m_rowWorkPlan.endPose = pose;
-            updateRowWorkPlanVersion();
-            setRowWorkStatusText(message.isEmpty()
-                                     ? tr("已记录终点 B")
-                                     : tr("%1（终点）").arg(message));
-            break;
-        case RowWorkPendingCaptureTarget::CheckpointFromVehicle:
-            addRowWorkCheckpoint(pose.toPointF());
-            setRowWorkStatusText(message.isEmpty()
-                                     ? tr("已添加当前位置中间点")
-                                     : tr("%1（中间点）").arg(message));
-            break;
-        case RowWorkPendingCaptureTarget::None:
-            break;
-        }
-        m_rowWorkPendingCaptureTarget = RowWorkPendingCaptureTarget::None;
-        refreshRowWorkUi();
-    });
-    connect(m_rowWorkClient, &RowWorkClient::planReceived, this, [this](const RowWorkPlan &plan) {
-        m_rowWorkPlan = plan;
-        m_rowWorkStatusDirty = false;
-        refreshRowWorkUi();
-        setRowWorkStatusText(tr("已同步工控机上的作业计划"));
-    });
-    connect(m_rowWorkClient, &RowWorkClient::planUploaded, this, [this](const QString &message) {
-        m_rowWorkStatusDirty = false;
-        setRowWorkStatusText(message.isEmpty() ? tr("作业计划已下发") : message);
-        refreshRowWorkUi();
-        LoggingManager::audit(QStringLiteral("rowwork.plan_upload"),
-                              QStringLiteral("success"),
-                              {{QStringLiteral("planId"), m_rowWorkPlan.planId},
-                               {QStringLiteral("version"), QString::number(m_rowWorkPlan.version)},
-                               {QStringLiteral("checkpoints"), QString::number(m_rowWorkPlan.checkpoints.size())}});
-        if (m_rowWorkPendingStartAfterUpload && m_rowWorkClient) {
-            m_rowWorkPendingStartAfterUpload = false;
-            m_rowWorkClient->startRowWork();
-        }
-    });
-    connect(m_rowWorkClient, &RowWorkClient::actionSucceeded, this, [this](const QString &action, const QString &message) {
-        if (action == QStringLiteral("start")) {
-            emit rowWorkAutoStartRequested();
-        } else if (action == QStringLiteral("stop")) {
-            emit rowWorkAutoStopRequested();
-        }
-        const QString text = message.isEmpty() ? tr("直线作业操作成功：%1").arg(action) : message;
-        setRowWorkStatusText(text);
-        LoggingManager::audit(QStringLiteral("rowwork.action"),
-                              QStringLiteral("success"),
-                              {{QStringLiteral("action"), action},
-                               {QStringLiteral("message"), message},
-                               {QStringLiteral("planId"), m_rowWorkPlan.planId},
-                               {QStringLiteral("version"), QString::number(m_rowWorkPlan.version)}});
-        if (m_rowWorkClient) {
-            m_rowWorkClient->requestStatus();
-        }
-    });
-    connect(m_rowWorkClient, &RowWorkClient::requestFailed, this, [this](const QString &operation, const QString &message) {
-        m_rowWorkPendingCaptureTarget = RowWorkPendingCaptureTarget::None;
-        m_rowWorkPendingStartAfterUpload = false;
-        setRowWorkStatusText(tr("直线作业操作失败（%1）：%2").arg(operation, message), true);
-        LoggingManager::audit(operation == QStringLiteral("upload_plan") ? QStringLiteral("rowwork.plan_upload")
-                                                                         : QStringLiteral("rowwork.action"),
-                              QStringLiteral("failed"),
-                              {{QStringLiteral("action"), operation},
-                               {QStringLiteral("message"), message},
-                               {QStringLiteral("planId"), m_rowWorkPlan.planId},
-                               {QStringLiteral("version"), QString::number(m_rowWorkPlan.version)}});
-        refreshRowWorkUi();
-    });
-    connect(m_rowWorkClient, &RowWorkClient::busyChanged, this, [this](bool) {
-        refreshRowWorkControlState();
-    });
-}
-
-void Map::handleRowWorkStatusUpdate(const RowWorkStatus &status)
-{
-    m_rowWorkStatus = status;
-    m_hasRowWorkStatus = true;
-    refreshRowWorkUi();
-}
 
 void Map::refreshRowWorkUi()
 {
@@ -4330,14 +3841,6 @@ void Map::refreshRowWorkUi()
 
 void Map::refreshRowWorkPlanSummary()
 {
-    const auto checkpointNameAt = [this](int index) -> QString {
-        if (index < 0 || index >= m_rowWorkPlan.checkpoints.size()) {
-            return QString();
-        }
-        const QString name = m_rowWorkPlan.checkpoints.at(index).name.trimmed();
-        return name.isEmpty() ? QStringLiteral("P%1").arg(index + 1) : name;
-    };
-
     if (m_rowWorkStartLabel) {
         m_rowWorkStartLabel->setText(m_rowWorkPlan.hasStartPose
                                          ? tr("X=%1, Y=%2, Yaw=%3")
@@ -4361,10 +3864,6 @@ void Map::refreshRowWorkPlanSummary()
     if (m_rowWorkMaxSpeedSpin) {
         QSignalBlocker blocker(m_rowWorkMaxSpeedSpin);
         m_rowWorkMaxSpeedSpin->setValue(m_rowWorkPlan.params.maxLinearSpeed);
-    }
-    if (m_rowWorkEndpointSlowdownSpin) {
-        QSignalBlocker blocker(m_rowWorkEndpointSlowdownSpin);
-        m_rowWorkEndpointSlowdownSpin->setValue(m_rowWorkPlan.params.endpointSlowdownDistance);
     }
     if (m_rowWorkEndpointArrivalSpin) {
         QSignalBlocker blocker(m_rowWorkEndpointArrivalSpin);
@@ -4392,95 +3891,17 @@ void Map::refreshRowWorkPlanSummary()
                                      : tr("计划：未完成 A/B 示教");
         m_rowWorkPlanLabel->setText(lineText);
     }
-    if (m_rowWorkRuntimeLabel) {
-        if (m_hasRowWorkStatus) {
-            m_rowWorkRuntimeLabel->setText(
-                tr("运行：状态=%1，方向=%2")
-                    .arg(m_rowWorkStatus.state.isEmpty() ? tr("未知") : m_rowWorkStatus.state)
-                    .arg(m_rowWorkStatus.currentDirection.isEmpty() ? tr("-") : m_rowWorkStatus.currentDirection));
-        } else {
-            m_rowWorkRuntimeLabel->setText(tr("运行：等待工控机状态"));
-        }
-    }
-    if (m_rowWorkProgressLabel) {
-        if (m_hasRowWorkStatus) {
-            QString progressText = tr("进度：%1 / %2 m，横向误差=%3 m，航向误差=%4°")
-                                       .arg(m_rowWorkStatus.progress, 0, 'f', 2)
-                                       .arg(m_rowWorkStatus.lineLength, 0, 'f', 2)
-                                       .arg(m_rowWorkStatus.lateralError, 0, 'f', 3)
-                                       .arg(m_rowWorkStatus.headingErrorDeg, 0, 'f', 2);
-            if (m_rowWorkStatus.pauseRemainingMs > 0) {
-                progressText += tr("，剩余停留=%1 ms").arg(m_rowWorkStatus.pauseRemainingMs);
-            }
-            m_rowWorkProgressLabel->setText(progressText);
-        } else {
-            m_rowWorkProgressLabel->setText(tr("进度：等待工控机状态"));
-        }
-    }
-    if (m_rowWorkTargetLabel) {
-        if (m_hasRowWorkStatus) {
-            const QString currentCheckpointName = checkpointNameAt(m_rowWorkStatus.currentCheckpointIndex);
-            QString targetText = tr("目标：当前中间点=%1")
-                                     .arg(currentCheckpointName.isEmpty() ? tr("无") : currentCheckpointName);
-            if (m_rowWorkStatus.currentDirection.compare(QStringLiteral("forward"), Qt::CaseInsensitive) == 0) {
-                targetText += tr("，终点=B");
-            } else if (m_rowWorkStatus.currentDirection.compare(QStringLiteral("backward"), Qt::CaseInsensitive) == 0) {
-                targetText += tr("，终点=A");
-            }
-            m_rowWorkTargetLabel->setText(targetText);
-        } else {
-            m_rowWorkTargetLabel->setText(tr("目标：等待工控机状态"));
-        }
-    }
-    if (m_rowWorkControlLabel) {
-        if (m_hasRowWorkStatus) {
-            m_rowWorkControlLabel->setText(
-                tr("控制权：owner=%1，模式=%2")
-                    .arg(m_rowWorkStatus.controlOwner.isEmpty() ? tr("-") : m_rowWorkStatus.controlOwner)
-                    .arg(m_rowWorkStatus.mode.isEmpty() ? tr("-") : m_rowWorkStatus.mode));
-        } else {
-            m_rowWorkControlLabel->setText(tr("控制权：等待工控机状态"));
-        }
-    }
-    if (m_rowWorkPoseLabel) {
-        if (m_hasRowWorkStatus) {
-            m_rowWorkPoseLabel->setText(
-                tr("位姿：%1，年龄=%2 ms")
-                    .arg(m_rowWorkStatus.poseFresh ? tr("新鲜") : tr("过期"))
-                    .arg(m_rowWorkStatus.poseAgeMs));
-        } else {
-            m_rowWorkPoseLabel->setText(tr("位姿：等待工控机状态"));
-        }
-    }
-    if (m_rowWorkFaultLabel) {
-        if (m_hasRowWorkStatus && m_rowWorkStatus.isFaulted()) {
-            const QString code = m_rowWorkStatus.faultCode.trimmed().isEmpty() ? tr("未提供") : m_rowWorkStatus.faultCode;
-            const QString message = m_rowWorkStatus.faultMessage.trimmed().isEmpty() ? tr("未提供") : m_rowWorkStatus.faultMessage;
-            m_rowWorkFaultLabel->setText(tr("故障：%1 | %2").arg(code, message));
-            QPalette faultPalette = m_rowWorkFaultLabel->palette();
-            faultPalette.setColor(QPalette::WindowText, QColor(220, 80, 60));
-            m_rowWorkFaultLabel->setPalette(faultPalette);
-        } else if (m_hasRowWorkStatus && m_rowWorkStatus.state == QStringLiteral("ManualOverride")) {
-            m_rowWorkFaultLabel->setText(tr("故障：无，当前为人工接管"));
-            QPalette overridePalette = m_rowWorkFaultLabel->palette();
-            overridePalette.setColor(QPalette::WindowText, QColor(180, 110, 20));
-            m_rowWorkFaultLabel->setPalette(overridePalette);
-        } else {
-            m_rowWorkFaultLabel->setText(tr("故障：无"));
-            QPalette normalPalette = m_rowWorkFaultLabel->palette();
-            normalPalette.setColor(QPalette::WindowText, QColor(55, 55, 55));
-            m_rowWorkFaultLabel->setPalette(normalPalette);
-        }
-    }
-    if (m_rowWorkEventLabel) {
-        if (m_hasRowWorkStatus) {
-            m_rowWorkEventLabel->setText(
-                tr("最近事件：%1")
-                    .arg(m_rowWorkStatus.lastEvent.isEmpty() ? tr("-") : m_rowWorkStatus.lastEvent));
-        } else {
-            m_rowWorkEventLabel->setText(tr("最近事件：等待工控机状态"));
-        }
-    }
+    const bool online = m_tracking && m_tracking->fresh();
+    const auto status = online ? m_tracking->snapshot() : TrackingSnapshot{};
+    if (m_rowWorkRuntimeLabel) m_rowWorkRuntimeLabel->setText(tr("状态：%1").arg(online ? status.state : tr("未知")));
+    if (m_rowWorkProgressLabel) m_rowWorkProgressLabel->setText(tr("步骤 %1：%2 / %3 m，剩余转角 %4 rad，等待 %5 ms")
+        .arg(status.stepId).arg(status.progressMeters, 0, 'f', 2).arg(status.lengthMeters, 0, 'f', 2)
+        .arg(status.remainingAngleRad, 0, 'f', 2).arg(status.remainingWaitMs, 0, 'f', 0));
+    if (m_rowWorkTargetLabel) m_rowWorkTargetLabel->setText(tr("执行 %1 · 循环 %2").arg(status.executionId).arg(status.loopIndex));
+    if (m_rowWorkControlLabel) m_rowWorkControlLabel->setText(tr("控制权：%1").arg(status.owner));
+    if (m_rowWorkPoseLabel) m_rowWorkPoseLabel->setText(m_poseClient && m_poseClient->fresh() ? tr("定位有效") : tr("定位过期或无效"));
+    if (m_rowWorkFaultLabel) m_rowWorkFaultLabel->setText(tr("暂停原因：%1 · 故障：%2").arg(status.pauseReason, status.faultCode));
+    if (m_rowWorkEventLabel) m_rowWorkEventLabel->setText(tr("等待事件：%1 · 结果：%2").arg(status.waitingEventId, status.result));
 }
 
 void Map::refreshRowWorkCheckpointTable()
@@ -4518,6 +3939,12 @@ void Map::refreshRowWorkCheckpointTable()
                                & ~Qt::ItemIsEditable);
         backwardItem->setCheckState(checkpoint.triggerOnBackward ? Qt::Checked : Qt::Unchecked);
         m_rowWorkCheckpointTable->setItem(row, kRowWorkCheckpointTableBackwardColumn, backwardItem);
+        auto* captureItem = new QTableWidgetItem;
+        captureItem->setFlags((captureItem->flags() | Qt::ItemIsUserCheckable) & ~Qt::ItemIsEditable);
+        captureItem->setCheckState(checkpoint.capturePhoto ? Qt::Checked : Qt::Unchecked);
+        m_rowWorkCheckpointTable->setItem(row, kRowWorkCheckpointTableCaptureColumn, captureItem);
+        m_rowWorkCheckpointTable->setItem(row, kRowWorkCheckpointTableTimeoutColumn,
+            new QTableWidgetItem(QString::number(checkpoint.actionTimeoutMs)));
     }
     m_rowWorkCheckpointTable->resizeRowsToContents();
     m_rowWorkCheckpointTableUpdating = false;
@@ -4525,13 +3952,11 @@ void Map::refreshRowWorkCheckpointTable()
 
 void Map::refreshRowWorkControlState()
 {
-    const bool clientReady = m_rowWorkClient && m_rowWorkClient->isConfigured();
-    const bool busy = m_rowWorkClient && m_rowWorkClient->isBusy();
+    const bool clientReady = m_tracking && m_tracking->fresh();
+    const bool busy = m_tracking && m_tracking->busy();
     const bool hasLine = hasRowWorkLine();
-    const bool isRunning = m_hasRowWorkStatus && m_rowWorkStatus.isActive()
-                           && m_rowWorkStatus.state != QStringLiteral("Paused")
-                           && m_rowWorkStatus.state != QStringLiteral("PlanReady");
-    const bool isPaused = m_hasRowWorkStatus && m_rowWorkStatus.state == QStringLiteral("Paused");
+    const bool isRunning = clientReady && m_tracking->snapshot().isExecuting();
+    const bool isPaused = clientReady && m_tracking->snapshot().state == "Paused";
     const bool editable = canEditRowWorkPlan() && !busy;
     const bool mapEditingAllowed = !isRunning && !isPaused;
 
@@ -4587,7 +4012,7 @@ void Map::refreshRowWorkControlState()
         m_rowWorkReadPlanButton->setEnabled(clientReady && !busy);
     }
     if (m_rowWorkStartButton) {
-        m_rowWorkStartButton->setEnabled(clientReady && hasLine && !busy && !isRunning);
+        m_rowWorkStartButton->setEnabled(clientReady && !busy && m_tracking->snapshot().state == "Ready");
     }
     if (m_rowWorkPauseButton) {
         m_rowWorkPauseButton->setEnabled(clientReady && isRunning && !busy);
@@ -4643,7 +4068,7 @@ void Map::refreshRowWorkGraphics()
         const RowCheckpoint &checkpoint = m_rowWorkPlan.checkpoints.at(i);
         const QPointF checkpointMapPos = RowWorkGeometry::pointAtProgress(m_rowWorkPlan, checkpoint.progress);
         const QPointF checkpointScenePos = mapToScene(checkpointMapPos);
-        const bool isActiveCheckpoint = m_hasRowWorkStatus && m_rowWorkStatus.currentCheckpointIndex == i;
+        const bool isActiveCheckpoint = false;
 
         auto *group = new QGraphicsItemGroup();
         auto *circle = new QGraphicsEllipseItem(-5.0, -5.0, 10.0, 10.0);
@@ -4704,7 +4129,6 @@ void Map::updateRowWorkPlanVersion()
     if (m_rowWorkPlan.frameId.trimmed().isEmpty()) {
         m_rowWorkPlan.frameId = QStringLiteral("map");
     }
-    m_rowWorkStatusDirty = true;
 }
 
 bool Map::hasRowWorkLine() const
@@ -4715,13 +4139,12 @@ bool Map::hasRowWorkLine() const
 void Map::clearRowWorkPlanInternal(bool keepStatusMessage)
 {
     m_rowWorkPlan = RowWorkPlan{};
+    m_rowWorkPlan.frameBinding = m_binding;
     m_rowWorkPlan.planId = RowWorkJson::generatePlanId();
     m_rowWorkPlan.frameId = QStringLiteral("map");
     m_rowWorkPlan.params.loopEnabled = true;
-    m_rowWorkStatusDirty = true;
     m_rowWorkClickPlacementMode = false;
     m_rowWorkPendingCaptureTarget = RowWorkPendingCaptureTarget::None;
-    m_rowWorkPendingStartAfterUpload = false;
     if (m_rowWorkAddCheckpointFromMapButton) {
         QSignalBlocker blocker(m_rowWorkAddCheckpointFromMapButton);
         m_rowWorkAddCheckpointFromMapButton->setChecked(false);
@@ -4789,6 +4212,8 @@ RowCheckpoint Map::checkpointFromRow(int row) const
         checkpoint.triggerOnBackward = backwardItem->checkState() == Qt::Checked;
     }
     checkpoint.enabled = true;
+    if (const auto* item = m_rowWorkCheckpointTable->item(row, kRowWorkCheckpointTableCaptureColumn)) checkpoint.capturePhoto = item->checkState() == Qt::Checked;
+    if (const auto* item = m_rowWorkCheckpointTable->item(row, kRowWorkCheckpointTableTimeoutColumn)) checkpoint.actionTimeoutMs = item->text().toInt();
     return checkpoint;
 }
 
@@ -4803,75 +4228,22 @@ void Map::updateCheckpointRowNames()
 
 bool Map::canEditRowWorkPlan() const
 {
-    const bool running = m_hasRowWorkStatus && m_rowWorkStatus.isActive() && m_rowWorkStatus.state != QStringLiteral("PlanReady");
-    return !running;
+    return !m_tracking || (!m_tracking->busy() && (!m_tracking->fresh() ||
+        (!m_tracking->snapshot().isExecuting() && m_tracking->snapshot().state != "Paused")));
 }
 
 bool Map::uploadRowWorkPlanIfNeeded(bool forceUpload)
 {
-    if (!m_rowWorkClient || !m_rowWorkClient->isConfigured()) {
-        setRowWorkStatusText(tr("未配置直线作业服务地址"), true);
-        LoggingManager::audit(QStringLiteral("rowwork.plan_upload"),
-                              QStringLiteral("rejected"),
-                              {{QStringLiteral("reason"), QStringLiteral("not_configured")},
-                               {QStringLiteral("force"), forceUpload ? QStringLiteral("true") : QStringLiteral("false")}});
-        return false;
-    }
-    if (!hasRowWorkLine()) {
-        setRowWorkStatusText(tr("请先完成 A/B 示教"), true);
-        LoggingManager::audit(QStringLiteral("rowwork.plan_upload"),
-                              QStringLiteral("rejected"),
-                              {{QStringLiteral("reason"), QStringLiteral("missing_start_or_end_pose")},
-                               {QStringLiteral("force"), forceUpload ? QStringLiteral("true") : QStringLiteral("false")}});
-        return false;
-    }
-
-    m_rowWorkPlan.params.baseLinearSpeed = m_rowWorkBaseSpeedSpin ? m_rowWorkBaseSpeedSpin->value() : m_rowWorkPlan.params.baseLinearSpeed;
-    m_rowWorkPlan.params.maxLinearSpeed = m_rowWorkMaxSpeedSpin ? m_rowWorkMaxSpeedSpin->value() : m_rowWorkPlan.params.maxLinearSpeed;
-    m_rowWorkPlan.params.endpointSlowdownDistance =
-        m_rowWorkEndpointSlowdownSpin ? m_rowWorkEndpointSlowdownSpin->value() : m_rowWorkPlan.params.endpointSlowdownDistance;
-    m_rowWorkPlan.params.endpointArrivalDistance =
-        m_rowWorkEndpointArrivalSpin ? m_rowWorkEndpointArrivalSpin->value() : m_rowWorkPlan.params.endpointArrivalDistance;
-    m_rowWorkPlan.params.checkpointArrivalTolerance =
-        m_rowWorkCheckpointToleranceSpin ? m_rowWorkCheckpointToleranceSpin->value() : m_rowWorkPlan.params.checkpointArrivalTolerance;
-    m_rowWorkPlan.params.turnAngularSpeed =
-        m_rowWorkTurnAngularSpeedSpin ? m_rowWorkTurnAngularSpeedSpin->value() : m_rowWorkPlan.params.turnAngularSpeed;
-    m_rowWorkPlan.params.loopEnabled = m_rowWorkLoopCheck ? m_rowWorkLoopCheck->isChecked() : m_rowWorkPlan.params.loopEnabled;
-
-    if (!forceUpload && !m_rowWorkStatusDirty && rowWorkPlanMatchesStatus()) {
-        LoggingManager::audit(QStringLiteral("rowwork.plan_upload"),
-                              QStringLiteral("skipped"),
-                              {{QStringLiteral("reason"), QStringLiteral("already_synced")},
-                               {QStringLiteral("planId"), m_rowWorkPlan.planId},
-                               {QStringLiteral("version"), QString::number(m_rowWorkPlan.version)}});
-        return true;
-    }
-
-    if (m_rowWorkPlan.planId.trimmed().isEmpty()) {
-        m_rowWorkPlan.planId = RowWorkJson::generatePlanId();
-    }
-    if (m_rowWorkPlan.frameId.trimmed().isEmpty()) {
-        m_rowWorkPlan.frameId = QStringLiteral("map");
-    }
-
-    LoggingManager::audit(QStringLiteral("rowwork.plan_upload"),
-                          QStringLiteral("accepted"),
-                          {{QStringLiteral("force"), forceUpload ? QStringLiteral("true") : QStringLiteral("false")},
-                           {QStringLiteral("planId"), m_rowWorkPlan.planId},
-                           {QStringLiteral("version"), QString::number(m_rowWorkPlan.version)},
-                           {QStringLiteral("checkpoints"), QString::number(m_rowWorkPlan.checkpoints.size())}});
-    m_rowWorkClient->uploadPlan(m_rowWorkPlan);
-    return false;
+    Q_UNUSED(forceUpload);
+    if (!m_coordinator || !hasRowWorkLine()) return false;
+    auto options = taskOptions(); options.repeatUntilStopped = m_rowWorkPlan.params.loopEnabled;
+    const auto task = TaskCompiler::row(m_rowWorkPlan, m_binding, options, true);
+    if (!task.ok()) { setRowWorkStatusText(task.error, true); return false; }
+    const bool sent = m_coordinator->upload(task.plan);
+    if (sent) setRowWorkStatusText(tr("单垄任务已提交校验，Ready 后请明确启动"));
+    return sent;
 }
 
-bool Map::rowWorkPlanMatchesStatus() const
-{
-    if (!m_hasRowWorkStatus) {
-        return false;
-    }
-    return m_rowWorkStatus.planId.trimmed() == m_rowWorkPlan.planId.trimmed()
-           && m_rowWorkStatus.planVersion == m_rowWorkPlan.version;
-}
 
 void Map::refreshRowMissionUi()
 {
@@ -5341,36 +4713,29 @@ void Map::selectRowMissionStep(int row)
 
 void Map::handleRowWorkCaptureStartPoint()
 {
-    if (!m_rowWorkClient || !m_rowWorkClient->isConfigured()) {
-        setRowWorkStatusText(tr("未配置直线作业服务地址"), true);
-        return;
-    }
-    m_rowWorkPendingCaptureTarget = RowWorkPendingCaptureTarget::StartPose;
-    m_rowWorkClient->capturePose();
+    if (!m_poseClient || !canEditRowWorkPlan()) return;
+    if (m_poseClient->capture(m_binding)) {
+        m_rowWorkPendingCaptureTarget = RowWorkPendingCaptureTarget::StartPose;
+        setRowWorkStatusText(tr("正在采集停稳后的独立定位样本…"));
+    } else setRowWorkStatusText(tr("采样未开始：请确认停稳、定位和地图绑定"), true);
 }
 
 void Map::handleRowWorkCaptureEndPoint()
 {
-    if (!m_rowWorkClient || !m_rowWorkClient->isConfigured()) {
-        setRowWorkStatusText(tr("未配置直线作业服务地址"), true);
-        return;
-    }
-    m_rowWorkPendingCaptureTarget = RowWorkPendingCaptureTarget::EndPose;
-    m_rowWorkClient->capturePose();
+    if (!m_poseClient || !canEditRowWorkPlan()) return;
+    if (m_poseClient->capture(m_binding)) {
+        m_rowWorkPendingCaptureTarget = RowWorkPendingCaptureTarget::EndPose;
+        setRowWorkStatusText(tr("正在采集停稳后的独立定位样本…"));
+    } else setRowWorkStatusText(tr("采样未开始：请确认停稳、定位和地图绑定"), true);
 }
 
 void Map::handleRowWorkAddCheckpointFromVehicle()
 {
-    if (!hasRowWorkLine()) {
-        setRowWorkStatusText(tr("请先完成 A/B 示教后再添加中间点"), true);
-        return;
-    }
-    if (!m_rowWorkClient || !m_rowWorkClient->isConfigured()) {
-        setRowWorkStatusText(tr("未配置直线作业服务地址"), true);
-        return;
-    }
-    m_rowWorkPendingCaptureTarget = RowWorkPendingCaptureTarget::CheckpointFromVehicle;
-    m_rowWorkClient->capturePose();
+    if (!m_poseClient || !canEditRowWorkPlan()) return;
+    if (m_poseClient->capture(m_binding)) {
+        m_rowWorkPendingCaptureTarget = RowWorkPendingCaptureTarget::CheckpointFromVehicle;
+        setRowWorkStatusText(tr("正在采集停稳后的独立定位样本…"));
+    } else setRowWorkStatusText(tr("采样未开始：请确认停稳、定位和地图绑定"), true);
 }
 
 void Map::handleRowWorkAddCheckpointFromMap()
@@ -5422,95 +4787,36 @@ void Map::handleRowWorkClearPlan()
 
 void Map::handleRowWorkReadPlan()
 {
-    if (!m_rowWorkClient || !m_rowWorkClient->isConfigured()) {
-        setRowWorkStatusText(tr("未配置直线作业服务地址"), true);
-        return;
+    if (m_tracking && m_tracking->fresh()) {
+        const auto status = m_tracking->snapshot();
+        if (!status.taskId.isEmpty()) m_tracking->readTask(status.taskId, status.taskRevision);
     }
-
-    const bool hasLocalPlanContent =
-        m_rowWorkPlan.hasStartPose || m_rowWorkPlan.hasEndPose || !m_rowWorkPlan.checkpoints.isEmpty();
-    if (m_rowWorkStatusDirty && hasLocalPlanContent) {
-        const QMessageBox::StandardButton answer =
-            QMessageBox::question(m_mapPage,
-                                  tr("回读计划"),
-                                  tr("当前本地直线作业计划可能与工控机不一致，继续将使用工控机计划覆盖当前编辑内容。是否继续？"),
-                                  QMessageBox::Yes | QMessageBox::No,
-                                  QMessageBox::No);
-        if (answer != QMessageBox::Yes) {
-            return;
-        }
-    }
-
-    m_rowWorkClient->requestPlan();
 }
 
 void Map::handleRowWorkUploadPlan()
 {
+    refreshPlanningRevision();
     uploadRowWorkPlanIfNeeded(true);
 }
 
 void Map::handleRowWorkStart()
 {
-    if (!m_rowWorkClient || !m_rowWorkClient->isConfigured()) {
-        setRowWorkStatusText(tr("未配置直线作业服务地址"), true);
-        LoggingManager::audit(QStringLiteral("rowwork.start"),
-                              QStringLiteral("rejected"),
-                              {{QStringLiteral("reason"), QStringLiteral("not_configured")}});
-        return;
-    }
-    LoggingManager::audit(QStringLiteral("rowwork.start"),
-                          QStringLiteral("accepted"),
-                          {{QStringLiteral("planId"), m_rowWorkPlan.planId},
-                           {QStringLiteral("version"), QString::number(m_rowWorkPlan.version)}});
-    emit rowWorkAutoStartRequested();
-    m_rowWorkPendingStartAfterUpload = true;
-    if (uploadRowWorkPlanIfNeeded(false)) {
-        m_rowWorkPendingStartAfterUpload = false;
-        m_rowWorkClient->startRowWork();
-    }
+    if (m_coordinator) { refreshPlanningRevision(); m_coordinator->startTask(); }
 }
 
 void Map::handleRowWorkPause()
 {
-    if (m_rowWorkClient) {
-        LoggingManager::audit(QStringLiteral("rowwork.pause"),
-                              QStringLiteral("accepted"),
-                              {{QStringLiteral("state"), m_hasRowWorkStatus ? m_rowWorkStatus.state : QStringLiteral("unknown")}});
-        m_rowWorkClient->pauseRowWork();
-    } else {
-        LoggingManager::audit(QStringLiteral("rowwork.pause"),
-                              QStringLiteral("rejected"),
-                              {{QStringLiteral("reason"), QStringLiteral("client_unavailable")}});
-    }
+    if (m_coordinator) m_coordinator->pauseTask();
 }
 
 void Map::handleRowWorkResume()
 {
-    if (m_rowWorkClient) {
-        LoggingManager::audit(QStringLiteral("rowwork.resume"),
-                              QStringLiteral("accepted"),
-                              {{QStringLiteral("state"), m_hasRowWorkStatus ? m_rowWorkStatus.state : QStringLiteral("unknown")}});
-        m_rowWorkClient->resumeRowWork();
-    } else {
-        LoggingManager::audit(QStringLiteral("rowwork.resume"),
-                              QStringLiteral("rejected"),
-                              {{QStringLiteral("reason"), QStringLiteral("client_unavailable")}});
-    }
+    if (m_coordinator) { refreshPlanningRevision(); m_coordinator->resumeTask(); }
 }
 
 void Map::handleRowWorkStop()
 {
-    if (m_rowWorkClient) {
-        LoggingManager::audit(QStringLiteral("rowwork.stop"),
-                              QStringLiteral("accepted"),
-                              {{QStringLiteral("state"), m_hasRowWorkStatus ? m_rowWorkStatus.state : QStringLiteral("unknown")}});
-        m_rowWorkClient->stopRowWork();
-    } else {
-        LoggingManager::audit(QStringLiteral("rowwork.stop"),
-                              QStringLiteral("rejected"),
-                              {{QStringLiteral("reason"), QStringLiteral("client_unavailable")}});
-    }
-    emit rowWorkAutoStopRequested();
+    if (m_coordinator) m_coordinator->abortTask();
 }
 
 void Map::handleRowWorkLoopChanged(bool checked)
@@ -5795,3 +5101,131 @@ void Map::handleRowMissionApplyStepEdits()
 
 
 
+
+
+TaskCompileOptions Map::taskOptions() const
+{
+    const auto& d = ConfigManager::instance().taskDefaults();
+    TaskCompileOptions options;
+    options.speedLimit = d.speedLimit; options.goalToleranceMeters = d.goalToleranceMeters;
+    options.angularSpeedLimit = d.angularSpeedLimit; options.angleToleranceRad = d.angleToleranceRad;
+    options.safetyProfileId = d.safetyProfileId; options.rotationZoneId = d.rotationZoneId;
+    return options;
+}
+void Map::setControlCoordinator(ControlSessionCoordinator* c)
+{
+    if (m_coordinator || !c) return;
+    m_coordinator = c; m_tracking = c->tracking(); m_poseClient = c->pose(); c->setBinding(m_binding);
+    connect(c, &ControlSessionCoordinator::message, this, [this](const QString& text) {
+        setRowWorkStatusText(text); setRouteStatusText(text);
+    });
+    connect(m_tracking, &TrackingClient::statusChanged, this, &Map::applyTrackingStatus);
+    connect(m_tracking, &TrackingClient::availabilityChanged, this, [this](bool online, const QString& reason) {
+        if (!online && m_trackingStatusLabel) m_trackingStatusLabel->setText(reason);
+        updateRouteControlState(); refreshRowWorkPlanSummary(); refreshRowWorkControlState();
+    });
+    connect(m_tracking, &TrackingClient::taskReceived, this, [this](const QJsonObject& task) {
+        QMessageBox::information(m_mapPage, tr("工控机任务"), tr("任务 %1 版本 %2 · %3\n步骤数 %4\n计划校验值 %5")
+            .arg(task["taskId"].toString()).arg(task["revision"].toInt()).arg(task["state"].toString())
+            .arg(task["preparedStepCount"].toInt()).arg(task["planHash"].toString()));
+    });
+    connect(m_poseClient, &PoseClient::poseChanged, this, [this](const ControlPoseSnapshot& pose) {
+        if (!m_binding.isUsable() || pose.originRevision != m_binding.context.originRevision ||
+            pose.calibrationId != m_binding.context.calibrationId) { m_hasVehiclePose = false; return; }
+        MapFrameAdapter adapter(m_binding); const auto point = adapter.fromEnu(pose.position);
+        updateVehiclePose(point.x(), point.y(), adapter.yawFromEnu(pose.yaw));
+    });
+    connect(m_poseClient, &PoseClient::availabilityChanged, this, [this](bool ready, const QString&) {
+        if (!ready) m_hasVehiclePose = false;
+        refreshRowWorkPlanSummary();
+    });
+    connect(m_poseClient, &PoseClient::captureFinished, this, &Map::applyCapture);
+    connect(m_poseClient, &PoseClient::errorOccurred, this, [this](const QString& reason) {
+        m_rowWorkPendingCaptureTarget = RowWorkPendingCaptureTarget::None; setRowWorkStatusText(reason, true);
+    });
+}
+void Map::applyTrackingStatus(const TrackingSnapshot& status)
+{
+    if (m_trackingStatusLabel) m_trackingStatusLabel->setText(tr("%1 · 控制权 %2\n步骤 %3 · 循环 %4\n暂停 %5 · 故障 %6 · 结果 %7")
+        .arg(status.state, status.owner, status.stepId).arg(status.loopIndex)
+        .arg(status.pauseReason, status.faultCode, status.result));
+    updateRouteControlState(); refreshRowWorkPlanSummary(); refreshRowWorkControlState();
+}
+void Map::applyCapture(const QJsonObject& capture)
+{
+    const auto target = m_rowWorkPendingCaptureTarget; m_rowWorkPendingCaptureTarget = RowWorkPendingCaptureTarget::None;
+    if (capture["state"].toString() != "succeeded" || !m_binding.isUsable() ||
+        capture["originRevision"].toString() != m_binding.context.originRevision ||
+        capture["calibrationId"].toString() != m_binding.context.calibrationId) {
+        setRowWorkStatusText(tr("采样失败或坐标版本改变：%1").arg(capture["reason"].toString()), true); return;
+    }
+    if (!m_rowWorkPlan.frameBinding.isUsable() ||
+        !m_rowWorkPlan.frameBinding.context.sameCoordinates(m_binding.context)) {
+        m_rowWorkPlan = RowWorkPlan{}; m_rowWorkPlan.frameBinding = m_binding;
+        m_rowWorkPlan.planId = RowWorkJson::generatePlanId();
+    }
+    const auto o = capture["pose"].toObject();
+    if (!o["x"].isDouble() || !o["y"].isDouble() || !o["yaw"].isDouble()) return;
+    MapFrameAdapter adapter(m_binding); const auto point = adapter.fromEnu({o["x"].toDouble(), o["y"].toDouble()});
+    RowWorkPose pose{point.x(), point.y(), adapter.yawFromEnu(o["yaw"].toDouble())};
+    switch (target) {
+    case RowWorkPendingCaptureTarget::StartPose: m_rowWorkPlan.startPose = pose; m_rowWorkPlan.hasStartPose = true; break;
+    case RowWorkPendingCaptureTarget::EndPose: m_rowWorkPlan.endPose = pose; m_rowWorkPlan.hasEndPose = true; break;
+    case RowWorkPendingCaptureTarget::CheckpointFromVehicle: addRowWorkCheckpoint(point); break;
+    case RowWorkPendingCaptureTarget::None: return;
+    }
+    updateRowWorkPlanVersion(); refreshRowWorkUi();
+    setRowWorkStatusText(tr("示教完成：%1 个独立位置样本，散布 %2 m")
+        .arg(capture["sampleCount"].toInt()).arg(capture["positionScatterMeters"].toDouble(), 0, 'f', 3));
+}
+void Map::uploadMissionTask()
+{
+    refreshPlanningRevision();
+    if (!m_coordinator || !canEditRowMissionPlan()) return;
+    auto options = taskOptions(); options.repeatUntilStopped = m_rowMissionPlan.loopEnabled;
+    const auto task = TaskCompiler::mission(m_rowMissionPlan, m_binding, options);
+    if (!task.ok()) { setRowWorkStatusText(task.error, true); return; }
+    if (m_coordinator->upload(task.plan)) setRowWorkStatusText(tr("多垄完整任务已提交校验，Ready 后请明确启动"));
+}
+void Map::confirmFrameBinding()
+{
+    if (!m_tracking || !m_tracking->fresh() || !canEditRowWorkPlan()) return;
+    const auto config = m_tracking->configuration();
+    const auto active = config["origin"].toObject()["active"].toObject();
+    const QString origin = active["originRevision"].toString();
+    const QString calibration = config["calibration"].toObject()["calibrationId"].toString();
+    const QString profile = config["profile_revision"].toString();
+    if (origin.isEmpty() || calibration.isEmpty() || profile.isEmpty()) { setRouteStatusText(tr("工控机原点和标定尚未就绪"), true); return; }
+    QDialog dialog(m_mapPage); dialog.setWindowTitle(tr("确认地图与工控机坐标"));
+    auto* layout = new QFormLayout(&dialog);
+    auto* text = new QLabel(tr("地图南/东轴先转为东/北，再应用旋转和平移。请填写经测量确认的变换。\n原点 %1 · 标定 %2 · 控制配置 %3")
+        .arg(origin, calibration, profile), &dialog); text->setWordWrap(true); layout->addRow(text);
+    QDoubleSpinBox east, north, yaw;
+    east.setRange(-1000000, 1000000); north.setRange(-1000000, 1000000); yaw.setRange(-180, 180);
+    east.setDecimals(4); north.setDecimals(4); yaw.setDecimals(4);
+    east.setValue(m_binding.enuTranslation.x()); north.setValue(m_binding.enuTranslation.y()); yaw.setValue(qRadiansToDegrees(m_binding.enuYawOffsetRad));
+    layout->addRow(tr("东向平移 m"), &east); layout->addRow(tr("北向平移 m"), &north); layout->addRow(tr("旋转 deg"), &yaw);
+    QCheckBox verified(tr("已核实地图、示教点及工控机坐标对应关系")); layout->addRow(&verified);
+    QDialogButtonBox buttons(QDialogButtonBox::Ok | QDialogButtonBox::Cancel); layout->addRow(&buttons);
+    buttons.button(QDialogButtonBox::Ok)->setEnabled(false);
+    connect(&verified, &QCheckBox::toggled, buttons.button(QDialogButtonBox::Ok), &QPushButton::setEnabled);
+    connect(&buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(&buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted || !verified.isChecked() || !m_tracking->fresh() ||
+        m_tracking->configuration() != config || !canEditRowWorkPlan()) return;
+    if (!m_currentMapFilePath.isEmpty() && QFile::exists(m_currentMapFilePath)) {
+        const QString backup = m_currentMapFilePath + ".before-frame-binding.bak";
+        if (!QFile::exists(backup) && !QFile::copy(m_currentMapFilePath, backup)) { setRouteStatusText(tr("地图备份失败，未修改坐标绑定"), true); return; }
+    }
+    if (m_binding.context.mapId.isEmpty()) m_binding.context.mapId = TrackingJson::newId();
+    ++m_binding.context.mapRevision;
+    m_binding.context.originRevision = origin; m_binding.context.calibrationId = calibration;
+    m_binding.context.controllerProfileRevision = profile; m_binding.context.frameTransformRevision = TrackingJson::newId();
+    m_binding.enuTranslation = {east.value(), north.value()}; m_binding.enuYawOffsetRad = qDegreesToRadians(yaw.value());
+    m_binding.confirmed = true;
+    m_rowWorkPlan.frameBinding = m_binding;
+    m_rowMissionPlan.frameBinding = m_binding;
+    for (auto& step : m_rowMissionPlan.steps) step.primitivePlan.frameBinding = m_binding;
+    m_coordinator->setBinding(m_binding);
+    setRouteStatusText(tr("地图坐标已确认，请保存地图后上传新任务"));
+}

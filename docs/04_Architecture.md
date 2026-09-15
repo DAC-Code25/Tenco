@@ -6,7 +6,7 @@
 - **页面编排层**：`Home` / `Map` / `Maintenance` / `Help` / `About`
 - **业务模块层（已拆分）**
   - `HomeStatusPresenter`：状态包解析与状态区 UI 映射
-  - `HomeControlCoordinator`：路线跟随/手动控制参数映射
+  - `ControlSessionCoordinator`：地图版本、会话及手动/自动交接
   - `HomeManualInputState`：按钮/键盘手动运动输入状态
   - `HomeGimbalKeyState`：云台键盘组合键状态与动作解析
   - `HomeVideoPresenter`：首页视频 QLabel 占位、缩放、最新帧显示
@@ -16,7 +16,7 @@
   - `StatusProtocol`：状态字段枚举与地址映射、默认轮询请求构造
   - `ChassisClient`：WebSocket 协议封装（cmd_vel/reboot/stopLocation…）
   - `VideoClient`：MJPEG 拉流、解码、录像、截图、自动重连
-  - `RouteFollower`：路线段跟随算法（输出速度命令，不直接发网络）
+  - `TaskCompiler`：将三种任务模式编译为工控机执行步骤
   - `RoutePathFinder`：路径搜索（加权最短路）
   - `MapRoutePlanner`：地图路径边到 `RoutePathFinder` 的适配，并应用 `routePlanning` 配置
   - `MapGeometry`：地图/标准坐标转换、角度归一化、polyline 长度等纯几何工具
@@ -28,7 +28,7 @@
 这样拆分的核心价值（企业常用思路）：
 
 - UI 不直接散落网络/协议细节，降低“改 UI 导致协议被改坏”的概率
-- 各模块可以被单测覆盖（尤其 `RouteFollower`、`ConfigManager`、`RoutePathFinder`、`StatusProtocol`、`MapDocument`）
+- 各模块可以被单测覆盖（尤其 `TaskCompiler`、`ConfigManager`、`RoutePathFinder`、`StatusProtocol`、`MapDocument`）
 
 ---
 
@@ -137,34 +137,12 @@ sequenceDiagram
 
 ---
 
-## 6. 核心链路：地图路线执行闭环
+## 6. 工控机自动闭环与手动直连
 
-```mermaid
-sequenceDiagram
-  participant Map as Map
-  participant Home as Home
-  participant F as RouteFollower
-  participant A as MotionCommandArbiter
-  participant WS as ChassisClient
+Map → TaskCompiler → TrackingClient 上传完整计划。用户获取会话并明确启动后，ControlSessionCoordinator 清除手动输入并等待底盘停稳、释放控制权；tracking_node 校验短期许可、坐标/标定版本并执行任务。状态与事件回读不驱动本地运动。
 
-  Map->>Home: routeSegmentDispatched(polyline,startTheta,endTheta)
-  Home->>F: enqueueSegment(...)
-  loop 每 100ms (可配置)
-    Home->>F: updatePose(x,y,theta)  (来自状态轮询)
-    F-->>Home: velocityCommand(lin,ang)
-    Home->>A: setRouteCommand(lin,ang)
-    A-->>Home: velocityCommand(lin,ang)
-    Home->>WS: sendVelocityCommand(lin,ang)
-  end
-  F-->>Home: segmentCompleted(success)
-  Home-->>Map: routeSegmentCompleted(success)
-  Map->>Map: 继续下一段/结束
-```
+fusion_node 通过 ROS 向 tracking_node、通过 HTTP 向 PoseClient 发布同一份控制位姿；位姿寄存器不再参与控制链路。MotionCommandArbiter 只处理手动输入、松键停止和心跳，ChassisClient 在直接获取底盘手动许可后发送既有 cmd_vel。
 
-对应代码：
+JsonHttpClient 限制每条请求通道的并发、报文大小和超时。写请求采用不可回放的请求体；响应丢失时通过 requestId 查询结果。ExternalEventCoordinator 只执行停车后的拍摄业务，持久化意图和结果，未知结果要求人工核对。
 
-- Map 发起分段：`Map::dispatchNextEdge()`（`map.cpp`） → `routeSegmentDispatched` 信号
-- Home 编排：`Home::followRouteSegment()`（`home.cpp`）
-- 跟随算法：`routefollower.h/.cpp`
-- 运动安全仲裁：`motioncommandarbiter.h/.cpp`，统一手动/路线速度、心跳、零速和安全停车 reason
-- 发送速度：`ChassisClient`（`chassisclient.h/.cpp`）
+详情见 [工控机闭环操作与接口](工控机闭环操作与接口.md)。

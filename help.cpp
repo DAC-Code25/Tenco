@@ -483,7 +483,7 @@ QWidget *Help::createMapWorkPage()
     layout->addWidget(createCard(tr("地图基础操作"),
                                  {tr("可加载、新建和保存地图文件。"),
                                   tr("地图基准经纬度由维护页维护，影响后续坐标换算。"),
-                                  tr("实时位姿来自工控机/控制器侧融合定位，显示异常时先检查状态接口和坐标基准。"),
+                                  tr("实时位姿直接来自工控机融合服务；显示过期时检查源观测年龄、原点和地图绑定。"),
                                   tr("如果地图上的车辆位置与现场位置偏差明显，应暂停自动任务，先确认定位源和地图基准。")},
                                  content));
     layout->addWidget(createCard(tr("路径与任务执行"),
@@ -495,7 +495,7 @@ QWidget *Help::createMapWorkPage()
     layout->addWidget(createCard(tr("直线/多垄作业"),
                                  {tr("作业计划下发依赖工控机作业服务地址。"),
                                   tr("单垄往返、多垄切换和端点掉头等逻辑由上位机规划，工控机侧负责实时控制执行。"),
-                                  tr("如果状态不刷新，检查维护页中的作业服务开关、地址、轮询周期和命令超时。"),
+                                  tr("如果状态不刷新，检查任务与位姿服务地址。重新连接不会自动启动，需重新获取操作权。"),
                                   tr("多垄切换任务应在地图上明确垄间间距、出垄距离、原地旋转方向和下一垄对准方向。")},
                                  content));
     layout->addStretch(1);
@@ -537,7 +537,7 @@ QWidget *Help::createConnectionPage()
     auto *content = qobject_cast<QScrollArea *>(page->layout()->itemAt(0)->widget())->widget();
     auto *layout = qobject_cast<QVBoxLayout *>(content->layout());
     layout->addWidget(createCard(tr("关键连接"),
-                                 {tr("底盘控制器：WebSocket 用于速度/控制指令，HTTP 用于状态读取和写寄存器。"),
+                                 {tr("底盘控制器：WebSocket 用于手动速度、控制权和急停，HTTP 保留设备状态读取。"),
                                   tr("工控机相机服务：HTTP 用于视频流、拍照、录像和相机状态。"),
                                   tr("云台 PLC：Modbus TCP 用于升降、水平旋转和俯仰控制。"),
                                   tr("作业服务：HTTP 用于直线/多垄作业计划下发、启动、停止和状态查询。"),
@@ -604,7 +604,7 @@ QWidget *Help::createTroubleshootingPage()
                                      content));
     layout->addWidget(createStepCard(tr("地图收不到位姿"),
                                      {tr("确认状态读取 HTTP 地址正确。"),
-                                      tr("确认工控机/控制器侧融合定位服务正在发布状态。"),
+                                      tr("确认工控机位姿服务正在发布带新观测时间的状态。"),
                                       tr("检查首页状态日志是否有状态请求失败或超时。"),
                                       tr("检查地图基准经纬度是否与现场坐标系一致。")},
                                      content));

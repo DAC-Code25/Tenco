@@ -3,6 +3,8 @@
 
 #include "rowworktypes.h"
 #include "rowmissiontypes.h"
+#include "taskcompiler.h"
+#include <QPointer>
 
 #include <QObject>
 #include <QHash>
@@ -43,7 +45,9 @@ class QWidget;
 class QJsonObject;
 class QShortcut;
 class QLineEdit;
-class RowWorkClient;
+class ControlSessionCoordinator;
+class TrackingClient;
+class PoseClient;
 
 class MapGraphicsView;
 
@@ -57,12 +61,14 @@ class Map : public QObject
 
 public:
     explicit Map(Ui::MainWindow *ui, QObject *parent = nullptr);
+    void setControlCoordinator(ControlSessionCoordinator* coordinator);
+    bool confirmClose();
+signals:
+    void externalActionResolved(const QString &eventId, bool success);
 
 public slots:
     void handleModuleActivated();
     void updateVehiclePose(double x, double y, double theta);
-    void handleRouteSegmentCompleted(bool success);
-    void handleRowWorkStatusUpdate(const RowWorkStatus &status);
     void applyRuntimeConfig();
 
 public:
@@ -72,14 +78,6 @@ public:
     };
 
 signals:
-    void routeSegmentDispatched(int fromPointId, int toPointId, const QList<QPointF> &pathPolyline,
-                                double startTheta, double endTheta);
-    void routeQueueCompletedOnce();
-    void routeExecutionCancelled();
-    void routeExecutionPauseRequested();
-    void routeExecutionResumeRequested();
-    void rowWorkAutoStartRequested();
-    void rowWorkAutoStopRequested();
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -102,7 +100,6 @@ private slots:
     void handleRoutePause();
     void handleRouteResume();
     void handleRouteStop();
-    void handleRouteTimerTick();
     void handleLocateCurrentPosition();
     void handleEditModeToggled(bool checked);
     void handleZoomIn();
@@ -152,6 +149,18 @@ private slots:
     void handleRowMissionApplyStepEdits();
 
 private:
+    void confirmFrameBinding();
+    void refreshPlanningRevision();
+    QByteArray m_planningFingerprint;
+    void uploadMissionTask();
+    void applyCapture(const QJsonObject& capture);
+    void applyTrackingStatus(const TrackingSnapshot& status);
+    TaskCompileOptions taskOptions() const;
+    QPointer<ControlSessionCoordinator> m_coordinator;
+    QPointer<TrackingClient> m_tracking;
+    QPointer<PoseClient> m_poseClient;
+    MapFrameBinding m_binding;
+    QLabel* m_trackingStatusLabel = nullptr;
     struct MapPoint {
         int id = -1;
         QPointF mapPosition;
@@ -214,7 +223,6 @@ private:
     void updatePointGraphics(MapPoint &point);
     void refreshAllPointGraphics();
     void refreshVehicleGraphics();
-    void applyVehiclePoseFromUi();
     void refreshPathsForPoint(int pointId);
     void autoSelectRoutePoints(int startId, int endId);
 
@@ -225,9 +233,6 @@ private:
     double angleFromMapVector(double dx, double dy) const;
     QList<int> buildPointSequenceFromPaths(const QList<int> &pathIds, int startId) const;
     bool rebuildRouteStep(RouteStep &step);
-    bool rebuildRemainingRouteFrom(int startIndex, int startPointId, QString *errorMessage = nullptr);
-    std::optional<int> resolveDynamicReplanStartPoint() const;
-    bool tryDynamicReplanAfterFailure(QString *errorMessage = nullptr);
 
     void refreshPointUi();
     void refreshPathUi();
@@ -252,10 +257,7 @@ private:
 
     void updateMapNameDisplay();
     void updateVehiclePointBinding();
-    void resetRouteProgress();
-    void dispatchNextEdge();
     bool isRouteQueueContinuous() const;
-    void scheduleNextCycle();
     void resetToBlankMap();
     bool saveCurrentMapInteractive(bool forceChooseFile);
     QByteArray buildComparableMapState() const;
@@ -263,12 +265,10 @@ private:
     bool hasUnsavedMapChanges() const;
 
     void clearMapData();
-    bool saveMapToFile(const QString &filePath) const;
+    bool saveMapToFile(const QString &filePath);
     bool loadMapFromFile(const QString &filePath);
     QJsonObject serializeMap() const;
     bool deserializeMap(const QJsonObject &object);
-    void ensureRowWorkClient();
-    void connectRowWorkClientSignals();
     void refreshRowWorkUi();
     void refreshRowWorkPlanSummary();
     void refreshRowWorkCheckpointTable();
@@ -286,7 +286,6 @@ private:
     void updateCheckpointRowNames();
     bool canEditRowWorkPlan() const;
     bool uploadRowWorkPlanIfNeeded(bool forceUpload);
-    bool rowWorkPlanMatchesStatus() const;
 
     void refreshRowMissionUi();
     void refreshRowMissionSummary();
@@ -311,7 +310,6 @@ private:
     void selectRowMissionStep(int row);
 
     Ui::MainWindow *ui;
-    RowWorkClient *m_rowWorkClient = nullptr;
 
     QWidget *m_mapPage = nullptr;
     MapGraphicsView *m_view = nullptr;
@@ -370,8 +368,6 @@ private:
     QPointF m_ctrlDragOffset;
     bool m_ctrlAltPathActive = false;
     std::optional<int> m_ctrlAltStartPointId;
-    bool m_waitingForSegmentCompletion = false;
-    bool m_pauseRequested = false;
 
     // Left panel controls
     QSpinBox *m_gridWidthSpin = nullptr;
@@ -437,7 +433,6 @@ private:
     QTableWidget *m_rowWorkCheckpointTable = nullptr;
     QDoubleSpinBox *m_rowWorkBaseSpeedSpin = nullptr;
     QDoubleSpinBox *m_rowWorkMaxSpeedSpin = nullptr;
-    QDoubleSpinBox *m_rowWorkEndpointSlowdownSpin = nullptr;
     QDoubleSpinBox *m_rowWorkEndpointArrivalSpin = nullptr;
     QDoubleSpinBox *m_rowWorkCheckpointToleranceSpin = nullptr;
     QDoubleSpinBox *m_rowWorkTurnAngularSpeedSpin = nullptr;
@@ -485,8 +480,6 @@ private:
     QPushButton *m_rowMissionApplyStepButton = nullptr;
 
     QList<RouteStep> m_routeQueue;
-    int m_activeRouteIndex = -1;
-    QTimer *m_routeTimer = nullptr;
     bool m_waitingForClickPlacement = false;
     std::optional<int> m_pendingPointSelection;
     QString m_currentMapFilePath;
@@ -496,13 +489,9 @@ private:
     static QString s_lastMapFilePath;
     RowWorkPlan m_rowWorkPlan;
     RowMissionPlan m_rowMissionPlan;
-    RowWorkStatus m_rowWorkStatus;
-    bool m_hasRowWorkStatus = false;
-    bool m_rowWorkStatusDirty = false;
     bool m_rowWorkCheckpointTableUpdating = false;
     bool m_rowWorkClickPlacementMode = false;
     RowWorkPendingCaptureTarget m_rowWorkPendingCaptureTarget = RowWorkPendingCaptureTarget::None;
-    bool m_rowWorkPendingStartAfterUpload = false;
     bool m_rowMissionStepTableUpdating = false;
     bool m_rowMissionEditorUpdating = false;
     int m_rowMissionSelectedStepRow = -1;
