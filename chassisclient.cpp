@@ -24,11 +24,6 @@ ChassisClient::ChassisClient(QObject *parent)
 {
     m_socket->setProxy(QNetworkProxy::NoProxy);
     m_socket->setMaxAllowedIncomingMessageSize(65536);
-    m_stateTimer = new QTimer(this);
-    m_stateTimer->setInterval(50);
-    connect(m_stateTimer, &QTimer::timeout, this, &ChassisClient::pollControlState);
-    connect(m_socket, &QWebSocket::textMessageReceived, this, &ChassisClient::readControlState);
-
     connect(m_socket, &QWebSocket::connected, this, &ChassisClient::handleConnected);
     connect(m_socket, &QWebSocket::disconnected, this, &ChassisClient::handleDisconnected);
 #if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
@@ -156,11 +151,10 @@ void ChassisClient::sendJson(const QJsonObject &packetObj, const QJsonObject &ms
 
 void ChassisClient::sendVelocityCommand(double xVel, double thetaVel)
 {
-    if (!manualPermission() || !std::isfinite(xVel) || !std::isfinite(thetaVel)) return;
+    if (!isConnected() || !std::isfinite(xVel) || !std::isfinite(thetaVel)) return;
     if (m_socket->bytesToWrite() > 4096) {
-        revokeLocalPermission();
         m_socket->abort();
-        emit errorOccurred(tr("手动链路发送积压，已撤销许可"));
+        emit errorOccurred(tr("手动链路发送积压，已断开连接"));
         return;
     }
     const QJsonObject packetObj{{"cmd", "region"}, {"region", "cmd_vel"}, {"index", 1}};
@@ -170,8 +164,7 @@ void ChassisClient::sendVelocityCommand(double xVel, double thetaVel)
 
 void ChassisClient::sendRebootCommand()
 {
-    if (!controlFresh() || !controlState().stopped() || m_controlState.owner == "Auto") return;
-    revokeLocalPermission();
+    if (!isConnected()) return;
     const QJsonObject packetObj{{"cmd", "reboot"}};
     sendJson(packetObj, QJsonObject{});
 }
@@ -184,22 +177,12 @@ void ChassisClient::handleConnected()
         m_reconnectTimer->stop();
     }
     qCInfo(lcChassisClient) << "WebSocket connected";
-    revokeLocalPermission();
-    m_controlState = {};
-    m_feedbackAge.invalidate();
-    m_stateTimer->start();
-    pollControlState();
     emit connected();
 }
 
 void ChassisClient::handleDisconnected()
 {
     qCWarning(lcChassisClient) << "WebSocket disconnected, manual?" << m_manualDisconnect;
-    revokeLocalPermission();
-    m_stateTimer->stop();
-    m_controlState = {};
-    m_feedbackAge.invalidate();
-    emit controlStateChanged(m_controlState);
     emit disconnected();
     if (!m_manualDisconnect && m_autoReconnect && m_reconnectTimer && m_url.isValid()) {
         if (!m_reconnectTimer->isActive()) {
@@ -235,80 +218,4 @@ int ChassisClient::currentReconnectDelayMs() const
     return NetworkPolicy::exponentialBackoffDelayMs(m_reconnectIntervalMs,
                                                     m_reconnectMaxIntervalMs,
                                                     m_reconnectAttempt);
-}
-
-bool ChassisClient::controlFresh() const {
-    return isConnected() && m_controlState.valid && m_feedbackAge.isValid() && m_feedbackAge.elapsed() <= 150;
-}
-ChassisControlState ChassisClient::controlState() const {
-    auto state = m_controlState;
-    state.valid = controlFresh();
-    state.measuredAgeMs += m_feedbackAge.isValid() ? m_feedbackAge.elapsed() : 1e12;
-    return state;
-}
-bool ChassisClient::manualPermission() const {
-    return m_manualGranted && controlFresh() && m_controlState.owner == "Manual" &&
-           m_controlState.sessionId == m_manualSession && !m_controlState.estop;
-}
-void ChassisClient::revokeLocalPermission() {
-    const bool granted = m_manualGranted || m_manualRequested;
-    m_manualGranted = m_manualRequested = false;
-    m_manualSession.clear(); m_stoppedAge.invalidate();
-    if (granted) emit manualPermissionChanged(false);
-}
-void ChassisClient::sendControlOperation(const QString& operation) {
-    if (!isConnected()) return;
-    if (m_socket->bytesToWrite() > 4096) { revokeLocalPermission(); m_socket->abort(); return; }
-    sendJson({{"cmd", "control"}}, {{"protocol", "tenco-control-v1"}, {"operation", operation},
-        {"requestId", TrackingJson::newId()}, {"sessionId", m_manualSession},
-        {"expectedChassisBootId", m_controlState.bootId}, {"expectedOwnerEpoch", QString::number(m_controlState.epoch)}});
-}
-void ChassisClient::requestManual() {
-    if (manualPermission() || m_manualRequested) return;
-    if (!controlFresh() || m_controlState.estop) {
-        emit manualPermissionChanged(false);
-        emit errorOccurred(tr("底盘控制权反馈无效，接管未确认")); return;
-    }
-    m_manualSession = TrackingJson::newId(); m_requestedBoot = m_controlState.bootId;
-    m_requestedEpoch = m_controlState.epoch; m_manualRequested = true; m_handoffAge.restart();
-    m_stoppedAge.invalidate(); sendControlOperation("request_manual");
-}
-void ChassisClient::releaseManual() {
-    if (manualPermission()) sendVelocityCommand(0, 0);
-    // Cancel also covers a grant delayed beyond the local handoff deadline.
-    if (isConnected() && (m_manualRequested || m_controlState.sessionId == m_manualSession))
-        sendControlOperation("release_manual");
-    revokeLocalPermission();
-}
-void ChassisClient::stopLatched() {
-    sendControlOperation("stop_latched"); revokeLocalPermission();
-}
-void ChassisClient::resetStopLatch() {
-    if (controlFresh() && controlState().stopped() && m_controlState.estop) sendControlOperation("reset_estop");
-}
-void ChassisClient::pollControlState() {
-    if (!isConnected()) return;
-    if ((!controlFresh() && m_manualGranted) || (m_manualRequested && m_handoffAge.elapsed() > 2000)) {
-        releaseManual(); emit errorOccurred(tr("底盘接管或反馈超时，手动许可已撤销"));
-    }
-    sendControlOperation("get_state");
-}
-void ChassisClient::readControlState(const QString& message) {
-    if (message.size() > 65536) return;
-    const auto object = QJsonDocument::fromJson(message.toUtf8()).object();
-    ChassisControlState state;
-    if (!TrackingJson::chassis(object["controlState"].toObject(), &state)) return;
-    if (m_controlState.bootId == state.bootId && state.epoch < m_controlState.epoch) return;
-    if ((!m_controlState.bootId.isEmpty() && m_controlState.bootId != state.bootId) || state.estop ||
-        (m_manualGranted && (state.owner != "Manual" || state.sessionId != m_manualSession || state.epoch != m_controlState.epoch)))
-        revokeLocalPermission();
-    m_controlState = state; m_feedbackAge.restart();
-    if (m_manualRequested && state.owner == "Manual" && state.sessionId == m_manualSession &&
-        state.bootId == m_requestedBoot && state.epoch > m_requestedEpoch && state.stopped() && !state.estop) {
-        if (!m_stoppedAge.isValid()) m_stoppedAge.start();
-        if (m_stoppedAge.elapsed() >= 200) {
-            m_manualGranted = true; m_manualRequested = false; emit manualPermissionChanged(true);
-        }
-    } else if (m_manualRequested) m_stoppedAge.invalidate();
-    emit controlStateChanged(controlState());
 }

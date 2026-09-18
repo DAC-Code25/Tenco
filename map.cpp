@@ -1645,9 +1645,8 @@ void Map::initializeUi()
     addIpcButton(tr("获取任务操作权"), [this] { if (m_coordinator) m_coordinator->acquireSession(); });
     addIpcButton(tr("确认地图坐标与原点"), [this] { confirmFrameBinding(); });
     addIpcButton(tr("启动已就绪任务"), [this] { if (m_coordinator) { refreshPlanningRevision(); m_coordinator->startTask(); } });
-    addIpcButton(tr("手动接管"), [this] { if (m_coordinator) m_coordinator->requestManual(); });
     addIpcButton(tr("急停"), [this] { if (m_coordinator) m_coordinator->emergencyStop(); });
-    addIpcButton(tr("解除锁存与复位故障"), [this] { if (m_coordinator) m_coordinator->resetFault(); });
+    addIpcButton(tr("复位任务故障"), [this] { if (m_coordinator) m_coordinator->resetFault(); });
     addIpcButton(tr("人工核对检查点拍摄结果"), [this] {
         if (!m_tracking || m_tracking->snapshot().waitingEventId.isEmpty()) return;
         const auto eventId = m_tracking->snapshot().waitingEventId;
@@ -1952,7 +1951,7 @@ void Map::initializeUi()
     m_rowWorkTargetLabel->setWordWrap(true);
     rowWorkStatusLayout->addWidget(m_rowWorkTargetLabel);
 
-    m_rowWorkControlLabel = new QLabel(tr("控制权：-"), rowWorkStatusBox);
+    m_rowWorkControlLabel = new QLabel(tr("自动执行：-"), rowWorkStatusBox);
     m_rowWorkControlLabel->setObjectName(QStringLiteral("mapRowWorkControlLabel"));
     m_rowWorkControlLabel->setWordWrap(true);
     rowWorkStatusLayout->addWidget(m_rowWorkControlLabel);
@@ -3898,7 +3897,7 @@ void Map::refreshRowWorkPlanSummary()
         .arg(status.stepId).arg(status.progressMeters, 0, 'f', 2).arg(status.lengthMeters, 0, 'f', 2)
         .arg(status.remainingAngleRad, 0, 'f', 2).arg(status.remainingWaitMs, 0, 'f', 0));
     if (m_rowWorkTargetLabel) m_rowWorkTargetLabel->setText(tr("执行 %1 · 循环 %2").arg(status.executionId).arg(status.loopIndex));
-    if (m_rowWorkControlLabel) m_rowWorkControlLabel->setText(tr("控制权：%1").arg(status.owner));
+    if (m_rowWorkControlLabel) m_rowWorkControlLabel->setText(tr("工控机独立执行"));
     if (m_rowWorkPoseLabel) m_rowWorkPoseLabel->setText(m_poseClient && m_poseClient->fresh() ? tr("定位有效") : tr("定位过期或无效"));
     if (m_rowWorkFaultLabel) m_rowWorkFaultLabel->setText(tr("暂停原因：%1 · 故障：%2").arg(status.pauseReason, status.faultCode));
     if (m_rowWorkEventLabel) m_rowWorkEventLabel->setText(tr("等待事件：%1 · 结果：%2").arg(status.waitingEventId, status.result));
@@ -5146,8 +5145,8 @@ void Map::setControlCoordinator(ControlSessionCoordinator* c)
 }
 void Map::applyTrackingStatus(const TrackingSnapshot& status)
 {
-    if (m_trackingStatusLabel) m_trackingStatusLabel->setText(tr("%1 · 控制权 %2\n步骤 %3 · 循环 %4\n暂停 %5 · 故障 %6 · 结果 %7")
-        .arg(status.state, status.owner, status.stepId).arg(status.loopIndex)
+    if (m_trackingStatusLabel) m_trackingStatusLabel->setText(tr("%1 · 工控机独立执行\n步骤 %2 · 循环 %3\n暂停 %4 · 故障 %5 · 结果 %6")
+        .arg(status.state, status.stepId).arg(status.loopIndex)
         .arg(status.pauseReason, status.faultCode, status.result));
     updateRouteControlState(); refreshRowWorkPlanSummary(); refreshRowWorkControlState();
 }

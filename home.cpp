@@ -1147,8 +1147,7 @@ void Home::handleNetworkFailure(int httpStatus, const QString &errorString, cons
 void Home::submitModeCommand()
 {
     if (!ui) return;
-    if (ui->comboBox_Mode->currentIndex() == 1) emit manualTakeoverRequested();
-    else logMessage(tr("自动模式请在任务页面明确启动或恢复；维护操作需先停稳并释放控制权"));
+    else logMessage(tr("自动任务请在任务页面明确启动或恢复；维护操作需先停稳"));
 }
 void Home::handleSavePathButtonClicked()
 {
@@ -1291,7 +1290,6 @@ void Home::handleTurnRightButtonReleased()
 void Home::handleStopButtonClicked()
 {
     stopMotionForSafety(QStringLiteral("home_stop_button"));
-    emit emergencyStopRequested();
     stopGimbal();
     LoggingManager::audit(QStringLiteral("safety.estop"),
                           QStringLiteral("accepted"),
@@ -1752,8 +1750,6 @@ void Home::stopMotionForSafety(const QString &reason)
     m_manualInputState.clearMotionInputs();
 
     if (m_motionArbiter) {
-        m_motionArbiter->stopAll(reason);
+        m_motionArbiter->stopAll(reason, reason == QStringLiteral("home_stop_button"));
     }
 }
-
-void Home::clearManualInputsForHandoff() { m_manualInputState.clearMotionInputs(); }

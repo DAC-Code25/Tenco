@@ -41,8 +41,6 @@ public:
     bool handleKeyRelease(int key, Qt::KeyboardModifiers modifiers, bool isAutoRepeat);
 
 signals:
-    void emergencyStopRequested();
-    void manualTakeoverRequested();
     void originUpdateRequested(double latitude, double longitude);
 
 public:
@@ -51,7 +49,6 @@ public:
 
 public slots:
     void stopMotionForSafety(const QString &reason);
-    void clearManualInputsForHandoff();
 
 private slots:
     void applyManualControlConfig();

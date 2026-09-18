@@ -1,4 +1,5 @@
 #include "controlsessioncoordinator.h"
+#include "chassisclient.h"
 #include "externaleventcoordinator.h"
 #include "taskcompiler.h"
 #include <QCoreApplication>
@@ -14,11 +15,10 @@ int main(int argc, char **argv) {
     PoseClient pose;
     TrackingClient tracking;
     ChassisClient chassis;
-    MotionCommandArbiter manual;
     chassis.setUrl(QUrl("ws://127.0.0.1:19132"));
     pose.configure(QUrl("http://127.0.0.1:19131/api/v1"), {});
     tracking.configure(QUrl("http://127.0.0.1:19130/api/v1"), {});
-    ControlSessionCoordinator coordinator(&tracking, &pose, &chassis, &manual);
+    ControlSessionCoordinator coordinator(&tracking, &pose);
     QTemporaryDir journal;
     ExternalEventCoordinator events(&tracking);
     events.configure(QUrl("http://127.0.0.1:19133"), {}, journal.path(), 1000);
@@ -38,7 +38,7 @@ int main(int argc, char **argv) {
                      [](const QString &m) { QTextStream(stdout) << m << Qt::endl; });
     QObject::connect(&tracking, &TrackingClient::commandFinished, &app,
                      [&](const QString &op, const QJsonObject &result) {
-                         if (result["state"].toString() != "applied" && op != "manual_takeover")
+                         if (result["state"].toString() != "applied")
                              fail(QString::fromUtf8(QJsonDocument(result).toJson()));
                      });
     QObject::connect(&pose, &PoseClient::captureFinished, &app, [&](const QJsonObject &capture) {
@@ -76,12 +76,12 @@ int main(int argc, char **argv) {
                      .arg(tracking.snapshot().state)
                      .arg(pose.fresh())
                      .arg(tracking.fresh())
-                     .arg(chassis.controlFresh())
+                     .arg(chassis.isConnected())
                      .arg(tracking.snapshot().pauseReason));
             return;
         }
         const auto status = tracking.snapshot();
-        if (phase == 0 && coordinator.coordinatesReady() && chassis.controlFresh()) {
+        if (phase == 0 && coordinator.coordinatesReady()) {
             coordinator.acquireSession();
             phase = 1;
         } else if (phase == 1 && tracking.hasSession() && pose.fresh()) {
@@ -89,15 +89,15 @@ int main(int argc, char **argv) {
                 fail("capture not sent");
             else
                 phase = 2;
-        } else if (phase == 3 && status.state == "Ready" && !tracking.busy()) {
+        } else if (phase == 3 && status.state == "Ready" && !tracking.busy() && tracking.motionReady()) {
             coordinator.startTask();
             phase = 4;
         } else if (phase == 4 && status.state == "Tracking" && status.measuredV > .04) {
-            coordinator.requestManual();
+            chassis.connectToHost();
+            coordinator.pauseTask();
             phase = 5;
-        } else if (phase == 5 && chassis.manualPermission() && status.state == "Paused" && !tracking.busy()) {
-            if (chassis.controlState().owner != "Manual")
-                fail("manual grant invalid");
+        } else if (phase == 5 && chassis.isConnected() && status.state == "Paused" && !tracking.busy() && tracking.motionReady()) {
+            chassis.sendVelocityCommand(0, 0);
             coordinator.resumeTask();
             phase = 6;
         } else if (phase == 6 && status.state == "Completed") {
@@ -108,15 +108,29 @@ int main(int argc, char **argv) {
                 return;
             }
             QTextStream(stdout) << "PASS Qt pose/capture/compiler/upload/start/manual "
-                                   "takeover/resume/endpoint/photo acknowledgement"
+                                   "independent socket/pause/resume/endpoint/photo acknowledgement"
                                 << Qt::endl;
+            TaskCompileOptions options;
+            options.safetyProfileId = "open";
+            options.rotationZoneId = "open";
+            const auto next = TaskCompiler::route({{"offline", {{0, .6}, {0, 1.2}}, {}}}, binding, options);
+            if (!next.ok() || !coordinator.upload(next.plan)) {
+                fail("offline task upload failed");
+                return;
+            }
+            phase = 7;
+        } else if (phase == 7 && status.state == "Ready" && !tracking.busy() && tracking.motionReady()) {
+            coordinator.startTask();
+            phase = 8;
+        } else if (phase == 8 && status.state == "Tracking" && status.measuredV > .04) {
             coordinator.shutdown();
+            chassis.disconnectFromHost();
+            QTextStream(stdout) << "PASS Qt shutdown while autonomous task is running" << Qt::endl;
             app.exit(0);
         }
     });
     pose.start();
     tracking.start();
-    chassis.connectToHost();
     poll.start();
     return app.exec();
 }

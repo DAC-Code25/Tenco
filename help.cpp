@@ -537,7 +537,7 @@ QWidget *Help::createConnectionPage()
     auto *content = qobject_cast<QScrollArea *>(page->layout()->itemAt(0)->widget())->widget();
     auto *layout = qobject_cast<QVBoxLayout *>(content->layout());
     layout->addWidget(createCard(tr("关键连接"),
-                                 {tr("底盘控制器：WebSocket 用于手动速度、控制权和急停，HTTP 保留设备状态读取。"),
+                                 {tr("底盘控制器：WebSocket 用于独立手动速度和本通道停止，HTTP 保留设备状态读取。"),
                                   tr("工控机相机服务：HTTP 用于视频流、拍照、录像和相机状态。"),
                                   tr("云台 PLC：Modbus TCP 用于升降、水平旋转和俯仰控制。"),
                                   tr("作业服务：HTTP 用于直线/多垄作业计划下发、启动、停止和状态查询。"),

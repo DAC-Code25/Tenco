@@ -340,7 +340,7 @@ bool scrollParentArea(QWidget *widget, QWheelEvent *wheelEvent)
 QString parameterDescription(const QString &key)
 {
     static const QHash<QString, QString> descriptions = {
-        {QStringLiteral("network.websocketUrl"), QStringLiteral("底盘 WebSocket 控制地址，用于首页向小车发送手动速度、控制权和急停指令。控制器 IP 或端口变化时修改。")},
+        {QStringLiteral("network.websocketUrl"), QStringLiteral("底盘 WebSocket 控制地址，用于首页向小车发送手动速度及本通道停止指令。控制器 IP 或端口变化时修改。")},
         {QStringLiteral("network.statusReadUrl"), QStringLiteral("状态读取 HTTP 地址，用于获取电量、电压和设备模式等运行状态。状态页无数据或换控制器时检查。")},
         {QStringLiteral("network.authToken"), QStringLiteral("接口认证 Token，需要与控制器服务保持一致。认证失败或服务更换密钥时修改。")},
         {QStringLiteral("network.statusPollIntervalMs"), QStringLiteral("状态轮询周期。数值越小状态越实时，但网络和控制器负载越高。")},

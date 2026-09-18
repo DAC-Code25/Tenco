@@ -240,14 +240,11 @@ bool TrackingClient::control(const QString &operation) {
         if (m_preparedPlan["taskId"].toString() != m_status.taskId ||
             m_preparedPlan["revision"].toInt() != m_status.taskRevision)
             return false;
-        body["expectedChassisBootId"] = m_status.chassisBootId;
-        body["expectedOwnerEpoch"] = QString::number(m_status.ownerEpoch);
         body["motionPermit"] = m_permit;
         body["validForMs"] = 500;
     }
     const bool sent = sendCommand("/control", body, operation,
-                                  emergency || operation == "pause" || operation == "abort" ||
-                                      operation == "manual_takeover");
+                                  emergency || operation == "pause" || operation == "abort");
     if (sent && motion)
         m_permit.clear();
     return sent;

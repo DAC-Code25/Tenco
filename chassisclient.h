@@ -5,13 +5,11 @@
 #include <QJsonObject>
 #include <QString>
 #include <QUrl>
-#include <QElapsedTimer>
-#include "trackingtypes.h"
 
 class QTimer;
 class QWebSocket;
 
-// Wraps the chassis WebSocket protocol (cmd_vel, reboot, stopLocation, etc.).
+// Independent direct connection to the existing chassis WebSocket.
 class ChassisClient : public QObject
 {
     Q_OBJECT
@@ -36,14 +34,6 @@ public:
     void connectToHost();
     void disconnectFromHost();
     bool isConnected() const;
-    bool controlFresh() const;
-    bool manualPermission() const;
-    ChassisControlState controlState() const;
-    void requestManual();
-    void releaseManual();
-    void stopLatched();
-    void resetStopLatch();
-
     void sendVelocityCommand(double xVel, double thetaVel);
     void sendRebootCommand();
 
@@ -51,8 +41,6 @@ signals:
     void connected();
     void disconnected();
     void errorOccurred(const QString &errorString);
-    void controlStateChanged(const ChassisControlState& state);
-    void manualPermissionChanged(bool granted);
 
 private slots:
     void handleConnected();
@@ -63,10 +51,6 @@ private slots:
 private:
     void openIfPossible();
     void sendJson(const QJsonObject &packetObj, const QJsonObject &msgObj);
-    void sendControlOperation(const QString& operation);
-    void readControlState(const QString& message);
-    void pollControlState();
-    void revokeLocalPermission();
     int currentReconnectDelayMs() const;
 
     QUrl m_url;
@@ -78,12 +62,7 @@ private:
     int m_reconnectAttempt = 0;
     bool m_manualDisconnect = false;
     QString m_authToken;
-    QTimer* m_stateTimer = nullptr;
-    ChassisControlState m_controlState;
-    QElapsedTimer m_feedbackAge, m_handoffAge, m_stoppedAge;
-    QString m_manualSession, m_requestedBoot;
-    quint64 m_requestedEpoch = 0;
-    bool m_manualRequested = false, m_manualGranted = false;
+
 };
 
 #endif // CHASSISCLIENT_H

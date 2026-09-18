@@ -90,14 +90,13 @@ MainWindow::MainWindow(QWidget *parent) // 主窗口构造函数
     connect(trackingClient, &TrackingClient::availabilityChanged, this, [this](bool ready, const QString&) {
         maintenancePage->setIpcConfiguration(ready ? trackingClient->configuration() : QJsonObject{});
     });
-    controlCoordinator = new ControlSessionCoordinator(trackingClient, poseClient, homePage->chassisClient(), homePage->motionArbiter(), this);
+    controlCoordinator = new ControlSessionCoordinator(trackingClient, poseClient, this);
     mapPage->setControlCoordinator(controlCoordinator);
     externalEvents = new ExternalEventCoordinator(trackingClient, this);
     connect(externalEvents, &ExternalEventCoordinator::message, this, [this](const QString& text) { statusBar()->showMessage(text, 15000); });
     connect(mapPage, &Map::externalActionResolved, this, [this](const QString &eventId, bool success) {
         if (!externalEvents->resolveCurrent(eventId, success)) statusBar()->showMessage(tr("当前检查点动作无法确认，请检查会话、事件及拍摄状态"), 5000);
     });
-    connect(homePage, &Home::manualTakeoverRequested, controlCoordinator, &ControlSessionCoordinator::requestManual);
     connect(homePage, &Home::originUpdateRequested, this, [this](double lat, double lon) {
         const auto config = trackingClient->configuration();
         const auto active = config["origin"].toObject()["active"].toObject();
@@ -116,8 +115,6 @@ MainWindow::MainWindow(QWidget *parent) // 主窗口构造函数
         QMessageBox::information(this, tr("更新原点"), origin["restartRequired"].toBool() ?
             tr("新原点已保存为待生效；请在停机维护时重启融合服务并重新确认地图绑定") : tr("原点已生效"));
     });
-    connect(homePage, &Home::emergencyStopRequested, controlCoordinator, &ControlSessionCoordinator::emergencyStop);
-    connect(controlCoordinator, &ControlSessionCoordinator::manualInputsCleared, homePage, &Home::clearManualInputsForHandoff);
     connect(poseClient, &PoseClient::poseChanged, this, [this](const ControlPoseSnapshot& pose) {
         ui->lineEdit_Position->setText(tr("ENU X=%1, Y=%2, yaw=%3 rad · %4 ms")
             .arg(pose.position.x(), 0, 'f', 3).arg(pose.position.y(), 0, 'f', 3)
@@ -344,10 +341,10 @@ void MainWindow::closeEvent(QCloseEvent *event)
     if (mapPage && !mapPage->confirmClose()) {
         event->ignore(); return;
     }
-    // Drain the stop request while the event loop remains alive. A cancelled close never disables renewals.
+    // Finish local cleanup; the IPC continues executing its accepted task.
     m_closing = true; setEnabled(false); event->ignore();
     if (controlCoordinator) controlCoordinator->shutdown();
-    QTimer::singleShot(1200, this, [this] { m_closeDrained = true; close(); });
+    QTimer::singleShot(0, this, [this] { m_closeDrained = true; close(); });
 }
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event)

@@ -76,16 +76,13 @@ static QJsonObject statusObject(quint64 seq, const QString &boot) {
                       {"seq", QString::number(seq)},
                       {"bootId", boot},
                       {"stateVersion", "1"},
-                      {"ownerEpoch", "1"},
                       {"lastEventSeq", "0"},
                       {"state", "Ready"},
                       {"taskId", "task"},
                       {"taskRevision", 1},
-                      {"controlOwner", "None"},
-                      {"chassisBootId", "chassis"},
                       {"measuredTwist", QJsonObject{{"v", 0}, {"omega", 0}}}};
     for (const auto *key : {"stepProgressMeters", "stepLengthMeters", "lateralErrorMeters", "headingErrorRad",
-                            "remainingAngleRad", "remainingWaitMs", "ownerFeedbackAgeMs"})
+                            "remainingAngleRad", "remainingWaitMs"})
         value[key] = 0;
     return value;
 }
@@ -93,6 +90,28 @@ static QJsonObject statusObject(quint64 seq, const QString &boot) {
 class IpcClientsTest : public QObject {
     Q_OBJECT
   private slots:
+    void manualPublishesToLegacySocketWithoutControlFeedback() {
+        QWebSocketServer server(QStringLiteral("legacy"), QWebSocketServer::NonSecureMode);
+        QVERIFY(server.listen(QHostAddress::LocalHost));
+        QJsonArray packets;
+        connect(&server, &QWebSocketServer::newConnection, this, [&] {
+            auto *socket = server.nextPendingConnection();
+            connect(socket, &QWebSocket::disconnected, socket, &QObject::deleteLater);
+            connect(socket, &QWebSocket::textMessageReceived, this, [&](const QString &text) {
+                packets.append(QJsonDocument::fromJson(text.toUtf8()).object());
+            });
+        });
+        ChassisClient client;
+        client.setUrl(QUrl(QStringLiteral("ws://127.0.0.1:%1").arg(server.serverPort())));
+        client.connectToHost();
+        QTRY_VERIFY(client.isConnected());
+        client.sendVelocityCommand(.2, -.1);
+        QTRY_VERIFY_WITH_TIMEOUT(!packets.isEmpty() &&
+            packets.last().toObject()["packet"].toObject()["region"] == "cmd_vel", 500);
+        QCOMPARE(packets.last().toObject()["msg"].toObject(),
+                 (QJsonObject{{"xvel", .2}, {"yvel", 0.0}, {"thetavel", -.1}, {"isRemote", true}}));
+        client.disconnectFromHost();
+    }
     void captureCannotConsumeResultFromRestartedFusion() {
         HttpFixture server;
         quint64 seq = 0;
@@ -354,71 +373,35 @@ class IpcClientsTest : public QObject {
         QVERIFY(heartbeats > 1);
         client.stop();
     }
-    void manualRequiresFreshStoppedGrantAndDoesNotReplay() {
+    void manualReconnectDoesNotReplayVelocity() {
         QWebSocketServer server("test", QWebSocketServer::NonSecureMode);
         QVERIFY(server.listen(QHostAddress::LocalHost));
         QPointer<QWebSocket> peer;
-        QString owner = "None", session;
-        quint64 epoch = 1;
-        bool publish = true;
-        int nonzero = 0, manualRequests = 0;
-        double measured = .2;
+        int packets = 0;
         connect(&server, &QWebSocketServer::newConnection, this, [&] {
             peer = server.nextPendingConnection();
             connect(peer, &QWebSocket::disconnected, peer, &QObject::deleteLater);
-            connect(peer, &QWebSocket::textMessageReceived, this, [&](const QString &text) {
-                const auto object = QJsonDocument::fromJson(text.toUtf8()).object();
-                const auto m = object["msg"].toObject();
-                if (m["operation"].toString() == "request_manual") {
-                    ++manualRequests;
-                    owner = "Manual";
-                    session = m["sessionId"].toString();
-                    ++epoch;
-                }
-                if (object["packet"].toObject()["region"].toString() == "cmd_vel" &&
-                    m["xvel"].toDouble() != 0)
-                    ++nonzero;
-                if (!publish)
-                    return;
-                const QJsonObject state{
-                    {"protocol", "tenco-control-v1"},
-                    {"chassisBootId", "boot"},
-                    {"owner", owner},
-                    {"sessionId", session},
-                    {"ownerEpoch", QString::number(epoch)},
-                    {"estop", false},
-                    {"measuredTwist",
-                     QJsonObject{{"v", measured}, {"omega", 0}, {"ageMs", 0}, {"valid", true}}}};
-                peer->sendTextMessage(
-                    QString::fromUtf8(QJsonDocument(QJsonObject{{"controlState", state}}).toJson()));
-            });
+            connect(peer, &QWebSocket::textMessageReceived, this, [&](const QString &) { ++packets; });
         });
         ChassisClient client;
         client.setAutoReconnect(false);
         client.setUrl(QUrl(QString("ws://127.0.0.1:%1").arg(server.serverPort())));
         client.connectToHost();
-        QTRY_VERIFY(client.controlFresh());
+        QTRY_VERIFY(client.isConnected());
         client.sendVelocityCommand(.2, 0);
-        QCOMPARE(nonzero, 0);
-        client.requestManual();
-        QTRY_COMPARE(manualRequests, 1);
+        QTRY_COMPARE(packets, 1);
+        peer->close();
+        QTRY_VERIFY(!client.isConnected());
+        client.sendVelocityCommand(.3, 0);
+        client.connectToHost();
+        QTRY_VERIFY(client.isConnected());
         QTest::qWait(250);
-        QVERIFY(!client.manualPermission());
-        measured = 0;
-        QTRY_VERIFY(client.manualPermission());
-        client.sendVelocityCommand(.2, 0);
-        QTRY_COMPARE(nonzero, 1);
-        publish = false;
-        QTRY_VERIFY(!client.manualPermission());
-        client.sendVelocityCommand(.2, 0);
-        QTest::qWait(100);
-        QCOMPARE(nonzero, 1);
-        publish = true;
-        QTest::qWait(250);
-        QVERIFY(!client.manualPermission());
-        QCOMPARE(manualRequests, 1);
+        QCOMPARE(packets, 1);
+        client.sendVelocityCommand(.1, 0);
+        QTRY_COMPARE(packets, 2);
         client.disconnectFromHost();
     }
+
 };
 QTEST_GUILESS_MAIN(IpcClientsTest)
 #include "test_ipc_clients.moc"

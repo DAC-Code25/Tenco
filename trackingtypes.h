@@ -36,33 +36,22 @@ struct ControlPoseSnapshot {
 };
 
 struct TrackingSnapshot {
-    QString bootId, state, taskId, executionId, stepId, owner, chassisBootId;
+    QString bootId, state, taskId, executionId, stepId;
     QString pauseReason, faultCode, result, waitingEventId;
-    quint64 seq = 0, stateVersion = 0, ownerEpoch = 0, lastEventSeq = 0;
+    quint64 seq = 0, stateVersion = 0, lastEventSeq = 0;
     int taskRevision = 0, stepIndex = 0, loopIndex = 0;
     double progressMeters = 0, lengthMeters = 0, lateralError = 0, headingErrorRad = 0;
     double remainingAngleRad = 0, remainingWaitMs = 0, measuredV = 0, measuredOmega = 0;
-    double ownerAgeMs = 1e12;
     bool isExecuting() const;
     bool isTerminal() const;
-};
-
-struct ChassisControlState {
-    QString bootId, owner, sessionId;
-    quint64 epoch = 0;
-    double v = 0, omega = 0, measuredAgeMs = 1e12;
-    bool valid = false, measuredValid = false, estop = false;
-    bool stopped() const;
 };
 
 namespace TrackingJson {
 bool sequence(const QJsonValue &value, quint64 *output);
 bool pose(const QJsonObject &object, ControlPoseSnapshot *output, QString *error = nullptr);
 bool status(const QJsonObject &object, TrackingSnapshot *output, QString *error = nullptr);
-bool chassis(const QJsonObject &object, ChassisControlState *output);
 QString newId();
 } // namespace TrackingJson
 Q_DECLARE_METATYPE(ControlPoseSnapshot)
 Q_DECLARE_METATYPE(TrackingSnapshot)
 Q_DECLARE_METATYPE(MapFrameBinding)
-Q_DECLARE_METATYPE(ChassisControlState)

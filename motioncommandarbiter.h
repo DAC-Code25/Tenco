@@ -38,14 +38,10 @@ public:
     bool chassisConnected() const { return m_chassisConnected; }
 
     void setManualInputActive(ManualInput input, bool active, bool fromKeyboard);
-    void setManualPermission(bool granted);
-    bool manualPermission() const { return m_manualPermission; }
-    void prepareAutomatic();
     void emergencyStop(const QString &reason);
-    void stopAll(const QString &reason);
+    void stopAll(const QString &reason, bool forceZero = false);
 
 signals:
-    void manualTakeoverRequested();
     void velocityCommand(double linear, double angular);
     void safetyStopRequested(const QString &reason);
 
@@ -79,7 +75,6 @@ private:
     std::array<bool, 4> m_buttonInputs{};
     std::array<bool, 4> m_keyInputs{};
 
-    bool m_manualPermission = false;
 
     bool m_hasLastCommand = false;
     Command m_lastCommand;

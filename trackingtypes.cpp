@@ -98,31 +98,6 @@ bool TrackingJson::sequence(const QJsonValue &v, quint64 *out) {
     return ok;
 }
 QString TrackingJson::newId() { return QUuid::createUuid().toString(QUuid::WithoutBraces); }
-bool ChassisControlState::stopped() const {
-    return valid && measuredValid && measuredAgeMs >= 0 && measuredAgeMs <= 150 && std::abs(v) <= .02 &&
-           std::abs(omega) <= .03;
-}
-bool TrackingJson::chassis(const QJsonObject &o, ChassisControlState *out) {
-    if (!out || o["protocol"].toString() != "tenco-control-v1")
-        return false;
-    ChassisControlState s;
-    s.bootId = o["chassisBootId"].toString();
-    s.owner = o["owner"].toString();
-    s.sessionId = o["sessionId"].toString();
-    if (s.bootId.isEmpty() || !sequence(o["ownerEpoch"], &s.epoch) ||
-        !QStringList{"None", "Manual", "Auto", "Stopping", "Estop"}.contains(s.owner))
-        return false;
-    const auto measured = o["measuredTwist"].toObject();
-    if (!finiteNumber(measured, "v", &s.v) || !finiteNumber(measured, "omega", &s.omega) ||
-        !finiteNumber(measured, "ageMs", &s.measuredAgeMs) || s.measuredAgeMs < 0 ||
-        !measured["valid"].isBool() || !o["estop"].isBool())
-        return false;
-    s.measuredValid = measured["valid"].toBool();
-    s.estop = o["estop"].toBool();
-    s.valid = true;
-    *out = s;
-    return true;
-}
 bool TrackingJson::pose(const QJsonObject &o, ControlPoseSnapshot *out, QString *error) {
     if (!out || o["apiVersion"].toInt() != 1 || o["frameId"].toString() != "map" ||
         o["baseFrameId"].toString() != "base_link")
@@ -160,10 +135,7 @@ bool TrackingJson::status(const QJsonObject &o, TrackingSnapshot *out, QString *
     s.taskId = o["taskId"].toString();
     s.executionId = o["executionId"].toString();
     s.stepId = o["stepId"].toString();
-    s.owner = o["controlOwner"].toString();
-    s.chassisBootId = o["chassisBootId"].toString();
-    if (s.bootId.isEmpty() || !sequence(o["seq"], &s.seq) || !sequence(o["stateVersion"], &s.stateVersion) ||
-        !sequence(o["ownerEpoch"], &s.ownerEpoch))
+    if (s.bootId.isEmpty() || !sequence(o["seq"], &s.seq) || !sequence(o["stateVersion"], &s.stateVersion))
         return reject(error, QStringLiteral("任务序号无效"));
     if (o.contains("lastEventSeq") && !sequence(o["lastEventSeq"], &s.lastEventSeq))
         return reject(error, QStringLiteral("事件序号无效"));
@@ -183,8 +155,7 @@ bool TrackingJson::status(const QJsonObject &o, TrackingSnapshot *out, QString *
                        {"lateralErrorMeters", &s.lateralError},
                        {"headingErrorRad", &s.headingErrorRad},
                        {"remainingAngleRad", &s.remainingAngleRad},
-                       {"remainingWaitMs", &s.remainingWaitMs},
-                       {"ownerFeedbackAgeMs", &s.ownerAgeMs}})
+                       {"remainingWaitMs", &s.remainingWaitMs}})
         if (!finiteNumber(o, QString::fromLatin1(entry.first), entry.second))
             return reject(error, QStringLiteral("任务数值字段无效"));
     const auto measured = o["measuredTwist"].toObject();

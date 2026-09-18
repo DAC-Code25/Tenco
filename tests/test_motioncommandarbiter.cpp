@@ -9,8 +9,8 @@ class MotionCommandArbiterTest : public QObject
     Q_OBJECT
 
 private slots:
-    void handoffDoesNotReplayReleasedInput();
-    void automaticHandoffStopsHeartbeat();
+    void reconnectDoesNotReplayHeldInput();
+    void idleCleanupIsSilentButExplicitStopSendsZero();
     void manualInputHeartbeatsUntilRelease();
     void manualInputsAreComposedAndCancelled();
     void emergencyStopClearsInputsAndEmitsZero();
@@ -42,7 +42,6 @@ void MotionCommandArbiterTest::manualInputHeartbeatsUntilRelease()
 {
     MotionCommandArbiter arbiter;
     arbiter.setChassisConnected(true);
-    arbiter.setManualPermission(true);
     arbiter.setHeartbeatIntervalMs(20);
     arbiter.setManualCommandConfig(enabledManualConfig());
 
@@ -63,7 +62,6 @@ void MotionCommandArbiterTest::manualInputsAreComposedAndCancelled()
 {
     MotionCommandArbiter arbiter;
     arbiter.setChassisConnected(true);
-    arbiter.setManualPermission(true);
     arbiter.setManualCommandConfig(enabledManualConfig());
 
     QSignalSpy velocitySpy(&arbiter, &MotionCommandArbiter::velocityCommand);
@@ -91,7 +89,6 @@ void MotionCommandArbiterTest::emergencyStopClearsInputsAndEmitsZero()
 {
     MotionCommandArbiter arbiter;
     arbiter.setChassisConnected(true);
-    arbiter.setManualPermission(true);
     arbiter.setManualCommandConfig(enabledManualConfig());
 
     QSignalSpy velocitySpy(&arbiter, &MotionCommandArbiter::velocityCommand);
@@ -115,7 +112,6 @@ void MotionCommandArbiterTest::disconnectSuppressesFurtherMotionAndReportsSafety
 {
     MotionCommandArbiter arbiter;
     arbiter.setChassisConnected(true);
-    arbiter.setManualPermission(true);
     arbiter.setManualCommandConfig(enabledManualConfig());
 
     QSignalSpy velocitySpy(&arbiter, &MotionCommandArbiter::velocityCommand);
@@ -135,28 +131,42 @@ void MotionCommandArbiterTest::disconnectSuppressesFurtherMotionAndReportsSafety
     QCOMPARE(velocitySpy.count(), countAfterDisconnect);
 }
 
-void MotionCommandArbiterTest::handoffDoesNotReplayReleasedInput()
+void MotionCommandArbiterTest::reconnectDoesNotReplayHeldInput()
 {
-    MotionCommandArbiter arbiter; arbiter.setChassisConnected(true); arbiter.setManualCommandConfig(enabledManualConfig());
-    QSignalSpy velocity(&arbiter, &MotionCommandArbiter::velocityCommand);
-    QSignalSpy takeover(&arbiter, &MotionCommandArbiter::manualTakeoverRequested);
-    arbiter.setManualInputActive(MotionCommandArbiter::ManualInput::Forward, true, false);
-    QCOMPARE(takeover.size(), 1); QCOMPARE(velocity.size(), 0);
-    arbiter.setManualInputActive(MotionCommandArbiter::ManualInput::Forward, false, false);
-    arbiter.setManualPermission(true);
-    for (const auto& args : velocity) expectVelocity(args, 0, 0);
-    velocity.clear(); QTest::qWait(80); QCOMPARE(velocity.size(), 0);
-}
-void MotionCommandArbiterTest::automaticHandoffStopsHeartbeat()
-{
-    MotionCommandArbiter arbiter; arbiter.setChassisConnected(true); arbiter.setManualPermission(true);
+    MotionCommandArbiter arbiter;
+    arbiter.setChassisConnected(true);
     arbiter.setManualCommandConfig(enabledManualConfig());
     QSignalSpy velocity(&arbiter, &MotionCommandArbiter::velocityCommand);
     arbiter.setManualInputActive(MotionCommandArbiter::ManualInput::Forward, true, false);
-    arbiter.prepareAutomatic(); expectVelocity(velocity.takeLast(), 0, 0);
-    velocity.clear(); QTest::qWait(80); QCOMPARE(velocity.size(), 0);
-    arbiter.setManualPermission(true);
-    for (const auto& args : velocity) expectVelocity(args, 0, 0);
+    expectVelocity(velocity.takeLast(), 1.2, 0);
+    arbiter.setChassisConnected(false);
+    arbiter.setChassisConnected(true);
+    velocity.clear();
+    QTest::qWait(120);
+    QCOMPARE(velocity.size(), 0);
+    arbiter.setManualInputActive(MotionCommandArbiter::ManualInput::Forward, true, false);
+    expectVelocity(velocity.takeLast(), 1.2, 0);
+}
+
+void MotionCommandArbiterTest::idleCleanupIsSilentButExplicitStopSendsZero()
+{
+    MotionCommandArbiter arbiter;
+    arbiter.setChassisConnected(true);
+    arbiter.setManualCommandConfig(enabledManualConfig());
+    QSignalSpy velocity(&arbiter, &MotionCommandArbiter::velocityCommand);
+    arbiter.stopAll("status_network_failure");
+    arbiter.stopAll("status_network_failure");
+    QCOMPARE(velocity.size(), 0);
+    arbiter.setManualInputActive(MotionCommandArbiter::ManualInput::Forward, true, false);
+    velocity.clear();
+    arbiter.stopAll("status_network_failure");
+    QCOMPARE(velocity.size(), 1);
+    expectVelocity(velocity.takeLast(), 0, 0);
+    arbiter.stopAll("status_network_failure");
+    QCOMPARE(velocity.size(), 0);
+    arbiter.emergencyStop("home_stop_button");
+    QCOMPARE(velocity.size(), 1);
+    expectVelocity(velocity.takeLast(), 0, 0);
 }
 
 QTEST_MAIN(MotionCommandArbiterTest)

@@ -139,9 +139,9 @@ sequenceDiagram
 
 ## 6. 工控机自动闭环与手动直连
 
-Map → TaskCompiler → TrackingClient 上传完整计划。用户获取会话并明确启动后，ControlSessionCoordinator 清除手动输入并等待底盘停稳、释放控制权；tracking_node 校验短期许可、坐标/标定版本并执行任务。状态与事件回读不驱动本地运动。
+Map → TaskCompiler → TrackingClient 上传完整计划。用户获取会话并明确启动后，ControlSessionCoordinator 只协调任务操作；tracking_node 校验请求有效期、坐标/标定版本及实测停稳并独立执行任务。状态与事件回读不驱动本地运动。
 
-fusion_node 通过 ROS 向 tracking_node、通过 HTTP 向 PoseClient 发布同一份控制位姿；位姿寄存器不再参与控制链路。MotionCommandArbiter 只处理手动输入、松键停止和心跳，ChassisClient 在直接获取底盘手动许可后发送既有 cmd_vel。
+fusion_node 通过 ROS 向 tracking_node、通过 HTTP 向 PoseClient 发布同一份控制位姿；位姿寄存器不再参与控制链路。MotionCommandArbiter 只处理手动输入、松键停止和心跳，ChassisClient 直接发送既有 cmd_vel，不经过工控机授权；上位机退出不暂停已启动自动任务。
 
 JsonHttpClient 限制每条请求通道的并发、报文大小和超时。写请求采用不可回放的请求体；响应丢失时通过 requestId 查询结果。ExternalEventCoordinator 只执行停车后的拍摄业务，持久化意图和结果，未知结果要求人工核对。
 

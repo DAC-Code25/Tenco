@@ -59,16 +59,15 @@
 ## 4. 底盘控制（WebSocket）
 
 - `motioncommandarbiter.h/.cpp`
-  - UI 无关的运动命令安全仲裁层
-  - 汇总手动按钮和键盘，取得底盘 Manual 许可后直连发送 `cmd_vel`
-  - 统一手动心跳、输入清除、控制权撤销、断连和失焦停止
+  - UI 无关的手动输入合成层
+  - 汇总手动按钮和键盘，直接发送 `cmd_vel`
+  - 统一手动心跳、输入清除、断连和失焦停止
 
 - `chassisclient.h/.cpp`
   - WebSocket 连接、自动重连、NoProxy
   - 协议封装：
     - `sendVelocityCommand(xVel, thetaVel)`：`cmd_vel`
     - `sendRebootCommand()`：重启
-    - requestManual/releaseManual/stopLatched：控制权与急停协议
 
 ---
 

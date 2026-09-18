@@ -61,7 +61,13 @@ async def main(args):
                     print(output.decode("utf-8", errors="replace"), flush=True)
                     result = probe.returncode
                     assert result == 0, f"Qt probe failed: {result}"
-                    assert plant.x <= .63 and abs(plant.y) <= .03
+                    # The actual Qt coordinator has closed all observer/session clients.
+                    observer = ipc.Operator(19130)
+                    completed = await observer.wait(lambda s: s["state"] in ("Completed", "Paused", "Fault"), 15)
+                    assert completed["state"] == "Completed", completed
+                    assert abs(plant.x - 1.2) <= .03 and abs(plant.y) <= .03
+                    print("PASS autonomous completion after Qt process exit", flush=True)
+                    assert not plant.invalid_packets, plant.invalid_packets
                     assert len(photos) == 1, f"photo execution count: {len(photos)}"
                 finally:
                     if probe and probe.returncode is None:
