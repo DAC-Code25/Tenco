@@ -16,9 +16,6 @@ QJsonArray defaultReadRequests()
     requests.append(QJsonObject{{QStringLiteral("address"), QString::fromUtf8(Address::kWorkMode)},
                                 {QStringLiteral("type"), QStringLiteral("uint8")},
                                 {QStringLiteral("len"), 1}});
-    requests.append(QJsonObject{{QStringLiteral("address"), QString::fromUtf8(Address::kVehiclePose)},
-                                {QStringLiteral("type"), QStringLiteral("float")},
-                                {QStringLiteral("len"), 12}});
     requests.append(QJsonObject{{QStringLiteral("address"), QString::fromUtf8(Address::kMapName)},
                                 {QStringLiteral("type"), QStringLiteral("string")},
                                 {QStringLiteral("len"), 32}});
@@ -47,9 +44,6 @@ FieldId fieldIdFromAddress(const QString &address)
     }
     if (address == QLatin1String(Address::kWorkMode)) {
         return FieldId::WorkMode;
-    }
-    if (address == QLatin1String(Address::kVehiclePose)) {
-        return FieldId::VehiclePose;
     }
     if (address == QLatin1String(Address::kMapName)) {
         return FieldId::MapName;

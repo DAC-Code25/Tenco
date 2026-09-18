@@ -36,6 +36,7 @@ struct RowMissionPlan
     QString missionId;
     int version = 1;
     QString frameId = QStringLiteral("map");
+    MapFrameBinding frameBinding;
     QString name;
     bool loopEnabled = false;
     QList<RowMissionStep> steps;

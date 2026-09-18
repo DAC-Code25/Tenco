@@ -11,9 +11,9 @@
 #include <QWebSocketProtocol>
 #include <QLoggingCategory>
 #include <QtGlobal>
+#include <cmath>
 
 namespace {
-constexpr int kStartupMessageRepeat = 3;
 Q_LOGGING_CATEGORY(lcChassisClient, "tenco.net.chassis")
 }
 
@@ -23,7 +23,7 @@ ChassisClient::ChassisClient(QObject *parent)
     , m_reconnectTimer(new QTimer(this))
 {
     m_socket->setProxy(QNetworkProxy::NoProxy);
-
+    m_socket->setMaxAllowedIncomingMessageSize(65536);
     connect(m_socket, &QWebSocket::connected, this, &ChassisClient::handleConnected);
     connect(m_socket, &QWebSocket::disconnected, this, &ChassisClient::handleDisconnected);
 #if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
@@ -56,7 +56,6 @@ void ChassisClient::setUrl(const QUrl &url)
     m_url = url;
     m_manualDisconnect = false;
     m_reconnectAttempt = 0;
-    m_startupMessagesSent = false;
 }
 
 void ChassisClient::setAuthorizationToken(const QString &token)
@@ -152,6 +151,12 @@ void ChassisClient::sendJson(const QJsonObject &packetObj, const QJsonObject &ms
 
 void ChassisClient::sendVelocityCommand(double xVel, double thetaVel)
 {
+    if (!isConnected() || !std::isfinite(xVel) || !std::isfinite(thetaVel)) return;
+    if (m_socket->bytesToWrite() > 4096) {
+        m_socket->abort();
+        emit errorOccurred(tr("手动链路发送积压，已断开连接"));
+        return;
+    }
     const QJsonObject packetObj{{"cmd", "region"}, {"region", "cmd_vel"}, {"index", 1}};
     const QJsonObject msgObj{{"xvel", xVel}, {"yvel", 0.0}, {"thetavel", thetaVel}, {"isRemote", true}};
     sendJson(packetObj, msgObj);
@@ -159,42 +164,9 @@ void ChassisClient::sendVelocityCommand(double xVel, double thetaVel)
 
 void ChassisClient::sendRebootCommand()
 {
+    if (!isConnected()) return;
     const QJsonObject packetObj{{"cmd", "reboot"}};
     sendJson(packetObj, QJsonObject{});
-}
-
-void ChassisClient::sendStopLocation()
-{
-    const QJsonObject packetObj{{"cmd", "region"}, {"region", "slam"}, {"index", 1}};
-    const QJsonObject msgObj{{"talk", "stopLocation"}};
-    sendJson(packetObj, msgObj);
-}
-
-void ChassisClient::sendStartupMessagesIfNeeded()
-{
-    if (m_startupMessagesSent || !isConnected()) {
-        return;
-    }
-
-    const QJsonObject stopPacket{{"cmd", "region"}, {"region", "slam"}, {"index", 1}};
-    const QJsonObject stopMsg{{"talk", "stopLocation"}};
-    const QString stopPayload =
-        QString::fromUtf8(QJsonDocument(QJsonObject{{"packet", stopPacket}, {"msg", stopMsg}}).toJson(QJsonDocument::Compact));
-
-    const QJsonObject scriptPacket{{"cmd", "region"}, {"region", "ScriptDeal"}, {"index", 1}};
-    const QJsonObject scriptMsg{{"talk", "printScript"},
-                                {"name", QStringLiteral("script/motor/\u6b65\u79d1\u7535\u673a-\u5dee\u901f\u8f6e/recmotor.lua")}};
-    const QString scriptPayload =
-        QString::fromUtf8(QJsonDocument(QJsonObject{{"packet", scriptPacket}, {"msg", scriptMsg}}).toJson(QJsonDocument::Compact));
-
-    for (int i = 0; i < kStartupMessageRepeat; ++i) {
-        m_socket->sendTextMessage(stopPayload);
-    }
-    for (int i = 0; i < kStartupMessageRepeat; ++i) {
-        m_socket->sendTextMessage(scriptPayload);
-    }
-
-    m_startupMessagesSent = true;
 }
 
 void ChassisClient::handleConnected()
@@ -205,7 +177,6 @@ void ChassisClient::handleConnected()
         m_reconnectTimer->stop();
     }
     qCInfo(lcChassisClient) << "WebSocket connected";
-    sendStartupMessagesIfNeeded();
     emit connected();
 }
 

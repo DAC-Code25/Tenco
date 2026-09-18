@@ -42,7 +42,7 @@ docs/
 ## 3) 测试与 CI（高收益、中风险）
 
 - [x] 建 `tests/`，已覆盖：
-  - [x] `RouteFollower`
+  - [x] `TaskCompiler`
   - [x] `ConfigManager`
   - [x] `RoutePathFinder`
   - [x] `StatusProtocol`

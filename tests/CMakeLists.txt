@@ -1,5 +1,11 @@
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Test Network Sql)
 
+qt_add_executable(tenco_ipc_client_probe ipc_client_probe.cpp ../controlsessioncoordinator.h ../controlsessioncoordinator.cpp
+    ../externaleventcoordinator.h ../externaleventcoordinator.cpp)
+set_target_properties(tenco_ipc_client_probe PROPERTIES WIN32_EXECUTABLE FALSE)
+target_include_directories(tenco_ipc_client_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
+target_link_libraries(tenco_ipc_client_probe PRIVATE tenco_network tenco_motion tenco_map_model)
+
 function(tenco_add_test target_name)
     qt_add_executable(${target_name}
         ${ARGN}
@@ -8,13 +14,19 @@ function(tenco_add_test target_name)
         ${CMAKE_CURRENT_SOURCE_DIR}/..
     )
     target_link_libraries(${target_name} PRIVATE Qt6::Core Qt6::Test)
-    add_test(NAME ${target_name} COMMAND ${target_name})
+    add_test(NAME ${target_name} COMMAND ${CMAKE_COMMAND}
+        "-DTEST_EXECUTABLE=$<TARGET_FILE:${target_name}>"
+        "-DTEST_REPORT=${CMAKE_CURRENT_BINARY_DIR}/${target_name}.txt"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/run_qt_test.cmake")
 endfunction()
 
-tenco_add_test(tenco_test_routefollower
-    test_routefollower.cpp
-)
-target_link_libraries(tenco_test_routefollower PRIVATE tenco_motion)
+tenco_add_test(tenco_test_taskcompiler test_taskcompiler.cpp)
+target_link_libraries(tenco_test_taskcompiler PRIVATE tenco_map_model)
+
+tenco_add_test(tenco_test_ipc_clients test_ipc_clients.cpp ../externaleventcoordinator.h ../externaleventcoordinator.cpp)
+set_target_properties(tenco_test_ipc_clients PROPERTIES WIN32_EXECUTABLE FALSE)
+target_link_libraries(tenco_test_ipc_clients PRIVATE tenco_network Qt6::WebSockets)
+
 
 tenco_add_test(tenco_test_motioncommandarbiter
     test_motioncommandarbiter.cpp
@@ -81,6 +93,8 @@ tenco_add_test(tenco_test_homeinputstate
 
 tenco_add_test(tenco_test_map_route_integration
     test_map_route_integration.cpp
+    ../controlsessioncoordinator.h
+    ../controlsessioncoordinator.cpp
     ../map.h
     ../map.cpp
     ../mapgraphicsview.h

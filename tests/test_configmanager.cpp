@@ -16,6 +16,7 @@ private slots:
     void loadCustomConfigAndSanitize();
     void envOverridesSecretsAndReportsSchemaWarnings();
     void geoRoundTripKeepsPrecision();
+    void unsupportedSchemaDoesNotMigrateOrEnableServices();
 };
 
 void ConfigManagerTest::loadCustomConfigAndSanitize()
@@ -80,13 +81,15 @@ void ConfigManagerTest::loadCustomConfigAndSanitize()
     cfg.setConfigFilePath(filePath);
 
     QVERIFY(cfg.loadedFromFile());
+    QVERIFY(QFile::exists(filePath + ".schema1.bak"));
+    QFile migrated(filePath); QVERIFY(migrated.open(QIODevice::ReadOnly));
+    const auto current = QJsonDocument::fromJson(migrated.readAll()).object();
+    QCOMPARE(current["schemaVersion"].toInt(), 2);
+    QVERIFY(!current.contains("control")); QVERIFY(!current.contains("rowWork"));
+    QVERIFY(current.contains("taskDefaults")); migrated.close();
     QCOMPARE(cfg.configFilePath(), filePath);
-    QVERIFY(cfg.control().arrivalDistanceThreshold >= 0.01);
-    QVERIFY(cfg.control().headingSlowdownFactor <= 1.0);
-    QVERIFY(cfg.control().nearTargetDistanceMultiplier >= 1.0);
-    QVERIFY(cfg.control().nearTargetSpeedMultiplier <= 1.0);
-    QVERIFY(cfg.control().maxLinearSpeed >= 0.0);
-    QVERIFY(cfg.control().maxAngularSpeed >= 0.0);
+    QVERIFY(cfg.manualControl().maxLinearSpeed >= 0.0);
+    QVERIFY(cfg.manualControl().maxAngularSpeed >= 0.0);
     QVERIFY(cfg.routePlanning().minEdgeCost > 0.0);
     QVERIFY(cfg.routePlanning().edgePenalty >= 0.0);
     QCOMPARE(cfg.routePlanning().arcPenalty, 0.25);
@@ -102,11 +105,6 @@ void ConfigManagerTest::loadCustomConfigAndSanitize()
     QCOMPARE(cfg.video().recordMode, QStringLiteral("host_opencv"));
     QCOMPARE(cfg.video().recordCodec, QStringLiteral("MJPG"));
     QVERIFY(cfg.network().statusPollIntervalMs >= 50);
-    QVERIFY(cfg.rowWork().enabled);
-    QCOMPARE(cfg.rowWork().gatewayBaseUrl, QStringLiteral("http://192.168.31.13:18120/"));
-    QVERIFY(cfg.rowWork().statusPollIntervalMs >= 100);
-    QVERIFY(cfg.rowWork().commandTimeoutMs >= 1000);
-    QVERIFY(!cfg.rowWork().autoRefreshPlanStatus);
     QCOMPARE(cfg.database().backend, QStringLiteral("sqlite"));
     QCOMPARE(cfg.database().connectionName, QStringLiteral("tenco_main"));
     QVERIFY(cfg.database().useWAL);
@@ -158,6 +156,30 @@ void ConfigManagerTest::envOverridesSecretsAndReportsSchemaWarnings()
 
     qunsetenv("TENCO_AUTH_TOKEN");
     qunsetenv("TENCO_DATABASE_PASSWORD");
+    cfg.setConfigFilePath(QString());
+}
+
+void ConfigManagerTest::unsupportedSchemaDoesNotMigrateOrEnableServices()
+{
+    QTemporaryDir dir;
+    auto &cfg = ConfigManager::instance();
+    for (const auto &schema : QJsonArray{0, 3, 1.5, "2", true, QJsonValue(QJsonValue::Null)}) {
+        const auto path = dir.filePath("invalid.json");
+        const auto bytes = QJsonDocument(QJsonObject{{"schemaVersion", schema},
+            {"tracking", QJsonObject{{"enabled", true}}}}).toJson();
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        file.write(bytes); file.close();
+        cfg.setConfigFilePath(path); cfg.reload();
+        QVERIFY(!cfg.loadedFromFile());
+        QVERIFY(!cfg.tracking().enabled);
+        QVERIFY(!cfg.poseSource().enabled);
+        ConfigManager::ConfigSnapshot snapshot;
+        QVERIFY(!cfg.loadSnapshotFromFile(path, &snapshot));
+        QVERIFY(!QFile::exists(path + ".schema1.bak"));
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QCOMPARE(file.readAll(), bytes);
+    }
     cfg.setConfigFilePath(QString());
 }
 

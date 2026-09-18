@@ -69,8 +69,6 @@ target_link_libraries(tenco_storage PUBLIC Qt6::Core Qt6::Sql tenco_config)
 tenco_configure_target(tenco_storage)
 
 qt_add_library(tenco_motion STATIC
-    routefollower.h
-    routefollower.cpp
     motioncommandarbiter.h
     motioncommandarbiter.cpp
     routepathfinder.h
@@ -80,6 +78,12 @@ target_link_libraries(tenco_motion PUBLIC Qt6::Core)
 tenco_configure_target(tenco_motion)
 
 qt_add_library(tenco_map_model STATIC
+    trackingtypes.h
+    trackingtypes.cpp
+    mapframeadapter.h
+    mapframeadapter.cpp
+    taskcompiler.h
+    taskcompiler.cpp
     rowworktypes.h
     rowworktypes.cpp
     rowmissiontypes.h
@@ -95,14 +99,18 @@ target_link_libraries(tenco_map_model PUBLIC Qt6::Core tenco_config tenco_motion
 tenco_configure_target(tenco_map_model)
 
 qt_add_library(tenco_network STATIC
+    jsonhttpclient.h
+    jsonhttpclient.cpp
+    poseclient.h
+    poseclient.cpp
+    trackingclient.h
+    trackingclient.cpp
     networkpolicy.h
     networkpolicy.cpp
     cameracontrolclient.h
     cameracontrolclient.cpp
     gimbalcontrolclient.h
     gimbalcontrolclient.cpp
-    rowworkclient.h
-    rowworkclient.cpp
     homenetworkworker.h
     homenetworkworker.cpp
     statusclient.h
@@ -144,6 +152,10 @@ qt_add_executable(Tenco
     main.cpp
     UI_Design.cpp
 
+    controlsessioncoordinator.h
+    controlsessioncoordinator.cpp
+    externaleventcoordinator.h
+    externaleventcoordinator.cpp
     mainwindow.h
     mainwindow.cpp
     mainwindow.ui
@@ -156,8 +168,6 @@ qt_add_executable(Tenco
 
     home.h
     home.cpp
-    homecontrolcoordinator.h
-    homecontrolcoordinator.cpp
     homegimbalkeystate.h
     homegimbalkeystate.cpp
     homemanualinputstate.h
@@ -272,5 +282,6 @@ set(CPACK_GENERATOR "ZIP")
 include(CPack)
 
 if(BUILD_TESTING AND TENCO_BUILD_TESTS)
+    target_compile_definitions(Tenco PRIVATE TENCO_TEST_HOOKS)
     add_subdirectory(tests)
 endif()
