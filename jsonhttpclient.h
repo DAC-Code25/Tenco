@@ -26,7 +26,8 @@ class JsonHttpClient : public QObject {
     bool configured() const;
     bool busy(const QString &lane) const { return m_pending.contains(lane); }
     bool request(const QString &lane, const QString &method, const QString &path, const QJsonObject &body,
-                 const QUrlQuery &query, const QString &operatorToken, Callback callback);
+                 const QUrlQuery &query, const QString &operatorToken, Callback callback,
+                 qint64 maxResponseBytes = 1024 * 1024);
     void cancelAll();
 
   private:

@@ -369,7 +369,7 @@ void TrackingClient::readTask(const QString &id, int revision) {
             emit taskReceived(m_readTask);
         } else
             emit errorOccurred(r.error.isEmpty() ? "invalid_task_readback" : r.error);
-    });
+    }, 16 * 1024 * 1024);
 }
 bool TrackingClient::confirmReadTask(const QJsonObject &record, const TrackingContext &context) {
     const auto plan = record["plan"].toObject();

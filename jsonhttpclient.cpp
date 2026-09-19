@@ -61,9 +61,10 @@ void JsonHttpClient::cancelAll() {
 }
 bool JsonHttpClient::request(const QString &lane, const QString &method, const QString &path,
                              const QJsonObject &body, const QUrlQuery &query, const QString &operatorToken,
-                             Callback callback) {
+                             Callback callback, qint64 maxResponseBytes) {
     if (!configured() || busy(lane) || m_pending.size() >= 12)
         return false;
+    const qint64 responseLimit = qBound(qint64(1), maxResponseBytes, qint64(16 * 1024 * 1024));
     QUrl url = m_base;
     QString prefix = url.path();
     while (prefix.endsWith('/'))
@@ -86,7 +87,7 @@ bool JsonHttpClient::request(const QString &lane, const QString &method, const Q
         reply = m_manager.post(request, upload);
         upload->setParent(reply);
     }
-    reply->setReadBufferSize(1024 * 1024 + 1);
+    reply->setReadBufferSize(responseLimit + 1);
     m_pending.insert(lane, reply);
     const auto generation = m_generation;
     auto bytes = std::make_shared<QByteArray>();
@@ -99,15 +100,15 @@ bool JsonHttpClient::request(const QString &lane, const QString &method, const Q
         reply->abort();
     });
     deadline->start(m_timeoutMs);
-    connect(reply, &QIODevice::readyRead, reply, [reply, bytes] {
+    connect(reply, &QIODevice::readyRead, reply, [reply, bytes, responseLimit] {
         bytes->append(reply->readAll());
-        if (bytes->size() > 1024 * 1024) {
+        if (bytes->size() > responseLimit) {
             reply->setProperty("oversize", true);
             reply->abort();
         }
     });
     connect(reply, &QNetworkReply::finished, this,
-            [this, reply, lane, generation, callback = std::move(callback), bytes, elapsed, deadline] {
+            [this, reply, lane, generation, callback = std::move(callback), bytes, elapsed, deadline, responseLimit] {
                 deadline->stop();
                 reply->deleteLater();
                 if (generation != m_generation)
@@ -118,7 +119,7 @@ bool JsonHttpClient::request(const QString &lane, const QString &method, const Q
                 JsonHttpResult result;
                 result.status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
                 result.roundTripMs = elapsed->elapsed();
-                if (reply->property("oversize").toBool() || bytes->size() > 1024 * 1024)
+                if (reply->property("oversize").toBool() || bytes->size() > responseLimit)
                     result.error = "response_too_large";
                 else if (reply->property("deadline").toBool())
                     result.error = "request_timeout";

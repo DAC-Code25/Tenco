@@ -90,16 +90,41 @@ static QJsonObject statusObject(quint64 seq, const QString &boot) {
 class IpcClientsTest : public QObject {
     Q_OBJECT
   private slots:
+    void reopenedClientRequiresExplicitConfirmedRemotePlan_data() {
+        QTest::addColumn<bool>("largePlan");
+        QTest::newRow("small-plan") << false;
+        QTest::newRow("plan-over-one-mib") << true;
+    }
     void reopenedClientRequiresExplicitConfirmedRemotePlan() {
+        QFETCH(bool, largePlan);
         HttpFixture server;
         quint64 seq = 0;
         int resumes = 0;
         QString boot = "boot";
         const TrackingContext context{"map", "origin", "transform", "cal", "profile", 1};
-        const QJsonObject plan{{"taskId", "task"}, {"revision", 1}, {"context", context.toJson()},
-                              {"steps", QJsonArray{QJsonObject{{"type", "wait"}, {"stepId", "wait"}}}}};
+        QJsonArray steps{QJsonObject{{"type", "wait"}, {"stepId", "wait"},
+                                    {"completion", QJsonObject{{"type", "timer"}, {"durationMs", 100}}}}};
+        if (largePlan) {
+            steps = {};
+            for (int section = 0; section < 5; ++section) {
+                QJsonArray points;
+                for (int point = 0; point < 10000; ++point)
+                    points.append(QJsonArray{.123456789 + (section * 9999 + point) / 100000.0, .987654321});
+                steps.append(QJsonObject{{"type", "follow_path"}, {"stepId", QString::number(section)},
+                    {"points", points}, {"speedLimit", .2}, {"goalToleranceMeters", .03},
+                    {"safetyProfileId", "open"}, {"endBehavior", "stop"}});
+            }
+        }
+        const QJsonObject plan{{"schemaVersion", 1}, {"taskId", "task"}, {"revision", 1},
+                              {"context", context.toJson()}, {"repeat", QJsonObject{{"mode", "count"}, {"count", 1}}},
+                              {"steps", steps}};
         QJsonObject record{{"apiVersion", 1}, {"taskId", "task"}, {"revision", 1}, {"plan", plan},
-                           {"state", "Ready"}, {"planHash", "fnv1a64:123456789abcdef0"}, {"preparedStepCount", 1}};
+                           {"state", "Ready"}, {"planHash", "fnv1a64:123456789abcdef0"}, {"preparedStepCount", steps.size()}};
+        if (largePlan) {
+            const auto responseBytes = QJsonDocument(record).toJson(QJsonDocument::Compact).size();
+            QVERIFY(responseBytes > 1024 * 1024);
+            QVERIFY(responseBytes < 8 * 1024 * 1024);
+        }
         server.handler = [&](auto *socket, const QByteArray &path, const QJsonObject &body) {
             if (path.startsWith("/api/v1/status")) {
                 auto state = statusObject(++seq, boot); state["state"] = "Paused"; state["executionId"] = "run";
@@ -351,6 +376,44 @@ class IpcClientsTest : public QObject {
         client.cancelAll();
         QTest::qWait(250);
         QCOMPARE(cancelled, 0);
+    }
+    void defaultResponseLimitRejectsOversizeDocument() {
+        HttpFixture server;
+        server.handler = [](auto *socket, const auto &, const auto &) {
+            HttpFixture::reply(socket, {{"payload", QString(1024 * 1024, QLatin1Char('x'))}});
+        };
+        JsonHttpClient client;
+        client.configure(server.url(), {});
+        int finished = 0;
+        JsonHttpResult result;
+        QVERIFY(client.request("read", "GET", "/large", {}, {}, {}, [&](const auto &response) {
+            result = response;
+            ++finished;
+        }));
+        QTRY_COMPARE(finished, 1);
+        QCOMPARE(result.error, QString("response_too_large"));
+        QVERIFY(!result.ok());
+        QVERIFY(result.object.isEmpty());
+        QVERIFY(!client.busy("read"));
+    }
+    void responseLimitCannotExceedDocumentMaximum() {
+        HttpFixture server;
+        server.handler = [](auto *socket, const auto &, const auto &) {
+            HttpFixture::reply(socket, {{"payload", QString(16 * 1024 * 1024, QLatin1Char('x'))}});
+        };
+        JsonHttpClient client;
+        client.configure(server.url(), {}, 10000);
+        int finished = 0;
+        JsonHttpResult result;
+        QVERIFY(client.request("read", "GET", "/large", {}, {}, {}, [&](const auto &response) {
+            result = response;
+            ++finished;
+        }, 32 * 1024 * 1024));
+        QTRY_COMPARE_WITH_TIMEOUT(finished, 1, 10000);
+        QCOMPARE(result.error, QString("response_too_large"));
+        QVERIFY(!result.ok());
+        QVERIFY(result.object.isEmpty());
+        QVERIFY(!client.busy("read"));
     }
     void duplicatePoseDoesNotRefreshAgeAndRebootIsVisible() {
         HttpFixture server;
