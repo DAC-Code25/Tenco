@@ -196,6 +196,8 @@ bool RowMissionJson::stepFromJson(const QJsonObject &json, RowMissionStep *outSt
 QJsonObject RowMissionJson::planToJson(const RowMissionPlan &plan)
 {
     QJsonObject root{
+        {QStringLiteral("schemaVersion"), 2},
+        {QStringLiteral("frameBinding"), plan.frameBinding.toJson()},
         {QStringLiteral("missionId"), normalized(plan.missionId)},
         {QStringLiteral("version"), plan.version},
         {QStringLiteral("frameId"), normalized(plan.frameId).isEmpty() ? QStringLiteral("map") : normalized(plan.frameId)},
@@ -217,7 +219,10 @@ bool RowMissionJson::planFromJson(const QJsonObject &json, RowMissionPlan *outPl
         return false;
     }
 
-    RowMissionPlan plan = *outPlan;
+    const int schema = json.value("schemaVersion").toInt(1);
+    if (schema < 1 || schema > 2) return false;
+    RowMissionPlan plan;
+    if (schema == 2) plan.frameBinding = MapFrameBinding::fromJson(json["frameBinding"].toObject());
     plan.missionId = normalized(json.value(QStringLiteral("missionId")).toString(plan.missionId));
     plan.version = json.value(QStringLiteral("version")).toInt(plan.version);
     plan.frameId = normalized(json.value(QStringLiteral("frameId")).toString(plan.frameId));

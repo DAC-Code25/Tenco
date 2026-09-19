@@ -51,7 +51,7 @@
 **现状**
 
 - 已有：网络地址从 `config.json` 读取（`ConfigManager::NetworkConfig`）
-- 已有：从“Home 大而全”拆出独立模块（Status/Chassis/Video/RouteFollower）
+- 已有：从“Home 大而全”拆出独立模块（Status/Chassis/Video/TaskCompiler）
 - 仍可改进：目录仍是扁平结构（企业常见 `src/ include/ tests/ docs/`）
 
 ---
@@ -96,7 +96,7 @@
 - 首页业务编排：`home.h/.cpp`
 - 地图编辑与路线：`map.h/.cpp` + `mapgraphicsview.h/.cpp`
 - 网络/协议封装：`statusclient.*` / `chassisclient.*` / `videoclient.*`
-- 路线控制算法：`routefollower.*`
+- 路线控制算法：`taskcompiler.*`
 - 配置：`configmanager.*`
 
 ---
@@ -144,7 +144,7 @@
 
 - 已有 UT：
   - `ConfigManager`：配置解析、默认值、轮询间隔边界（`tests/test_configmanager.cpp`）
-  - `RouteFollower`：关键轨迹跟随逻辑（`tests/test_routefollower.cpp`）
+  - `TaskCompiler`：关键轨迹跟随逻辑（`tests/test_taskcompiler.cpp`、`tests/test_ipc_clients.cpp`）
   - `RoutePathFinder`：路径搜索代价与连通性（`tests/test_routepathfinder.cpp`）
   - `StatusProtocol`：状态地址映射与请求构造（`tests/test_statusprotocol.cpp`）
   - `MapDocument`：地图 JSON 编解码与校验（`tests/test_mapdocument.cpp`）

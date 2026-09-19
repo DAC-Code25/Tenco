@@ -3,36 +3,10 @@
     "baseLatitudeDeg": 30.2229922,
     "baseLongitudeDeg": 120.0228563
   },
-  "control": {
-    "arrivalDistanceThreshold": 0.15,
-    "arrivalAngleThresholdDeg": 5.0,
-    "maxLinearSpeed": 0.6,
-    "maxAngularSpeed": 0.8,
-    "linearGain": 1.2,
-    "angularGain": 2.0,
-    "headingStopThresholdDeg": 90.0,
-    "headingSlowdownThresholdDeg": 35.0,
-    "headingSlowdownFactor": 0.4,
-    "nearTargetDistanceMultiplier": 3.0,
-    "nearTargetSpeedMultiplier": 0.35,
-    "linearAccelerationLimit": 0.7,
-    "linearDecelerationLimit": 0.9,
-    "angularAccelerationLimit": 1.5,
-    "angularDecelerationLimit": 2.0,
-    "finalAdjustLinearSpeed": 0.25,
-    "finalAdjustAngularSpeed": 0.7,
-    "routeFollowerUpdateIntervalMs": 100,
-    "manualMotionRepeatIntervalMs": 40
-  },
   "routePlanning": {
     "minEdgeCost": 0.001,
     "edgePenalty": 0.01,
     "arcPenalty": 0.05
-  },
-  "vehicle": {
-    "wheelBaseMeters": 0.58,
-    "wheelDiameterMeters": 0.18,
-    "gearReduction": 14.5
   },
   "video": {
     "backend": "mjpeg_http",
@@ -58,8 +32,6 @@
   "network": {
     "websocketUrl": "ws://192.168.31.7:1202",
     "statusReadUrl": "http://192.168.31.7:9999/table/reads",
-    "writeInsUrl": "http://192.168.31.7:9999/table/writeIns",
-    "saveFileUrl": "http://192.168.31.7:9999/saveFile",
     "authToken": "",
     "statusPollIntervalMs": 100,
     "statusRequestTimeoutMs": 3000,
@@ -67,13 +39,6 @@
     "chassisAutoReconnect": true,
     "chassisReconnectIntervalMs": 1000,
     "chassisReconnectMaxIntervalMs": 15000
-  },
-  "rowWork": {
-    "enabled": true,
-    "gatewayBaseUrl": "http://192.168.31.13:18120",
-    "statusPollIntervalMs": 300,
-    "commandTimeoutMs": 3000,
-    "autoRefreshPlanStatus": true
   },
   "gimbal": {
     "enabled": true,
@@ -133,5 +98,29 @@
     "enableTelemetryTables": true,
     "enableLocalCache": true,
     "enableAuditSync": true
+  },
+  "schemaVersion": 2,
+  "manualControl": {
+    "maxLinearSpeed": 0.6,
+    "maxAngularSpeed": 0.8,
+    "manualMotionRepeatIntervalMs": 40
+  },
+  "taskDefaults": {
+    "speedLimit": 0.25,
+    "goalToleranceMeters": 0.03,
+    "angularSpeedLimit": 0.35,
+    "angleToleranceRad": 0.05,
+    "safetyProfileId": "",
+    "rotationZoneId": ""
+  },
+  "poseSource": {
+    "enabled": true,
+    "baseUrl": "http://192.168.31.13:18131/api/v1",
+    "requestTimeoutMs": 3000
+  },
+  "tracking": {
+    "enabled": true,
+    "baseUrl": "http://192.168.31.13:18130/api/v1",
+    "requestTimeoutMs": 3000
   }
 }

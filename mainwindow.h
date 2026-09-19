@@ -15,6 +15,10 @@ QT_END_NAMESPACE
 
 //存在这些类 但无需提前包含头文件 前向声明
 class Home;
+class PoseClient;
+class TrackingClient;
+class ControlSessionCoordinator;
+class ExternalEventCoordinator;
 class Map;
 class Maintenance;
 class Help;
@@ -70,6 +74,11 @@ private:
     QPushButton *aboutButton;
     QStackedWidget *stackedWidget;
 
+    PoseClient* poseClient = nullptr;
+    TrackingClient* trackingClient = nullptr;
+    ControlSessionCoordinator* controlCoordinator = nullptr;
+    ExternalEventCoordinator* externalEvents = nullptr;
+    void configureIpcClients();
     Home *homePage;
     Map *mapPage;
     Maintenance *maintenancePage;
@@ -78,6 +87,7 @@ private:
 
     bool topMostEnabled = false; //记录是否置顶
     bool draggingWindow = false; //当前是否处于拖拽窗口状态
+    bool m_closing = false, m_closeDrained = false;
     QPoint dragOffset; //鼠标按下点相对窗口左上角的偏移，用于平滑拖动
 
     bool isInNavBarDragArea(const QPoint &globalPos) const;
