@@ -5,6 +5,10 @@ ControlSessionCoordinator::ControlSessionCoordinator(TrackingClient *tracking, P
     : QObject(parent), m_tracking(tracking), m_pose(pose) {
     connect(tracking, &TrackingClient::errorOccurred, this, &ControlSessionCoordinator::message);
     connect(pose, &PoseClient::errorOccurred, this, &ControlSessionCoordinator::message);
+    connect(tracking, &TrackingClient::configurationChanged, this, [this](const QJsonObject &config) {
+        if (m_pose)
+            m_pose->setStateTimeoutMs(config["localizationPolicy"].toObject()["stateTimeoutMs"].toInt());
+    });
     connect(tracking, &TrackingClient::commandUncertain, this, [this](const QString &op, const QString &) {
         emit message(tr("%1 结果未知，请核对工控机执行状态后再操作").arg(op));
     });
@@ -48,6 +52,14 @@ bool ControlSessionCoordinator::upload(const QJsonObject &plan) {
     return m_tracking->upload(plan);
 }
 void ControlSessionCoordinator::startTask() { beginMotion("start"); }
+bool ControlSessionCoordinator::confirmReadTask(const QJsonObject &record) {
+    if (!coordinatesReady() || !m_tracking->confirmReadTask(record, m_binding.context)) {
+        emit message(tr("接续确认未完成：请核对地图版本、定位、操作权，并重新读取当前任务"));
+        return false;
+    }
+    emit message(tr("已确认工控机当前计划；任务不会自动启动，请明确点击启动或继续"));
+    return true;
+}
 void ControlSessionCoordinator::resumeTask() { beginMotion("resume"); }
 void ControlSessionCoordinator::beginMotion(const QString &operation) {
     if (!coordinatesReady() || !m_tracking->hasSession() || m_tracking->busy()) {

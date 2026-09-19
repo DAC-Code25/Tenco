@@ -116,9 +116,13 @@ MainWindow::MainWindow(QWidget *parent) // 主窗口构造函数
             tr("新原点已保存为待生效；请在停机维护时重启融合服务并重新确认地图绑定") : tr("原点已生效"));
     });
     connect(poseClient, &PoseClient::poseChanged, this, [this](const ControlPoseSnapshot& pose) {
-        ui->lineEdit_Position->setText(tr("ENU X=%1, Y=%2, yaw=%3 rad · %4 ms")
+        if (!pose.validForControl) {
+            ui->lineEdit_Position->setText(tr("定位不可用 · %1").arg(pose.reasons.join(", ")));
+            return;
+        }
+        ui->lineEdit_Position->setText(tr("ENU X=%1, Y=%2, yaw=%3 rad · %4 ms · %5")
             .arg(pose.position.x(), 0, 'f', 3).arg(pose.position.y(), 0, 'f', 3)
-            .arg(pose.yaw, 0, 'f', 3).arg(pose.positionAgeMs, 0, 'f', 0));
+            .arg(pose.yaw, 0, 'f', 3).arg(pose.stateAgeMs, 0, 'f', 0).arg(pose.mode));
     });
     connect(poseClient, &PoseClient::availabilityChanged, this, [this](bool valid, const QString& reason) {
         if (!valid) ui->lineEdit_Position->setText(reason);

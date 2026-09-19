@@ -155,6 +155,7 @@ private:
     void uploadMissionTask();
     void applyCapture(const QJsonObject& capture);
     void applyTrackingStatus(const TrackingSnapshot& status);
+    void reviewRemoteTask(const QJsonObject &record);
     TaskCompileOptions taskOptions() const;
     QPointer<ControlSessionCoordinator> m_coordinator;
     QPointer<TrackingClient> m_tracking;

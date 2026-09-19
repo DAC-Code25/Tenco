@@ -119,8 +119,9 @@ bool TrackingJson::pose(const QJsonObject &o, ControlPoseSnapshot *out, QString 
         p.positionAgeMs < 0 || p.headingAgeMs < 0)
         return reject(error, QStringLiteral("位姿字段无效"));
     p.position = {x, y};
-    p.validForControl =
-        o["validForControl"].toBool() && o["positionReliable"].toBool() && o["headingReliable"].toBool();
+    // Observation quality is diagnostic. The publisher decides whether its
+    // continuous estimate is usable; downstream clients must not reapply FIX gates.
+    p.validForControl = o["validForControl"].toBool();
     for (const auto &reason : o["reasonCodes"].toArray())
         p.reasons.append(reason.toString());
     *out = p;

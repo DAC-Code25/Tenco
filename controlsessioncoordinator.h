@@ -13,6 +13,7 @@ class ControlSessionCoordinator : public QObject {
     MapFrameBinding binding() const { return m_binding; }
     bool coordinatesReady() const;
     bool upload(const QJsonObject &plan);
+    bool confirmReadTask(const QJsonObject &record);
     void acquireSession();
     void startTask();
     void resumeTask();

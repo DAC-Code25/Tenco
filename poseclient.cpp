@@ -49,9 +49,12 @@ ControlPoseSnapshot PoseClient::snapshot() const {
     return pose;
 }
 bool PoseClient::fresh() const {
-    return m_running && m_age.isValid() && m_age.elapsed() <= 250 && m_pose.validForControl &&
-           m_pose.stateAgeMs + m_age.elapsed() <= 150 && m_pose.positionAgeMs + m_age.elapsed() <= 500 &&
-           m_pose.headingAgeMs + m_age.elapsed() <= 500;
+    return m_running && m_age.isValid() && m_pose.validForControl &&
+           m_pose.stateAgeMs + m_age.elapsed() <= m_stateTimeoutMs;
+}
+void PoseClient::setStateTimeoutMs(int timeoutMs) {
+    if (timeoutMs > 0 && timeoutMs <= 1000)
+        m_stateTimeoutMs = timeoutMs;
 }
 void PoseClient::poll() {
     if (!m_running || m_clock.elapsed() < m_nextPoll)

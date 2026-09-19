@@ -90,6 +90,83 @@ static QJsonObject statusObject(quint64 seq, const QString &boot) {
 class IpcClientsTest : public QObject {
     Q_OBJECT
   private slots:
+    void reopenedClientRequiresExplicitConfirmedRemotePlan() {
+        HttpFixture server;
+        quint64 seq = 0;
+        int resumes = 0;
+        QString boot = "boot";
+        const TrackingContext context{"map", "origin", "transform", "cal", "profile", 1};
+        const QJsonObject plan{{"taskId", "task"}, {"revision", 1}, {"context", context.toJson()},
+                              {"steps", QJsonArray{QJsonObject{{"type", "wait"}, {"stepId", "wait"}}}}};
+        QJsonObject record{{"apiVersion", 1}, {"taskId", "task"}, {"revision", 1}, {"plan", plan},
+                           {"state", "Ready"}, {"planHash", "fnv1a64:123456789abcdef0"}, {"preparedStepCount", 1}};
+        server.handler = [&](auto *socket, const QByteArray &path, const QJsonObject &body) {
+            if (path.startsWith("/api/v1/status")) {
+                auto state = statusObject(++seq, boot); state["state"] = "Paused"; state["executionId"] = "run";
+                HttpFixture::reply(socket, state);
+            } else if (path.endsWith("/sessions"))
+                HttpFixture::reply(socket, {{"apiVersion", 1}, {"bootId", boot}, {"sessionId", "session"}, {"sessionToken", "token"}, {"expiresInMs", 1000}});
+            else if (path.endsWith("/heartbeat"))
+                HttpFixture::reply(socket, {{"apiVersion", 1}, {"bootId", boot}, {"sessionId", "session"}, {"stateVersion", "1"}, {"motionPermit", "permit"}, {"permitValidForMs", 500}});
+            else if (path.endsWith("/health"))
+                HttpFixture::reply(socket, {{"apiVersion", 1}, {"bootId", boot}, {"ready", true}});
+            else if (path.startsWith("/api/v1/tasks/")) HttpFixture::reply(socket, record);
+            else if (path.endsWith("/control")) {
+                if (body["cmd"].toString() == "resume") ++resumes;
+                HttpFixture::reply(socket, {{"commandId", "resume"}}, 202);
+            } else if (path.startsWith("/api/v1/commands")) HttpFixture::reply(socket, {{"state", "applied"}});
+            else HttpFixture::reply(socket, {{"apiVersion", 1}, {"bootId", boot}, {"events", QJsonArray{}}});
+        };
+        TrackingClient client;
+        client.configure(server.url(), {}); client.start();
+        QTRY_VERIFY(client.fresh()); client.acquireSession(); QTRY_VERIFY(client.hasSession());
+        QSignalSpy reads(&client, &TrackingClient::taskReceived);
+        client.readTask("task", 1); QTRY_COMPARE(reads.count(), 1);
+        QVERIFY(client.preparedPlan().isEmpty());
+        QVERIFY(!client.control("resume"));
+        QVERIFY(!client.confirmReadTask(record, TrackingContext{}));
+        auto tampered = record; tampered["planHash"] = "fnv1a64:0000000000000000";
+        QVERIFY(!client.confirmReadTask(tampered, context));
+        QVERIFY(client.confirmReadTask(record, context));
+        QCOMPARE(client.preparedPlan(), plan);
+        QCOMPARE(resumes, 0);
+        QTRY_VERIFY(client.motionReady());
+        QVERIFY(client.control("resume")); QTRY_COMPARE(resumes, 1);
+        client.stop();
+        QVERIFY(!client.confirmReadTask(record, context));
+        client.start(); QTRY_VERIFY(client.fresh()); client.acquireSession(); QTRY_VERIFY(client.hasSession());
+        QVERIFY(client.preparedPlan().isEmpty());
+        QVERIFY(!client.confirmReadTask(record, context));
+        client.readTask("task", 1); QTRY_COMPARE(reads.count(), 2);
+        QVERIFY(client.confirmReadTask(record, context));
+        boot = "new-boot"; QTRY_COMPARE(client.snapshot().bootId, boot);
+        QVERIFY(!client.confirmReadTask(record, context));
+        client.stop();
+    }
+    void degradedFreshPoseRemainsUsable() {
+        HttpFixture server;
+        quint64 seq = 0;
+        bool publish = true;
+        server.handler = [&](auto *socket, const auto &, const auto &) {
+            auto object = poseObject(QString::number(publish ? ++seq : seq));
+            object["stateAgeMs"] = 220;
+            object["positionObservationAgeMs"] = 8000;
+            object["headingObservationAgeMs"] = 8000;
+            object["positionReliable"] = false;
+            object["headingReliable"] = false;
+            object["localizationMode"] = "degraded";
+            HttpFixture::reply(socket, object);
+        };
+        PoseClient client;
+        client.configure(server.url(), {});
+        client.start();
+        QTRY_VERIFY_WITH_TIMEOUT(client.fresh(), 500);
+        QCOMPARE(client.snapshot().mode, QString("degraded"));
+        publish = false;
+        QTest::qWait(420);
+        QVERIFY(!client.fresh());
+        client.stop();
+    }
     void manualPublishesToLegacySocketWithoutControlFeedback() {
         QWebSocketServer server(QStringLiteral("legacy"), QWebSocketServer::NonSecureMode);
         QVERIFY(server.listen(QHostAddress::LocalHost));
@@ -286,14 +363,14 @@ class IpcClientsTest : public QObject {
         QSignalSpy changes(&client, &PoseClient::frameChanged);
         client.start();
         QTRY_VERIFY(client.fresh());
-        QTest::qWait(220);
+        QTest::qWait(420);
         QVERIFY(!client.fresh());
         response = poseObject("2");
         QTRY_VERIFY(client.fresh());
         response = poseObject("3");
         response["positionObservationAgeMs"] = 900;
         QTRY_COMPARE(client.snapshot().seq, quint64(3));
-        QVERIFY(!client.fresh());
+        QVERIFY(client.fresh());
         response = poseObject("1", "pose-b");
         QTRY_COMPARE(changes.count(), 1);
         QTRY_VERIFY(client.fresh());

@@ -170,6 +170,7 @@ Map::Map(Ui::MainWindow *ui, QObject *parent)
     connect(&ConfigManager::instance(), &ConfigManager::configChanged, this, &Map::applyRuntimeConfig);
     m_vehiclePoseRefreshClock.start();
     handleModuleActivated();
+    refreshPlanningRevision();
 }
 
 void Map::applyRuntimeConfig()
@@ -233,7 +234,7 @@ void Map::updateVehiclePose(double x, double y, double theta)
     const double deltaTheta = std::abs(normalizeAngle(normalizedTheta - m_lastRenderedVehiclePoseTheta));
     const bool reachedRefreshInterval =
         !m_vehiclePoseRefreshClock.isValid() || m_vehiclePoseRefreshClock.elapsed() >= kVehiclePoseRefreshMinIntervalMs;
-    const bool shouldRefreshNow = !hasPreviousRender
+    const bool shouldRefreshNow = !hasPreviousRender || !m_hasVehiclePose
                                   || deltaDistance >= kVehiclePoseMinDistanceDeltaMeters
                                   || deltaTheta >= kVehiclePoseMinAngleDeltaRad
                                   || reachedRefreshInterval;
@@ -242,8 +243,10 @@ void Map::updateVehiclePose(double x, double y, double theta)
     m_vehiclePoseY = y;
     m_vehiclePoseTheta = normalizedTheta;
     m_hasVehiclePose = true;
+    // Position/heading must follow every accepted pose. Keep only the point
+    // lookup throttled: moving one graphics item is cheap and Qt coalesces paint.
+    refreshVehicleGraphics();
     if (shouldRefreshNow) {
-        refreshVehicleGraphics();
         updateVehiclePointBinding();
         m_lastRenderedVehiclePoseX = m_vehiclePoseX;
         m_lastRenderedVehiclePoseY = m_vehiclePoseY;
@@ -430,7 +433,7 @@ case QEvent::MouseMove: {
                 }
                 const double currentAngle = angleFromMapVector(dx, dy);
                 const double delta = normalizeAngle(currentAngle - m_rotationReferenceAngle);
-                const double newTheta = normalizeAngle(m_rotationStartTheta - delta);
+                const double newTheta = normalizeAngle(m_rotationStartTheta + delta);
                 if (!qFuzzyCompare(point->theta + 1.0, newTheta + 1.0)) {
                     point->theta = newTheta;
                     updatePointGraphics(*point);
@@ -1432,10 +1435,10 @@ void Map::initializeUi()
 
     m_batchDirectionCombo = new QComboBox(batchBox);
     configureComboField(m_batchDirectionCombo);
-    m_batchDirectionCombo->addItem(tr("+X 方向 (向上)"));
-    m_batchDirectionCombo->addItem(tr("-X 方向 (向下)"));
-    m_batchDirectionCombo->addItem(tr("+Y 方向 (向右)"));
-    m_batchDirectionCombo->addItem(tr("-Y 方向 (向左)"));
+    m_batchDirectionCombo->addItem(tr("+X 方向 (默认视图向下)"));
+    m_batchDirectionCombo->addItem(tr("-X 方向 (默认视图向上)"));
+    m_batchDirectionCombo->addItem(tr("+Y 方向 (默认视图向右)"));
+    m_batchDirectionCombo->addItem(tr("-Y 方向 (默认视图向左)"));
     batchLayout->addRow(tr("方向"), m_batchDirectionCombo);
 
     m_batchCountSpin = new QSpinBox(batchBox);
@@ -2870,7 +2873,9 @@ void Map::refreshVehicleGraphics()
         return;
     }
 
-    m_vehicleItem->setVisible(m_hasVehiclePose);
+    m_vehicleItem->setVisible(m_hasVehiclePose || m_hasRenderedVehiclePose);
+    m_vehicleItem->setOpacity(m_hasVehiclePose ? 1.0 : 0.35);
+    m_vehicleItem->setToolTip(m_hasVehiclePose ? tr("当前有效位置") : tr("最后已知位置，当前定位不可用"));
     if (!m_hasVehiclePose) {
         return;
     }
@@ -3308,7 +3313,8 @@ double Map::normalizedRotationDeg(double rotationDeg) const
 
 double Map::mapHeadingToSceneAngle(double headingRad) const
 {
-    return normalizeAngle(mapToStandardAngle(headingRad));
+    // Qt scene Y points down; ENU/standard Y points north (up).
+    return normalizeAngle(-mapToStandardAngle(headingRad));
 }
 
 Map::MapPath *Map::pathById(int id)
@@ -3566,6 +3572,8 @@ void Map::refreshPlanningRevision()
         return out;
     };
     auto content = stripBindings(QJsonDocument::fromJson(buildComparableMapState()).object()).toObject();
+    for (const auto *key : {"rotationDeg", "gridWidth", "gridHeight", "cellSizeMeters"})
+        content.remove(key);
     QJsonArray route;
     for (const auto& step : m_routeQueue) route.append(QJsonArray{step.fromId, step.toId});
     content["routeQueue"] = route;
@@ -3823,6 +3831,8 @@ bool Map::deserializeMap(const QJsonObject &object)
     updateRouteControlState();
     refreshRowWorkUi();
 
+    m_planningFingerprint.clear();
+    refreshPlanningRevision();
     return true;
 }
 
@@ -4057,7 +4067,8 @@ void Map::refreshRowWorkGraphics()
 
     const QPointF arrowPoint = RowWorkGeometry::pointAtProgress(m_rowWorkPlan, m_rowWorkPlan.lineLength() * 0.5);
     const QPointF arrowScene = mapToScene(arrowPoint);
-    const double headingDeg = qRadiansToDegrees(std::atan2(end.y() - start.y(), end.x() - start.x()));
+    const QPointF sceneDirection = sceneEnd - sceneStart;
+    const double headingDeg = qRadiansToDegrees(std::atan2(sceneDirection.y(), sceneDirection.x()));
     m_rowWorkDirectionArrowItem = m_scene->addPath(makeDirectionArrowPath(), QPen(QColor(40, 120, 210), 2.0));
     m_rowWorkDirectionArrowItem->setPos(arrowScene);
     m_rowWorkDirectionArrowItem->setRotation(headingDeg);
@@ -5116,32 +5127,101 @@ void Map::setControlCoordinator(ControlSessionCoordinator* c)
     if (m_coordinator || !c) return;
     m_coordinator = c; m_tracking = c->tracking(); m_poseClient = c->pose(); c->setBinding(m_binding);
     connect(c, &ControlSessionCoordinator::message, this, [this](const QString& text) {
-        setRowWorkStatusText(text); setRouteStatusText(text);
+        setRowWorkStatusText(text); setRouteStatusText(text); setRowMissionStatusText(text);
     });
     connect(m_tracking, &TrackingClient::statusChanged, this, &Map::applyTrackingStatus);
     connect(m_tracking, &TrackingClient::availabilityChanged, this, [this](bool online, const QString& reason) {
         if (!online && m_trackingStatusLabel) m_trackingStatusLabel->setText(reason);
         updateRouteControlState(); refreshRowWorkPlanSummary(); refreshRowWorkControlState();
     });
-    connect(m_tracking, &TrackingClient::taskReceived, this, [this](const QJsonObject& task) {
-        QMessageBox::information(m_mapPage, tr("工控机任务"), tr("任务 %1 版本 %2 · %3\n步骤数 %4\n计划校验值 %5")
-            .arg(task["taskId"].toString()).arg(task["revision"].toInt()).arg(task["state"].toString())
-            .arg(task["preparedStepCount"].toInt()).arg(task["planHash"].toString()));
-    });
+    connect(m_tracking, &TrackingClient::taskReceived, this, &Map::reviewRemoteTask);
     connect(m_poseClient, &PoseClient::poseChanged, this, [this](const ControlPoseSnapshot& pose) {
         if (!m_binding.isUsable() || pose.originRevision != m_binding.context.originRevision ||
-            pose.calibrationId != m_binding.context.calibrationId) { m_hasVehiclePose = false; return; }
+            pose.calibrationId != m_binding.context.calibrationId) {
+            m_hasVehiclePose = m_hasRenderedVehiclePose = false; refreshVehicleGraphics(); return;
+        }
+        if (!pose.validForControl) { m_hasVehiclePose = false; refreshVehicleGraphics(); return; }
         MapFrameAdapter adapter(m_binding); const auto point = adapter.fromEnu(pose.position);
         updateVehiclePose(point.x(), point.y(), adapter.yawFromEnu(pose.yaw));
     });
     connect(m_poseClient, &PoseClient::availabilityChanged, this, [this](bool ready, const QString&) {
-        if (!ready) m_hasVehiclePose = false;
+        if (!ready) { m_hasVehiclePose = false; refreshVehicleGraphics(); }
         refreshRowWorkPlanSummary();
     });
     connect(m_poseClient, &PoseClient::captureFinished, this, &Map::applyCapture);
     connect(m_poseClient, &PoseClient::errorOccurred, this, [this](const QString& reason) {
         m_rowWorkPendingCaptureTarget = RowWorkPendingCaptureTarget::None; setRowWorkStatusText(reason, true);
     });
+}
+void Map::reviewRemoteTask(const QJsonObject &record)
+{
+    refreshPlanningRevision();
+    const auto bindingAtRead = m_binding.toJson();
+    const auto plan = record["plan"].toObject();
+    const bool matching = m_binding.isUsable() && plan["context"].toObject() == m_binding.context.toJson();
+    const bool clean = !hasUnsavedMapChanges();
+    QDialog dialog(m_mapPage);
+    dialog.setObjectName("remoteTaskReviewDialog");
+    dialog.setWindowTitle(tr("核对工控机实际执行计划"));
+    dialog.resize(760, 560);
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *summary = new QLabel(tr("任务 %1 · 版本 %2 · %3 个步骤\n计划身份 %4\n下方显示从工控机回读的实际计划。接续使用该计划，不使用本地新编辑的路线。")
+        .arg(record["taskId"].toString()).arg(record["revision"].toInt())
+        .arg(plan["steps"].toArray().size()).arg(record["planHash"].toString()), &dialog);
+    summary->setWordWrap(true); layout->addWidget(summary);
+    auto *splitter = new QSplitter(&dialog);
+    auto *view = new QGraphicsView(splitter);
+    view->setObjectName("remoteTaskPreview");
+    auto *scene = new QGraphicsScene(view); view->setScene(scene);
+    auto *steps = new QListWidget(splitter); steps->setObjectName("remoteTaskSteps");
+    int index = 0;
+    for (const auto &value : plan["steps"].toArray()) {
+        const auto step = value.toObject();
+        const auto type = step["type"].toString();
+        QString detail;
+        if (type == "follow_path") {
+            const auto points = step["points"].toArray();
+            detail = tr("路径，%1 点，限速 %2 m/s").arg(points.size()).arg(step["speedLimit"].toDouble());
+            if (matching) {
+                MapFrameAdapter adapter(m_binding); QPainterPath path; bool first = true;
+                for (const auto &point : points) {
+                    const auto xy = point.toArray();
+                    if (xy.size() != 2 || !xy[0].isDouble() || !xy[1].isDouble()) continue;
+                    const auto position = mapToScene(adapter.fromEnu({xy[0].toDouble(), xy[1].toDouble()}));
+                    if (first) { path.moveTo(position); first = false; }
+                    else path.lineTo(position);
+                }
+                scene->addPath(path, QPen(QColor(0, 120, 90), 2));
+                auto *label = scene->addText(QString::number(index + 1)); label->setPos(path.pointAtPercent(0));
+            }
+        } else if (type == "turn") detail = tr("原地转向，ENU 航向 %1°").arg(qRadiansToDegrees(step["targetYaw"].toDouble()), 0, 'f', 1);
+        else if (type == "wait") {
+            const auto completion = step["completion"].toObject();
+            detail = completion["type"].toString() == "external_ack" ? tr("等待外部确认：%1").arg(completion["eventType"].toString())
+                : tr("停留 %1 ms").arg(completion["durationMs"].toInt());
+        } else detail = type;
+        steps->addItem(tr("%1. %2 · %3").arg(++index).arg(step["stepId"].toString(), detail));
+    }
+    layout->addWidget(splitter, 1);
+    auto *notice = new QLabel(!matching ? tr("当前地图坐标或版本不一致，不能接续。请加载对应地图并重新回读。")
+        : !clean ? tr("本地地图有未保存修改，不能接续。请先保存或重新加载对应地图，然后重新回读。")
+        : tr("请核对回读路径、步骤与当前地图、现场一致；确认不会触发运动。"), &dialog);
+    notice->setWordWrap(true); layout->addWidget(notice);
+    auto *verified = new QCheckBox(tr("已核对工控机实际计划与当前地图及现场一致"), &dialog);
+    verified->setObjectName("remoteTaskVerified"); verified->setEnabled(matching && clean); layout->addWidget(verified);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    buttons->button(QDialogButtonBox::Ok)->setText(tr("确认接续计划"));
+    buttons->button(QDialogButtonBox::Ok)->setEnabled(false);
+    connect(verified, &QCheckBox::toggled, buttons->button(QDialogButtonBox::Ok), &QPushButton::setEnabled);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject); layout->addWidget(buttons);
+    QTimer::singleShot(0, &dialog, [view, scene] { view->fitInView(scene->itemsBoundingRect().adjusted(-10, -10, 10, 10), Qt::KeepAspectRatio); });
+    if (dialog.exec() != QDialog::Accepted || !verified->isChecked()) return;
+    refreshPlanningRevision();
+    if (hasUnsavedMapChanges() || bindingAtRead != m_binding.toJson() || !m_coordinator) {
+        setRowWorkStatusText(tr("地图在核对期间已改变，请重新读取任务"), true); return;
+    }
+    m_coordinator->confirmReadTask(record);
 }
 void Map::applyTrackingStatus(const TrackingSnapshot& status)
 {
@@ -5183,8 +5263,8 @@ void Map::uploadMissionTask()
     if (!m_coordinator || !canEditRowMissionPlan()) return;
     auto options = taskOptions(); options.repeatUntilStopped = m_rowMissionPlan.loopEnabled;
     const auto task = TaskCompiler::mission(m_rowMissionPlan, m_binding, options);
-    if (!task.ok()) { setRowWorkStatusText(task.error, true); return; }
-    if (m_coordinator->upload(task.plan)) setRowWorkStatusText(tr("多垄完整任务已提交校验，Ready 后请明确启动"));
+    if (!task.ok()) { setRowMissionStatusText(task.error, true); return; }
+    if (m_coordinator->upload(task.plan)) setRowMissionStatusText(tr("多垄完整任务已提交校验，Ready 后请明确启动"));
 }
 void Map::confirmFrameBinding()
 {

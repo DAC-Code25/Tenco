@@ -24,6 +24,9 @@ async def main(args):
         config = (source / "tracking.yaml").read_text(encoding="utf-8")
         config = config.replace("../../../build/simulation-store", str(root / "store").replace("\\", "/"))
         (root / "tracking.yaml").write_text(config, encoding="utf-8")
+        qt_config = json.loads((Path(__file__).resolve().parents[1] / "config.json").read_text(encoding="utf-8"))
+        qt_config["taskDefaults"].update(safetyProfileId="open", rotationZoneId="open")
+        (root / "qt-config.json").write_text(json.dumps(qt_config), encoding="utf-8")
         plant = ipc.Plant(19130)
         photos = []
         async def camera_request(reader, writer):
@@ -55,7 +58,8 @@ async def main(args):
                         except (OSError, asyncio.TimeoutError):
                             await asyncio.sleep(.05)
                     run_plant = asyncio.create_task(plant.run())
-                    probe = await asyncio.create_subprocess_exec(str(args.client), creationflags=flags,
+                    probe = await asyncio.create_subprocess_exec(str(args.client), str(root / "qt-config.json"), creationflags=flags,
+                        env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
                         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
                     output, _ = await asyncio.wait_for(probe.communicate(), 50)
                     print(output.decode("utf-8", errors="replace"), flush=True)
@@ -67,6 +71,8 @@ async def main(args):
                     assert completed["state"] == "Completed", completed
                     assert abs(plant.x - 1.2) <= .03 and abs(plant.y) <= .03
                     print("PASS autonomous completion after Qt process exit", flush=True)
+                    health = await ipc.http(19130, "/health")
+                    print("Desktop loopback control timing: " + json.dumps(health.get("diagnostics", {})), flush=True)
                     assert not plant.invalid_packets, plant.invalid_packets
                     assert len(photos) == 1, f"photo execution count: {len(photos)}"
                 finally:

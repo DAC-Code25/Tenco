@@ -1,10 +1,13 @@
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Test Network Sql)
 
 qt_add_executable(tenco_ipc_client_probe ipc_client_probe.cpp ../controlsessioncoordinator.h ../controlsessioncoordinator.cpp
-    ../externaleventcoordinator.h ../externaleventcoordinator.cpp)
+    ../externaleventcoordinator.h ../externaleventcoordinator.cpp
+    ../map.h ../map.cpp ../mapgraphicsview.h ../mapgraphicsview.cpp
+    ../battery.h ../battery.cpp ../imageswitch.h ../imageswitch.cpp ../mainwindow.ui)
+set_property(TARGET tenco_ipc_client_probe PROPERTY AUTOUIC_SEARCH_PATHS "${CMAKE_CURRENT_SOURCE_DIR}/..")
 set_target_properties(tenco_ipc_client_probe PROPERTIES WIN32_EXECUTABLE FALSE)
 target_include_directories(tenco_ipc_client_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
-target_link_libraries(tenco_ipc_client_probe PRIVATE tenco_network tenco_motion tenco_map_model)
+target_link_libraries(tenco_ipc_client_probe PRIVATE Qt6::Widgets tenco_network tenco_motion tenco_map_model tenco_logging tenco_config)
 
 function(tenco_add_test target_name)
     qt_add_executable(${target_name}
@@ -118,3 +121,12 @@ target_link_libraries(tenco_test_map_route_integration PRIVATE
     tenco_map_model
     tenco_network
 )
+
+tenco_add_test(tenco_test_pose_map_chain
+    test_pose_map_chain.cpp
+    ../controlsessioncoordinator.h ../controlsessioncoordinator.cpp
+    ../map.h ../map.cpp ../mapgraphicsview.h ../mapgraphicsview.cpp
+    ../battery.h ../battery.cpp ../imageswitch.h ../imageswitch.cpp ../mainwindow.ui)
+set_property(TARGET tenco_test_pose_map_chain PROPERTY AUTOUIC_SEARCH_PATHS "${CMAKE_CURRENT_SOURCE_DIR}/..")
+target_link_libraries(tenco_test_pose_map_chain PRIVATE Qt6::Widgets Qt6::Network
+    tenco_config tenco_logging tenco_motion tenco_map_model tenco_network)

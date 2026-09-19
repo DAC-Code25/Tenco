@@ -21,13 +21,14 @@ class TrackingClient : public QObject {
     QJsonObject configuration() const { return m_configuration; }
     QJsonObject health() const { return m_health; }
     QJsonObject preparedPlan() const { return m_preparedPlan; }
-    void invalidatePreparedPlan() { m_preparedPlan = {}; }
+    void invalidatePreparedPlan() { m_preparedPlan = {}; m_readTask = {}; }
     void acquireSession();
     bool upload(const QJsonObject &plan);
     bool control(const QString &operation);
     bool acknowledge(const QJsonObject &event, bool success);
     bool updateOrigin(const QJsonObject &origin, const QString &expectedRevision);
     void readTask(const QString &taskId, int revision);
+    bool confirmReadTask(const QJsonObject &record, const TrackingContext &context);
   signals:
     void statusChanged(const TrackingSnapshot &status);
     void availabilityChanged(bool available, const QString &reason);
@@ -61,7 +62,8 @@ class TrackingClient : public QObject {
     QElapsedTimer m_clock, m_statusAge;
     QHash<QString, Pending> m_pending;
     TrackingSnapshot m_status;
-    QJsonObject m_configuration, m_health, m_preparedPlan;
+    QJsonObject m_configuration, m_health, m_preparedPlan, m_readTask;
+    QString m_readTaskBoot, m_readTaskExecution;
     QString m_clientId, m_sessionId, m_sessionToken, m_sessionBoot, m_permit;
     quint64 m_permitVersion = 0, m_eventCursor = 0;
     qint64 m_sessionDeadline = 0, m_permitDeadline = 0;

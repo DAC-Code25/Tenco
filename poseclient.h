@@ -13,6 +13,7 @@ class PoseClient : public QObject {
     void stop();
     bool isConfigured() const { return m_http.configured(); }
     bool fresh() const;
+    void setStateTimeoutMs(int timeoutMs);
     ControlPoseSnapshot snapshot() const;
     bool capture(const MapFrameBinding &binding, int durationMs = 1000);
   signals:
@@ -33,6 +34,7 @@ class PoseClient : public QObject {
     QString m_captureId, m_captureBoot;
     bool m_running = false, m_online = false;
     int m_failures = 0;
+    int m_stateTimeoutMs = 350;
     qint64 m_nextPoll = 0;
     QElapsedTimer m_clock;
 };

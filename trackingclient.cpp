@@ -1,5 +1,6 @@
 #include "trackingclient.h"
 #include <QJsonArray>
+#include <QRegularExpression>
 
 TrackingClient::TrackingClient(QObject *parent) : QObject(parent), m_clientId(TrackingJson::newId()) {
     m_clock.start();
@@ -31,7 +32,7 @@ void TrackingClient::stop() {
     m_statusAge.invalidate();
     m_configuration = {};
     m_health = {};
-    m_preparedPlan = {};
+    invalidatePreparedPlan();
     m_eventCursor = 0;
     m_nextMetadata = m_nextStatus = m_nextEvents = 0;
     m_online = false;
@@ -151,7 +152,7 @@ void TrackingClient::pollStatus() {
         const bool reboot = !m_status.bootId.isEmpty() && m_status.bootId != status.bootId;
         if (reboot) {
             loseSession();
-            m_preparedPlan = {};
+            invalidatePreparedPlan();
             m_configuration = {};
             m_health = {};
             m_eventCursor = 0;
@@ -344,12 +345,39 @@ bool TrackingClient::updateOrigin(const QJsonObject &origin, const QString &revi
                           });
 }
 void TrackingClient::readTask(const QString &id, int revision) {
+    m_readTask = {};
+    if (!fresh() || id != m_status.taskId || revision != m_status.taskRevision)
+        return;
+    const auto boot = m_status.bootId;
+    const auto execution = m_status.executionId;
     QUrlQuery query;
     query.addQueryItem("revision", QString::number(revision));
-    m_http.request("task", "GET", "/tasks/" + id, {}, query, {}, [this](const JsonHttpResult &r) {
-        if (r.ok())
-            emit taskReceived(r.object);
-        else
-            emit errorOccurred(r.error);
+    m_http.request("task", "GET", "/tasks/" + id, {}, query, {}, [this, id, revision, boot, execution](const JsonHttpResult &r) {
+        if (!fresh() || boot != m_status.bootId || id != m_status.taskId ||
+            revision != m_status.taskRevision || execution != m_status.executionId)
+            return;
+        const auto plan = r.object["plan"].toObject();
+        static const QRegularExpression hashPattern("^fnv1a64:[0-9a-f]{16}$");
+        if (r.ok() && r.object["apiVersion"].toInt() == 1 &&
+            r.object["taskId"].toString() == id && r.object["revision"].toInt() == revision &&
+            plan["taskId"].toString() == id && plan["revision"].toInt() == revision &&
+            TrackingContext::fromJson(plan["context"].toObject()).isComplete() &&
+            !plan["steps"].toArray().isEmpty() && hashPattern.match(r.object["planHash"].toString()).hasMatch()) {
+            m_readTask = r.object;
+            m_readTaskBoot = boot;
+            m_readTaskExecution = execution;
+            emit taskReceived(m_readTask);
+        } else
+            emit errorOccurred(r.error.isEmpty() ? "invalid_task_readback" : r.error);
     });
+}
+bool TrackingClient::confirmReadTask(const QJsonObject &record, const TrackingContext &context) {
+    const auto plan = record["plan"].toObject();
+    if (record.isEmpty() || record != m_readTask || !fresh() || !hasSession() || busy() ||
+        m_readTaskBoot != m_status.bootId || m_readTaskExecution != m_status.executionId ||
+        record["taskId"].toString() != m_status.taskId || record["revision"].toInt() != m_status.taskRevision ||
+        !context.isComplete() || plan["context"].toObject() != context.toJson())
+        return false;
+    m_preparedPlan = plan;
+    return true;
 }
