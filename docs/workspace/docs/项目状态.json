@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-10-13T22:18:24+08:00",
+  "updated_at": "2026-10-13T22:33:42+08:00",
   "session_id": "01a13477-9b6f-7f43-8a41-5e5b77886c15",
   "timezone": "Asia/Shanghai",
   "repositories": {
     "src": {
-      "branch": "docs/oak-native-capture-v1",
+      "branch": "docs/change-location-summary-v1",
       "code_baseline": "55e91373f1e04696b64e30e7578d64c09c0cbc00",
-      "checkpoint_head": "2848006d61c1894ab36bac1f06365ddc8c70d447",
+      "checkpoint_head": "7cce2345ef328fa3d982117684694dd878d96c84",
       "remote": "origin",
       "default_branch": "main",
       "default_baseline": "c4511358d0dde17643209844ba074803bb0c0d56",
@@ -17,9 +17,9 @@
       "functional_untracked_files": []
     },
     "Tenco": {
-      "branch": "feat/oak-native-capture-v1",
+      "branch": "docs/change-location-summary-v1",
       "code_baseline": "af6e73032ac6b15099692e150c22579fd663b696",
-      "checkpoint_head": "f81fb9ad1954044cdea00d0559b852c1bf324305",
+      "checkpoint_head": "47d6c7db9f77f3b4847304fe32858b4b7573197c",
       "remote": "Tenco",
       "default_branch": "master",
       "default_baseline": "8c5327a63295b0816e670ee1a9ea0f71197f3725",
