@@ -50,3 +50,11 @@ sudo bash /home/nvidia/tenco-oak-probe-recovery-v1/scripts/deploy_verified_servi
 P-009：实现和隔离验证已完成；在线部署、备份回退演练、真实 USB/设备重连以及掉线具体诱因未验收。P-004 8～24 小时混合负载仍保留。当前工作停止于准备可审核候选，继续先核对候选哈希/在线录像状态和现场切换确认。
 
 两仓方案/记录、统一 AGENTS/总览/状态/变更/问题/会话与镜像随交付更新；提交/推送及草稿 PR 以真实结果补记。功能基线需区分 Qt/ROS 原有行为和新增独立服务源码。新自动 CI 不冒充 Jetson 实测或真实设备验收。
+
+## 已核验的交付结果
+
+实现提交 Tenco `3abc02ce16528976a3d6dc17a893d808254655b8`（新增服务功能基线）和 src `5e3a713e69f885f53284da2eef61e82b2ec21c50`（仅文档）已推送。[Tenco #20](https://github.com/DAC-Code25/Tenco/pull/20) 与 [src #6](https://github.com/DAC-Code25/sensor-fusion-ros2/pull/6) 已核验 OPEN Draft、base 为诊断分支、head 为对应任务分支。Tenco 使用 gh 创建/查询时发生 GitHub 443 连接超时；已通过 REST 先查同 head 无重复PR，再创建并核验成功，保留此次网络失败，不将成功说成从未失败。没有合并 PR。
+
+完整空间/两仓独立镜像、字段/本地链接、源码指纹及 diff --check 通过，源码/记录未包含登录凭据。目标机11份服务文件与本地逐个SHA256一致，`verified-candidate.json` 记录源码提交与候选哈希，两份中文开发文档已复制到隔离项目docs。随后补交交付元数据，最终文档提交从PR HEAD核对，不因自引用再修改源码版本清单。
+
+旧诊断 src #5/Tenco #19 的最终HEAD检查19:25全部成功，D-003关闭。本任务新自动CI D-004待核验，不预填成功；现有云端工作流覆盖Qt/ROS，独立服务测试证据来自本次Jetson实际运行。在线切换仍未执行，P-009保留，最后停在可审核候选与明确部署/回退命令。

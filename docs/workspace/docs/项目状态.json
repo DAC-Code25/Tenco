@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-10-13T19:30:46+08:00",
+  "updated_at": "2026-10-13T19:36:42+08:00",
   "session_id": "01a13477-9b6f-7f43-8a41-5e5b77886c15",
   "timezone": "Asia/Shanghai",
   "repositories": {
     "src": {
       "branch": "docs/oak-camera-recovery-v1",
       "code_baseline": "55e91373f1e04696b64e30e7578d64c09c0cbc00",
-      "checkpoint_head": "6e751101573d558ce8eace82f4ac007583e0abe4",
+      "checkpoint_head": "5e3a713e69f885f53284da2eef61e82b2ec21c50",
       "remote": "origin",
       "default_branch": "main",
       "default_baseline": "c4511358d0dde17643209844ba074803bb0c0d56",
@@ -18,26 +18,15 @@
     },
     "Tenco": {
       "branch": "fix/oak-camera-recovery-v1",
-      "code_baseline": "01924b00eef3d83cece847960272d119481f07fd",
-      "checkpoint_head": "01924b00eef3d83cece847960272d119481f07fd",
+      "code_baseline": "3abc02ce16528976a3d6dc17a893d808254655b8",
+      "checkpoint_head": "3abc02ce16528976a3d6dc17a893d808254655b8",
       "remote": "Tenco",
       "default_branch": "master",
       "default_baseline": "8c5327a63295b0816e670ee1a9ea0f71197f3725",
       "functional_fingerprint": "93a918d0bdf2924a4c6b9e78c50d316ad77fbfd35924cec413be839684696be1",
       "functional_file_count": 168,
       "functional_tracked_changes": [],
-      "functional_untracked_files": [
-        "services/oak-camera/CMakeLists.txt",
-        "services/oak-camera/include/oak_camera_device.h",
-        "services/oak-camera/include/oak_capture_source.h",
-        "services/oak-camera/scripts/deploy_verified_service.sh",
-        "services/oak-camera/src/depthai_capture_source.cpp",
-        "services/oak-camera/src/oak_camera_device.cpp",
-        "services/oak-camera/src/oak_camera_service_main.cpp",
-        "services/oak-camera/tests/fake_capture_source.cpp",
-        "services/oak-camera/tests/test_http.py",
-        "services/oak-camera/tests/test_recovery.cpp"
-      ]
+      "functional_untracked_files": []
     }
   },
   "scope": "本机源码与文档快照；非实车或另一克隆的实时状态",
