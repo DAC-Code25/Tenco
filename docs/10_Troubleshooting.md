@@ -63,6 +63,19 @@ curl.exe --noproxy '*' --connect-timeout 3 --max-time 8 --dump-header stream-hea
 
 `reconnectIntervalMs=2000` 是连接结束后的等待；视频首帧会重置重连计数，所以故障服务每次给缓存帧时可一直显示 attempt 1。更改重连间隔不能恢复相机采集。恢复须验证相机状态正常、帧持续更新，详见[相机断流排查记录](develop/相机断流排查开发记录.md)（DIAG-20261013-01 / P-009）。
 
+同日 SSH 续查确认：15:29:22 内核记录 USB 运行连接断开/-19；服务采集异常处理退出线程却保留缓存，没有重建采集，HTTP 主进程仍活着使 `Restart=on-failure` 不触发。新流收到缓存后等下一帧 2 秒，再因相机断开结束响应。目标机源码为 `/home/nvidia/tenco-oak-probe`，实际服务名 `tenco-oak-camera.service`。
+
+只读检查启动与日志：
+
+```bash
+systemctl cat tenco-oak-camera.service
+systemctl status tenco-oak-camera.service --no-pager
+journalctl -k -b -o short-monotonic --no-pager
+tail -n 100 /opt/tenco/logs/oak_camera_service.err
+```
+
+恢复时可重启这个相机服务，再验证状态和持续新帧；本次排查未执行重启。日志按修改日期/本次事件筛选，不能把累积文件中的历史 Device crashed/端口占用当作本次证据。长期修复应加入失败后采集重建、缓存新鲜度和错误日志/健康监督；仅修改重连间隔或 `Restart=always` 无法恢复一个主进程活着、采集线程已结束的服务。
+
 ---
 
 ## 5. QDoubleSpinBox 步进按钮错位/样式异常（Windows 11 + QSS）
