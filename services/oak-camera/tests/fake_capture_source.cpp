@@ -18,15 +18,19 @@ public:
     void open(const OakCameraConfig&) override {
         if(mode() == "missing") throw std::runtime_error("test device unavailable");
     }
-    cv::Mat read(std::chrono::milliseconds timeout) override {
+    OakCaptureFrame read(std::chrono::milliseconds timeout) override {
         std::this_thread::sleep_for(std::min(timeout, std::chrono::milliseconds(20)));
         const auto current = mode();
         if(current == "fault" || current == "missing") throw std::runtime_error("test X_LINK_ERROR");
         if(current == "stall") return {};
         cv::Mat image(32, 48, CV_8UC3);
         image.setTo(cv::Scalar(sequence_++ % 255, 80, 120));
-        return image;
+        if(current == "native-stall") return {image, nullptr, {}};
+        cv::Mat yuv;
+        cv::cvtColor(cv::Mat(64, 96, CV_8UC3, cv::Scalar(sequence_ % 255, 80, 120)), yuv, cv::COLOR_BGR2YUV_I420);
+        return {image, std::make_shared<const std::vector<std::uint8_t>>(yuv.data, yuv.data + yuv.total()), std::chrono::steady_clock::now()};
     }
+    OakCaptureInfo info() const override { return {"test-native", 96, 64}; }
     std::string deviceId() const override { return "test-device"; }
 private:
     int sequence_ = 0;

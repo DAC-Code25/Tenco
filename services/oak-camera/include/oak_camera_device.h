@@ -1,6 +1,7 @@
 #pragma once
 
 #include "oak_capture_source.h"
+#include "oak_native_recorder.h"
 #include <opencv2/opencv.hpp>
 
 #include <atomic>
@@ -21,13 +22,15 @@ struct OakCameraConfig {
     int previewHeight = 540;
     float previewFps = 15.0f;
     int jpegQuality = 70;
+    int captureJpegQuality = 90;
+    int recordingCrf = 23;
     bool lowLatencyProfile = true;
     int frameFreshnessMs = 1000;
     int noFrameTimeoutMs = 5000;
     int reconnectIntervalMs = 1000;
     int reconnectMaxIntervalMs = 10000;
-    std::filesystem::path snapshotDir = "/opt/tenco/media/snapshots";
-    std::filesystem::path recordingDir = "/opt/tenco/media/recordings";
+    std::filesystem::path snapshotDir = "Capture";
+    std::filesystem::path recordingDir = "Capture";
     std::string mjpegBoundary = "tenco-oak-boundary";
 };
 
@@ -50,6 +53,18 @@ struct OakStatus {
     std::uint64_t reconnectCount = 0;
     std::uint64_t frameId = 0;
     std::int64_t lastFrameAgeMs = -1;
+    std::string sensorName;
+    int nativeWidth = 0;
+    int nativeHeight = 0;
+    int captureJpegQuality = 0;
+    int recordingCrf = 0;
+    std::string recordingCodec = "h264";
+    std::string recordingContainer = "mp4";
+    std::int64_t lastNativeFrameAgeMs = -1;
+    std::uint64_t nativeFrameId = 0;
+    std::uint64_t recordingFrames = 0;
+    std::uint64_t recordingDroppedFrames = 0;
+    std::string lastRecordingError;
 };
 
 class OakCameraDevice {
@@ -77,6 +92,7 @@ class OakCameraDevice {
     std::vector<std::uint8_t> encodeJpeg(const cv::Mat& frame) const;
     OakStatus currentStatusLocked() const;
     bool hasFreshFrameLocked() const;
+    bool hasFreshNativeFrameLocked() const;
     void clearFramesLocked();
 
     OakCameraConfig config_;
@@ -101,9 +117,12 @@ class OakCameraDevice {
     std::string lastCaptureError_;
     std::chrono::steady_clock::time_point lastFrameTime_{};
 
-    cv::Mat latestFrame_;
     std::vector<std::uint8_t> latestJpeg_;
-    cv::VideoWriter writer_;
+    std::shared_ptr<const std::vector<std::uint8_t>> latestNativeYuv_;
+    std::chrono::steady_clock::time_point lastNativeFrameTime_{};
+    std::uint64_t nativeFrameId_ = 0;
+    OakCaptureInfo captureInfo_;
+    OakNativeRecorder writer_;
 };
 
 std::string oakStatusToJson(const OakStatus& status);

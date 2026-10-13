@@ -194,6 +194,10 @@ OakCameraConfig parseConfig(int argc, char** argv) {
             config.previewFps = real(arg);
         } else if(arg == "--jpeg-quality") {
             config.jpegQuality = integer(arg);
+        } else if(arg == "--capture-jpeg-quality") {
+            config.captureJpegQuality = integer(arg);
+        } else if(arg == "--recording-crf") {
+            config.recordingCrf = integer(arg);
         } else if(arg == "--frame-freshness-ms") {
             config.frameFreshnessMs = integer(arg);
         } else if(arg == "--no-frame-timeout-ms") {
@@ -205,7 +209,7 @@ OakCameraConfig parseConfig(int argc, char** argv) {
         } else if(arg == "--disable-low-latency-profile") {
             config.lowLatencyProfile = false;
         } else if(arg == "--help" || arg == "-h") {
-            std::cout << "Usage: oak_camera_service [--bind ADDR] [--port PORT] [--snapshot-dir DIR] [--recording-dir DIR] [--width W] [--height H] [--fps FPS] [--jpeg-quality N] [--disable-low-latency-profile] [--frame-freshness-ms N] [--no-frame-timeout-ms N] [--reconnect-interval-ms N] [--reconnect-max-interval-ms N]\n";
+            std::cout << "Usage: oak_camera_service [--bind ADDR] [--port PORT] [--snapshot-dir DIR] [--recording-dir DIR] [--width W] [--height H] [--fps FPS] [--jpeg-quality N] [--capture-jpeg-quality N] [--recording-crf N] [--disable-low-latency-profile] [--frame-freshness-ms N] [--no-frame-timeout-ms N] [--reconnect-interval-ms N] [--reconnect-max-interval-ms N]\n";
             std::exit(0);
         } else {
             throw std::runtime_error("Unknown argument: " + arg);

@@ -29,12 +29,15 @@ public:
         ++control.opens;
         if(control.mode == 3) throw std::runtime_error("missing test device");
     }
-    cv::Mat read(std::chrono::milliseconds) override {
+    OakCaptureFrame read(std::chrono::milliseconds) override {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
         if(control.mode == 1 || control.mode == 3) throw std::runtime_error("test X_LINK_ERROR");
         if(control.mode == 2) return {};
-        return cv::Mat(32, 48, CV_8UC3, cv::Scalar(0, 150, 0)).clone();
+        cv::Mat yuv;
+        cv::cvtColor(cv::Mat(64, 96, CV_8UC3, cv::Scalar(0, 150, 0)), yuv, cv::COLOR_BGR2YUV_I420);
+        return {cv::Mat(32, 48, CV_8UC3, cv::Scalar(0, 150, 0)).clone(), std::make_shared<const std::vector<std::uint8_t>>(yuv.data, yuv.data + yuv.total()), std::chrono::steady_clock::now()};
     }
+    OakCaptureInfo info() const override { return {"test-native", 96, 64}; }
     std::string deviceId() const override { return "controlled-test"; }
     Control& control;
 };

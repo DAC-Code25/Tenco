@@ -87,14 +87,38 @@ with tempfile.TemporaryDirectory(prefix="oak-http-test-") as directory:
                  "service did not recover after fault")
         code, photo = request("/camera/photo", "POST")
         assert code == 200 and Path(photo["path"]).is_file()
+        code, photo2 = request("/camera/photo", "POST")
+        assert code == 200 and photo2["path"] != photo["path"]
+        info = json.loads(subprocess.check_output(["ffprobe", "-v", "error", "-show_streams", "-of", "json", photo["path"]]))["streams"][0]
+        assert (info["width"], info["height"]) == (96, 64), "photo used preview dimensions"
+        code, recording = request("/camera/record/start", "POST")
+        assert code == 200 and recording["path"].endswith(".mp4")
+        time.sleep(0.3)
+        code, stopped = request("/camera/record/stop", "POST")
+        assert code == 200 and stopped["recordingFrames"] > 0 and not stopped["lastRecordingError"]
+        media = json.loads(subprocess.check_output(["ffprobe", "-v", "error", "-show_streams", "-of", "json", stopped["path"]]))["streams"][0]
+        assert media["codec_name"] == "h264" and (media["width"], media["height"]) == (96, 64)
+        subprocess.run(["ffmpeg", "-v", "error", "-xerror", "-i", stopped["path"], "-f", "null", "-"], check=True, capture_output=True)
         assert request("/camera/record/start", "POST")[0] == 200
+        time.sleep(.15)
+        fault_recording = status()["lastRecordingPath"]
         state.write_text("stall")
         wait_for(lambda: not status()["cameraConnected"], "stale stream remained healthy")
         wait_for(lambda: "stalled" in status()["lastCaptureError"], "stall did not cause rebuild")
         assert not status()["recording"]
+        assert request("/camera/record/stop", "POST")[0] == 200
+        subprocess.run(["ffmpeg", "-v", "error", "-xerror", "-i", fault_recording, "-f", "null", "-"], check=True, capture_output=True)
         state.write_text("healthy")
         wait_for(lambda: status()["cameraConnected"], "service did not recover from stall")
         assert not status()["recording"]
+        retries = status()["reconnectCount"]
+        state.write_text("native-stall")
+        wait_for(lambda: not request("/camera/photo", "POST")[1]["success"], "native stale photo accepted")
+        wait_for(lambda: status()["reconnectCount"] > retries and "native capture stalled" in status()["lastCaptureError"],
+                 "native-only stall did not rebuild camera")
+        state.write_text("healthy")
+        wait_for(lambda: status()["cameraConnected"] and status()["lastNativeFrameAgeMs"] >= 0,
+                 "native-only stall did not recover")
         # Partial requests cannot block shutdown or create unbounded workers.
         for _ in range(18):
             sock = socket.create_connection(("127.0.0.1", port), timeout=2)
