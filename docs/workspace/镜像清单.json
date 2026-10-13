@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "snapshot_at": "2026-10-13T22:14:50+08:00",
+  "snapshot_at": "2026-10-13T22:18:24+08:00",
   "session_id": "01a13477-9b6f-7f43-8a41-5e5b77886c15",
   "canonical_source": "完整工作空间根目录，禁止独立编辑本镜像",
   "hash_normalization": "UTF-8 文本的 CRLF 规范化为 LF；其他字节不变",
@@ -18,24 +18,24 @@
       "mirror_sha256": "0a38599848ba725972f786840cf73cc16a04aea97a45e3ef71ae27ff4921903d"
     },
     "docs/当前状态.md": {
-      "source_sha256": "cb8c3174043404e2000a83f2e83da5bc2f62f4676a17b8b11c20b6c3d11c5852",
-      "mirror_sha256": "704f79f7ab46c41436e15e2790a20f3b88a0c8ac0ba7a7b2bf61acc26743d820"
+      "source_sha256": "f252c16ba2760a0be3da10cc0d3e0ad11a5a23fa7b7e47d71ab5ab6a85490736",
+      "mirror_sha256": "a49611dcbb3f6a48f796fd5902810baac83ed19a616440121e064ca5f6472f6a"
     },
     "docs/变更记录.md": {
-      "source_sha256": "c96e144ec99906f7e77b350419d3fbfc7423d261850ad8ac04d856b117064222",
-      "mirror_sha256": "b731e1715339e50e52d034192831feb7cd0ba3b41793066f8a056eb0ac2436ce"
+      "source_sha256": "12ecbe8668fb4f55ad71fd9792db6d6cc8dc353ec2d7c5d50d5b713f94682c1f",
+      "mirror_sha256": "6c092cfcd202760638d75a2c1cbf626514a6e8e47cddb90034128ea1fa60320e"
     },
     "docs/问题与待办.md": {
-      "source_sha256": "aa4c13440f2de486434815b349f7d5c370cbb92c03a510e7423813fade44c1db",
-      "mirror_sha256": "30716d98e884efcad31c5281a2c3dbf80f0e74cda22d97eb61a3102ecb7a89b4"
+      "source_sha256": "55e23048932464c2cc2b91fe60cfe2a99ff1a5286686d62eb137b22ad4a26c7b",
+      "mirror_sha256": "c4da3f6bd9085bc5ed94b16ea934a599b49fd4ed9ca922c5a165640192ba34db"
     },
     "docs/会话索引.md": {
-      "source_sha256": "1cca272509247a404a2c253c20aefc4cdebecff356eeae7ce2d07332f91bd441",
-      "mirror_sha256": "c14be901dd2975a94ebb4f35b7faedbcbd06a7c0ff990e4dd120c9d74f47f1c1"
+      "source_sha256": "ab3eaf0a17ac39118423c3be1575c73704ac74efefa9786e8108584d98cce930",
+      "mirror_sha256": "9606710e06b5c18bd5c511f6fc3ad71d59a5817f7d66967fe9871539aebfef53"
     },
     "docs/项目状态.json": {
-      "source_sha256": "6a9bb678fcb59602c13906a24d40b2f624028d4b495862c2f6b6894501801a68",
-      "mirror_sha256": "6a9bb678fcb59602c13906a24d40b2f624028d4b495862c2f6b6894501801a68"
+      "source_sha256": "b7b59695577c73a401d1a88ea2aead18a30e9d551c13a42ac63721a53eca6b08",
+      "mirror_sha256": "b7b59695577c73a401d1a88ea2aead18a30e9d551c13a42ac63721a53eca6b08"
     },
     "docs/templates/开发方案模板.md": {
       "source_sha256": "980b90ad955cb662dd603407e9775d5983f1a422db97b6e235eb7281b7cec695",

@@ -4,11 +4,11 @@
 
 方案：[开发方案](OAK原生拍照录像开发方案.md)。分支：Tenco `feat/oak-native-capture-v1`（基线6f4f383），src `docs/oak-native-capture-v1`（基线704fa11，仅文档）。
 
-当前阶段：预检和能力探测。Capture 的实际路径为 `/home/nvidia/tenco-oak-probe-recovery-v1/Capture`；当前业务输出仍在 `/opt/tenco/media`，不能称为已切换。正在读取真实 CAM_A 原生能力与编码限制，再实现、构建、媒体验证和上线。
+初始阶段记录（上线前）：预检和能力探测。Capture 的实际路径为 `/home/nvidia/tenco-oak-probe-recovery-v1/Capture`；当前业务输出仍在 `/opt/tenco/media`，不能称为已切换。正在读取真实 CAM_A 原生能力与编码限制，再实现、构建、媒体验证和上线。
 
 21:30～21:48：实际探测 CAM_A IMX378 4056×3040，CAM_B/C OV9282；当前USB3 5000Mbps。探测小程序初始g++缺nop包含路径失败，改用SDK CMake目标后成功。首版独立Release完整构建2/2、固定Qt完整构建16/16通过；真实隔离候选发现video口4K上限，改ISP后又发现MJPEG宽度32倍数限制，均未产出原生媒体、未安装候选，finally恢复旧服务。按方案修订为完整ISP YUV420传输/单次JPEG拍照/直接YUV H.264录像，再构建3项回归与真实媒体验证。这些隔离通过不冒充现场原生功能已完成。
 
-未完成：实现、原生媒体尺寸/容器/解码验证、部署、文档与PR交付。既有 P-009 USB/SDK现场验收、P-004长期负载、D-004历史控制CI失败继续保留；不扩大为车辆控制修复。
+初始待办（实现/部署/验证现已完成，见后文）：实现、原生媒体尺寸/容器/解码验证、部署、文档与PR交付。既有 P-009 USB/SDK现场验收、P-004长期负载、D-004历史控制CI失败继续保留；不扩大为车辆控制修复。
 
 ## 上线前验证里程碑
 
@@ -35,3 +35,11 @@
 明确清理15项已记录实验文件/旧试验照片录像/fixture可执行程序和临时探测构建，共302,832,244字节约288.80MiB；保留最新上线验证照片/MP4、既有业务media、SDK/PDF/历史/记录。远端deployed-version/verified-candidate元数据已更新为功能af6e730和当前Release哈希；受控源码与远端文件收尾将核对。相机仍active/开机enabled，未再次重启、未操作车辆/USB注入。
 
 遗留：P-011原生15FPS/明亮和运动场景/混合负载与容量增长尚未验收；P-004/P-009/D-004继续保留。清理旧PR#21/#7最终HEAD检查本次核验全部SUCCESS，D-005关闭；本任务新PR云端检查D-007独立跟踪。当前中文提交/PR交付正进行，不称已合并。
+
+## 交付与下一步
+
+Tenco功能提交af6e730/文档f81fb9a、src文档2848006已实际推送，[Tenco#22](https://github.com/DAC-Code25/Tenco/pull/22)/[src#8](https://github.com/DAC-Code25/sensor-fusion-ros2/pull/8)核验OPEN Draft，base为对应清理分支，未合并。第一交付HEAD的四项Qt CI排队/运行、src humble运行(D-007)，不冒称全绿；最终文档补记SHA从PR HEAD读取。完整工作空间文档/字段链接/镜像/源码指纹/diff检查通过。
+
+检查发现snapshot在首次源码未提交快照后仍可能保留旧code_baseline，当前已按实际功能提交af6e730纠正根元数据，再生成镜像。工具后续晋升规则修复登记D-008，不混入本次相机功能。当前实际源码/二进制/状态以本记录和上线哈希为准。
+
+下一位先读当前状态、P-011/D-007/D-008及在线status/实际exe哈希，核验新PR最终HEAD检查；原生性能和明亮/运动/长期混合负载按单独任务继续，不把本次正常采集当物理USB恢复通过。Capture已有最新验收媒体，其余旧业务媒体保留，不自动清业务照片录像。实现/上线/当前明确验证已完成；长期/USB/性能边界如实保留。
