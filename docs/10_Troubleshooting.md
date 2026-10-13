@@ -48,6 +48,21 @@
 2. 确认返回的是 MJPEG（`multipart/x-mixed-replace`）
 3. 看首页日志是否提示“已连接/异常/重连”
 
+### 视频每次约 2 秒结束，随后 2000 ms 重连
+
+先读取同一工控机的 `/camera/status`，HTTP 200 不代表相机采集正常；检查 `success`、`cameraConnected` 和 `message`：
+
+```powershell
+curl.exe --noproxy '*' --connect-timeout 3 --max-time 5 http://192.168.31.13:18080/camera/status
+curl.exe --noproxy '*' --connect-timeout 3 --max-time 8 --dump-header stream-headers.txt --output stream-body.bin --write-out 'status=%{http_code} bytes=%{size_download} seconds=%{time_total}' http://192.168.31.13:18080/camera/stream.mjpeg
+```
+
+地址须换成当前配置中的地址。流数据保存到文件，避免二进制输出到终端；持续健康的 MJPEG 请求可能到达 `--max-time` 并以 curl 28 退出，此时须结合已接收字节/帧判断，不将人为时限认定为断流。
+
+2026-10-13 实测：状态报 `cameraConnected=false` 与 `Couldn't read data from stream: 'preview' (X_LINK_ERROR)`，独立 HTTP 三次均只返回同一张缓存 JPEG，约 2 秒正常 EOF。失败点是工控机 DepthAI/OAK 采集链。需进一步检查服务日志、USB 供电/线材/拓扑、设备复位/占用和 SDK/pipeline；X_LINK_ERROR 本身不能确定是哪一项。
+
+`reconnectIntervalMs=2000` 是连接结束后的等待；视频首帧会重置重连计数，所以故障服务每次给缓存帧时可一直显示 attempt 1。更改重连间隔不能恢复相机采集。恢复须验证相机状态正常、帧持续更新，详见[相机断流排查记录](develop/相机断流排查开发记录.md)（DIAG-20261013-01 / P-009）。
+
 ---
 
 ## 5. QDoubleSpinBox 步进按钮错位/样式异常（Windows 11 + QSS）
