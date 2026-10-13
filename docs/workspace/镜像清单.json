@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "snapshot_at": "2026-10-13T17:37:25+08:00",
+  "snapshot_at": "2026-10-13T17:43:35+08:00",
   "session_id": "01a13477-9b6f-7f43-8a41-5e5b77886c15",
   "canonical_source": "完整工作空间根目录，禁止独立编辑本镜像",
   "hash_normalization": "UTF-8 文本的 CRLF 规范化为 LF；其他字节不变",
@@ -10,32 +10,32 @@
       "mirror_sha256": "c58f200b91528d4a91c1e0b28bfcf55af528c88ab4699ba6e598b0c69d0998ec"
     },
     "docs/README.md": {
-      "source_sha256": "a68efde31293817ae1266dab912496491320dd9dcd0bb919311602cdbbe9bdf2",
-      "mirror_sha256": "a68efde31293817ae1266dab912496491320dd9dcd0bb919311602cdbbe9bdf2"
+      "source_sha256": "a379f46f5f23aa8d0ca43a60a6fc294affc4b3559cc06b459bc666e10fb926ca",
+      "mirror_sha256": "a379f46f5f23aa8d0ca43a60a6fc294affc4b3559cc06b459bc666e10fb926ca"
     },
     "docs/项目总览.md": {
       "source_sha256": "bb919ed3083a2d5472a0116a4929f6bd43bab0805a466b0f06b66f4db5ab5208",
       "mirror_sha256": "bb919ed3083a2d5472a0116a4929f6bd43bab0805a466b0f06b66f4db5ab5208"
     },
     "docs/当前状态.md": {
-      "source_sha256": "fcb0c82cdb1486b6fe2250985a310a9524915410dfad03af8318a87f2076570e",
-      "mirror_sha256": "fcb0c82cdb1486b6fe2250985a310a9524915410dfad03af8318a87f2076570e"
+      "source_sha256": "8f1cdf57d0aef6e19160f49c2a7fca07ad39a15286a23b898657b995908d4b21",
+      "mirror_sha256": "8f1cdf57d0aef6e19160f49c2a7fca07ad39a15286a23b898657b995908d4b21"
     },
     "docs/变更记录.md": {
-      "source_sha256": "4fa4c45e6fa3030d236155fa96e3afa071b7b72c42a9da88d9f0746f5ded9473",
-      "mirror_sha256": "4fa4c45e6fa3030d236155fa96e3afa071b7b72c42a9da88d9f0746f5ded9473"
+      "source_sha256": "497b396af9e32276a54495a883a070fd18af710af72fd445f6453e7bd5f0fb62",
+      "mirror_sha256": "497b396af9e32276a54495a883a070fd18af710af72fd445f6453e7bd5f0fb62"
     },
     "docs/问题与待办.md": {
-      "source_sha256": "c672ec17373df29553c019c9e42586c89608f53fd1545bcda12cc3e0a4de88ea",
-      "mirror_sha256": "c672ec17373df29553c019c9e42586c89608f53fd1545bcda12cc3e0a4de88ea"
+      "source_sha256": "e31198651a70d77548c1775aa3b1f13e2c9b5386530c04645333c39e8d800eb9",
+      "mirror_sha256": "e31198651a70d77548c1775aa3b1f13e2c9b5386530c04645333c39e8d800eb9"
     },
     "docs/会话索引.md": {
-      "source_sha256": "3baff76b82a84129944da81455d82928b71ac89659003b64db7704d564d1db3b",
-      "mirror_sha256": "3baff76b82a84129944da81455d82928b71ac89659003b64db7704d564d1db3b"
+      "source_sha256": "2751f963855d2cb981c55733a2c3e8a664a974b16288655ce0d1328db64503b7",
+      "mirror_sha256": "2751f963855d2cb981c55733a2c3e8a664a974b16288655ce0d1328db64503b7"
     },
     "docs/项目状态.json": {
-      "source_sha256": "aad2f48046162f6de43d90766688f1d1a3ddab1d3559460fb72f51f3834fd4cb",
-      "mirror_sha256": "aad2f48046162f6de43d90766688f1d1a3ddab1d3559460fb72f51f3834fd4cb"
+      "source_sha256": "b1fcedf5c23a186c39b7320dfa2df7700cbe10c7e8b3eab8e1af36c8fc77630f",
+      "mirror_sha256": "b1fcedf5c23a186c39b7320dfa2df7700cbe10c7e8b3eab8e1af36c8fc77630f"
     },
     "docs/templates/开发方案模板.md": {
       "source_sha256": "980b90ad955cb662dd603407e9775d5983f1a422db97b6e235eb7281b7cec695",
@@ -50,16 +50,16 @@
       "mirror_sha256": "25483cec394531f2fd57888f2f21e207f9e063e465123cc6ed31d84d588f93f7"
     },
     "docs/develop/项目文档治理开发方案.md": {
-      "source_sha256": "e22aa6a106d423a77c3809b03d0ed5cd655490ef985f0b84afede7265b508f0a",
-      "mirror_sha256": "e22aa6a106d423a77c3809b03d0ed5cd655490ef985f0b84afede7265b508f0a"
+      "source_sha256": "4cf931c68d780c7cfc127db29b88bbc32721cc39a151085b6819a111105498db",
+      "mirror_sha256": "4cf931c68d780c7cfc127db29b88bbc32721cc39a151085b6819a111105498db"
     },
     "docs/develop/项目文档治理开发记录.md": {
-      "source_sha256": "dd769c74b679533b8d23436b9d72335e98f5de064babd80b2759035e2e40fe73",
-      "mirror_sha256": "dd769c74b679533b8d23436b9d72335e98f5de064babd80b2759035e2e40fe73"
+      "source_sha256": "3ee95182767c2aa6010cebfc6cc91278c42346e7a7aef5150c76d4b6d7b77d4a",
+      "mirror_sha256": "3ee95182767c2aa6010cebfc6cc91278c42346e7a7aef5150c76d4b6d7b77d4a"
     },
     "tools/project_docs.py": {
-      "source_sha256": "064d4939efb297c67027052022e004f530f3d2351435cdd465535e50fb2c83e6",
-      "mirror_sha256": "064d4939efb297c67027052022e004f530f3d2351435cdd465535e50fb2c83e6"
+      "source_sha256": "ad72e08d89ea087db6834a3cbf51d41e0d7141c51c34b4048eb4bd0d2d00f99b",
+      "mirror_sha256": "ad72e08d89ea087db6834a3cbf51d41e0d7141c51c34b4048eb4bd0d2d00f99b"
     },
     "工控机控制闭环与位姿直连系统开发方案.md": {
       "source_sha256": "04a0653ad34d75bf3f7f1df51878651023019f77a7e3a5bf8f87e20260e2ccba",

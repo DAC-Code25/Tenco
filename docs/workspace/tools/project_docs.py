@@ -232,11 +232,13 @@ def snapshot(root: Path, session: str) -> None:
             if ancestor.returncode == 0:
                 baseline = old["code_baseline"]
         tracked_dirty = [p for p in git(repo, "diff", "HEAD", "--name-only").splitlines() if is_functional(p)]
+        untracked = [p for p in git(repo, "ls-files", "--others", "--exclude-standard").splitlines() if is_functional(p)]
         repositories[name] = {
             "branch": branch, "code_baseline": baseline, "checkpoint_head": head, "remote": remote,
             "default_branch": default, "default_baseline": git(repo, "rev-parse", f"{remote}/{default}"),
             "functional_fingerprint": digest, "functional_file_count": count,
             "functional_tracked_changes": tracked_dirty,
+            "functional_untracked_files": untracked,
         }
     state = {
         "schema_version": 1, "updated_at": now.isoformat(), "session_id": session,
@@ -383,6 +385,8 @@ def main() -> int:
     args = parser.parse_args()
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8")
     try:
         root = args.root.resolve()
         if args.command == "snapshot":
