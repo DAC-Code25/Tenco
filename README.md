@@ -2,6 +2,8 @@
 
 项目统一规范与最新状态见 [AGENTS 入口](AGENTS.md) 和 [受控工作空间文档](docs/workspace/docs/README.md)。完整工作空间以根 `AGENTS.md`、`docs/当前状态.md` 和 `docs/问题与待办.md` 为准。
 
+工控机 OAK/DepthAI HTTP 相机服务另在 [services/oak-camera](services/oak-camera/README.md) 独立构建，包含采集失败重连、帧新鲜度、诊断与故障回归；不加入 Windows Qt 应用链接。当前开发版本的构建/部署状态见 [恢复开发记录](docs/develop/OAK相机采集恢复开发记录.md)。
+
 基于 **Qt Widgets** 的机器人/底盘上位机示例工程：提供状态监控、手动遥控、MJPEG 视频流显示/录像/截图，以及地图编辑、任务规划与工控机任务下发。
 
 ## 功能概览

@@ -73,6 +73,8 @@
 
 ## 5. 视频（MJPEG + 录像/截图）
 
+- `services/oak-camera/`：工控机独立 C++17/DepthAI/OpenCV HTTP 服务，与 Qt 本机直连后端分开构建。失败退避重建、缓存新鲜度、异常日志和有界 HTTP 生命周期；见[服务说明](../services/oak-camera/README.md)。真实 USB 恢复需部署后验收，模拟回归不代表在线版本已切换。
+
 - `abstractvideosource.h/.cpp`
   - 视频源统一接口：预览帧、状态、录像、截图
   - 让首页不再直接依赖具体视频协议

@@ -28,6 +28,7 @@
 |---|---|
 | `src/` | 独立 Git 仓库 `DAC-Code25/sensor-fusion-ros2`；远程 `origin`，默认 `main` |
 | `Tenco/` | 独立 Git 仓库 `DAC-Code25/Tenco`；远程 `Tenco`，默认 `master` |
+| `Tenco/services/oak-camera/` | 工控机独立 OAK/DepthAI 相机 HTTP 服务，独立 C++17/CMake/Jetson 构建；不加入 Windows Qt 应用链接 |
 | `docs/`、根总体方案、根 `AGENTS.md`、`tools/` | 工作空间统一文档及维护工具；通过受控镜像随两个仓库交付 |
 | `script/` | 已提供底盘 Lua/配套脚本；当前约定保持原样 |
 | `bin/`、`tmp/`、各仓库 `build/` | 本地产物、临时文件与测试证据，不作为源码提交 |
@@ -35,6 +36,8 @@
 本工作空间根目录目前不是 Git 仓库。不得在 `src` 纳管 Tenco 或修改另一仓库的 Git 元数据；不得引入无配套 `.gitmodules` 的 gitlink。WebSocket++ 按普通源码依赖维护，保留厂家 SDK 与第三方许可。新增仓库或改变管理边界须有明确任务依据。
 
 实际操作对象是当前工作空间，不操作另一个 `D:/QTProject/Tenco` 副本。所有命令先确认目录；不得强制重置、清理、覆盖、强推默认分支或用 stash 隐藏用户差异。
+
+2026-10-13 / 当前会话的相机开发扩展：目标机原目录 `/home/nvidia/tenco-oak-probe` 非 Git，已保留；服务源码以 `Tenco/services/oak-camera/` 为版本源，隔离开发副本 `/home/nvidia/tenco-oak-probe-recovery-v1`。不得把测试假采集源部署为在线程序，不得同时与运行服务争用真实相机。凭据不写入项目文档；切换 `/opt/tenco/bin/oak_camera_service` 前给出具体已验证产物/哈希、备份/回退与中断范围，并确认现场切换。此要求只针对在线相机部署，不限制正常源码开发、构建与隔离验证。
 
 ## 4. 已确定的架构与功能边界
 
@@ -110,6 +113,8 @@ $env:PATH = 'D:/Qt/6.5.3/mingw_64/bin;D:/Qt/Tools/mingw1120_64/bin;D:/Qt/Tools/N
 ### 工控机验证
 
 Windows 的无 ROS 验证使用 `src/standalone`，现有构建目录 `src/build/control-windows`，参照 `src/README.md` 的核心、服务联调和参数校验。真实节点在匹配 Linux/ROS 2 环境构建；当前 CI 为 Ubuntu 22.04 / Humble / x86_64 四包，Jetson ARM64 仍需目标机构建。
+
+相机服务在隔离 Jetson 目录使用已有 DepthAI/OpenCV：`cmake -S <服务目录> -B <隔离构建目录> -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DCMAKE_PREFIX_PATH=/opt/ros/humble`，随后完整 build/CTest。假源测试验证生产恢复循环/HTTP 行为，不替代实际 USB/相机掉线、SDK 卡死、长时间或现场验收。在线服务切换按服务 README 和具体开发记录的已验证版本/回退步骤执行。
 
 `src/CMakeLists.txt` 是历史 catkin 顶层文件，当前包为 ament/ROS 2，使用明确 `colcon --base-paths`。旧 Noetic 文档不作为当前启动依据。Windows/模拟位姿/短时测试不能替代真实 UKF/ROS 链路、长时间混合负载或实车精度验收。
 
