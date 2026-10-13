@@ -23,4 +23,6 @@ ctest --test-dir build --output-on-failure
 
 DepthAI Device 的打开/销毁使用 SDK 自身超时，无法保证物理设备/SDK 卡死时与假采集源相同的停止时延；systemd 超时兜底和真实设备开关/掉线须现场验证。HTTP 服务成功不等于 USB 供电、线材或相机硬件缺陷已解决。
 
-部署前先查 `systemctl cat tenco-oak-camera.service`，确认 ExecStart 指向 `/opt/tenco/bin/oak_camera_service`；保留原二进制及校验哈希，再执行 `scripts/deploy_verified_service.sh`。脚本需要明确传入经过验证的二进制、期望 SHA256，并通过 sudo 在已确认维护窗口运行。它会拒绝录像中的切换，备份二进制，原子替换并仅重启相机服务；就绪失败自动恢复备份并重新启动。不会安装依赖、pkill 其他程序、改 systemd/Lua/车辆控制或删除媒体。回退备份路径由脚本输出。
+部署前先查 `systemctl cat tenco-oak-camera.service`，确认 ExecStart 指向 `/opt/tenco/bin/oak_camera_service`；执行 `scripts/deploy_verified_service.sh` 时传入经过验证的二进制和期望 SHA256，在已授权维护窗口通过sudo运行。脚本拒绝录像中的切换，暂存旧程序、原子替换并重启相机服务；失败先恢复旧程序。连续三次健康且frameId增长、安装哈希一致后，删除本次临时旧程序，成功回退后也删除重复副本，只保留当前有效版本。不会安装依赖、pkill其他程序、改当前systemd/Lua/车辆控制或删除业务媒体。
+
+2026-10-13用户要求清理长期旧版本/备份；原 `/home/nvidia/tenco-oak-probe` 与上线旧程序备份进入清理范围，最新版源码/Release仍在 `/home/nvidia/tenco-oak-probe-recovery-v1`。当前恢复方法以受控源码重新构建/部署为准，不能使用已删除备份。实际清单与验证见 [清理记录](../../docs/develop/相机旧版本与备份清理开发记录.md)。
