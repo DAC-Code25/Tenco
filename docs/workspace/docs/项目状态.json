@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-10-13T20:22:08+08:00",
+  "updated_at": "2026-10-13T20:57:21+08:00",
   "session_id": "01a13477-9b6f-7f43-8a41-5e5b77886c15",
   "timezone": "Asia/Shanghai",
   "repositories": {
     "src": {
-      "branch": "docs/oak-camera-recovery-v1",
+      "branch": "docs/oak-camera-latest-only-v1",
       "code_baseline": "55e91373f1e04696b64e30e7578d64c09c0cbc00",
-      "checkpoint_head": "83f37bc24280b5615a96ca577c88d6a36c46744b",
+      "checkpoint_head": "ee1f597b1a1193610213cce5de4d197f3fbca8a6",
       "remote": "origin",
       "default_branch": "main",
       "default_baseline": "c4511358d0dde17643209844ba074803bb0c0d56",
@@ -17,13 +17,13 @@
       "functional_untracked_files": []
     },
     "Tenco": {
-      "branch": "fix/oak-camera-recovery-v1",
-      "code_baseline": "3abc02ce16528976a3d6dc17a893d808254655b8",
-      "checkpoint_head": "9a948c8d302e2c86c1a7e87fec7a9ce465d88d6e",
+      "branch": "chore/oak-camera-latest-only-v1",
+      "code_baseline": "755339ba47274db452dea3e44c0d569c2267896b",
+      "checkpoint_head": "755339ba47274db452dea3e44c0d569c2267896b",
       "remote": "Tenco",
       "default_branch": "master",
       "default_baseline": "8c5327a63295b0816e670ee1a9ea0f71197f3725",
-      "functional_fingerprint": "93a918d0bdf2924a4c6b9e78c50d316ad77fbfd35924cec413be839684696be1",
+      "functional_fingerprint": "94d7b602853e935d8d25f622b724afd36b050de7eda7bd3472c18b2fbca523f4",
       "functional_file_count": 168,
       "functional_tracked_changes": [],
       "functional_untracked_files": []
