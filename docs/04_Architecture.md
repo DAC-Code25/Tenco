@@ -6,7 +6,7 @@
 - **页面编排层**：`Home` / `Map` / `Maintenance` / `Help` / `About`
 - **业务模块层（已拆分）**
   - `HomeStatusPresenter`：状态包解析与状态区 UI 映射
-  - `ControlSessionCoordinator`：地图版本、会话及手动/自动交接
+  - `ControlSessionCoordinator`：任务操作会话、地图/计划版本校核和明确接续
   - `HomeManualInputState`：按钮/键盘手动运动输入状态
   - `HomeGimbalKeyState`：云台键盘组合键状态与动作解析
   - `HomeVideoPresenter`：首页视频 QLabel 占位、缩放、最新帧显示
@@ -14,7 +14,7 @@
   - `HomeNetworkWorker`：真正执行 HTTP 轮询的 worker（跑在 QThread）
   - `NetworkPolicy`：Bearer Header、JSON 请求构造、指数退避策略
   - `StatusProtocol`：状态字段枚举与地址映射、默认轮询请求构造
-  - `ChassisClient`：WebSocket 协议封装（cmd_vel/reboot/stopLocation…）
+  - `ChassisClient`：既有 WebSocket 手动 cmd_vel 与底盘维护操作，无许可握手
   - `VideoClient`：MJPEG 拉流、解码、录像、截图、自动重连
   - `TaskCompiler`：将三种任务模式编译为工控机执行步骤
   - `RoutePathFinder`：路径搜索（加权最短路）

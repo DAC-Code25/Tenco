@@ -1,5 +1,7 @@
 # Tenco
 
+项目统一规范与最新状态见 [AGENTS 入口](AGENTS.md) 和 [受控工作空间文档](docs/workspace/docs/README.md)。完整工作空间以根 `AGENTS.md`、`docs/当前状态.md` 和 `docs/问题与待办.md` 为准。
+
 基于 **Qt Widgets** 的机器人/底盘上位机示例工程：提供状态监控、手动遥控、MJPEG 视频流显示/录像/截图，以及地图编辑、任务规划与工控机任务下发。
 
 ## 功能概览
@@ -114,11 +116,11 @@ ctest --preset release
 - `MainWindow`：承载导航栏与页面容器（`QStackedWidget`），并处理无边框拖动/置顶等。
 - `Home`：
   - `StatusClient`（内部使用 `HomeNetworkWorker + QThread`）：周期性 HTTP 拉取状态 → 更新 UI
-  - `ChassisClient`（`QWebSocket`）：发送速度指令 `cmd_vel` / 重启 / 停止定位等
+  - `ChassisClient`（`QWebSocket`）：独立手动 `cmd_vel` 与既有底盘维护操作，无许可握手
   - `VideoClient`（HTTP MJPEG）：解析 JPEG 帧 → 显示/录像/截图 + 断线重连
   - `TaskCompiler`：常规/单垄/多垄任务编译，自动速度由工控机生成。
-  - `ControlSessionCoordinator`：会话、地图版本和手动/自动交接。
-- `Map`：地图编辑器（`QGraphicsScene/View`），支持点/路径/路线队列；路线按段下发。
+  - `ControlSessionCoordinator`：任务操作会话、地图/计划版本、任务回读及明确接续。
+- `Map`：地图编辑器（`QGraphicsScene/View`），支持点/路径/路线队列；编译完整任务交工控机执行。
 - `ConfigManager`：单例配置加载与坐标换算。
 
 ## 开发文档（更详细）
@@ -140,10 +142,12 @@ ctest --preset release
 
 ### 路线执行链路
 
-1. `Map` 组装一段 polyline 后发出 `routeSegmentDispatched(...)`
-2. `Home` 接收后进入段队列并启动跟随定时器，持续发速度
-3. 段结束 `Home` 发出 `routeSegmentCompleted(bool)`
-4. `Map` 收到后继续发下一段，直到队列完成或取消
+1. `Map` 准备常规路线、单垄或多垄计划，经 `TaskCompiler` 编译完整任务。
+2. `TrackingClient` 上传任务；明确启动后，由工控机执行跟踪、速度规划、停稳、转向、等待与循环。
+3. `PoseClient` 获取工控机同源位姿，地图转换后显示车标；任务状态、事件和结果独立回读。
+4. 上位机重开时回读/预览/校核原计划，明确确认后显式恢复；退出不暂停已启动的普通自动任务。
+
+手动控制仍使用独立原 WebSocket 直达底盘，不依赖工控机许可。拍照外部确认业务继续由上位机协调。
 
 ## 常见问题（FAQ）
 
