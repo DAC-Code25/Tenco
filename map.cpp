@@ -1855,16 +1855,16 @@ void Map::initializeUi()
 
     m_rowWorkBaseSpeedSpin = new QDoubleSpinBox(rowWorkParamsBox);
     m_rowWorkBaseSpeedSpin->setObjectName(QStringLiteral("mapRowWorkBaseSpeedSpin"));
-    m_rowWorkBaseSpeedSpin->setRange(0.01, 5.0);
+    m_rowWorkBaseSpeedSpin->setRange(VehicleParameters::minOperatingSpeedMps, VehicleParameters::maxOperatingSpeedMps);
     m_rowWorkBaseSpeedSpin->setDecimals(3);
-    m_rowWorkBaseSpeedSpin->setSingleStep(0.01);
+    m_rowWorkBaseSpeedSpin->setSingleStep(0.10);
     rowWorkParamsLayout->addRow(tr("基础速度(m/s)"), m_rowWorkBaseSpeedSpin);
 
     m_rowWorkMaxSpeedSpin = new QDoubleSpinBox(rowWorkParamsBox);
     m_rowWorkMaxSpeedSpin->setObjectName(QStringLiteral("mapRowWorkMaxSpeedSpin"));
-    m_rowWorkMaxSpeedSpin->setRange(0.01, 5.0);
+    m_rowWorkMaxSpeedSpin->setRange(VehicleParameters::minOperatingSpeedMps, VehicleParameters::maxOperatingSpeedMps);
     m_rowWorkMaxSpeedSpin->setDecimals(3);
-    m_rowWorkMaxSpeedSpin->setSingleStep(0.01);
+    m_rowWorkMaxSpeedSpin->setSingleStep(0.10);
     rowWorkParamsLayout->addRow(tr("最大速度(m/s)"), m_rowWorkMaxSpeedSpin);
 
     m_rowWorkEndpointArrivalSpin = new QDoubleSpinBox(rowWorkParamsBox);

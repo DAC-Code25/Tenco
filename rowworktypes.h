@@ -6,6 +6,7 @@
 #include <QPointF>
 #include <QString>
 #include "trackingtypes.h"
+#include "vehicleparameters.h"
 
 class QJsonObject;
 
@@ -32,8 +33,8 @@ struct RowCheckpoint
 
 struct RowWorkParams
 {
-    double baseLinearSpeed = 0.25;
-    double maxLinearSpeed = 0.35;
+    double baseLinearSpeed = VehicleParameters::defaultTrackingSpeedMps;
+    double maxLinearSpeed = VehicleParameters::defaultRowMaxSpeedMps;
     double endpointArrivalDistance = 0.03;
     double checkpointArrivalTolerance = 0.03;
     double turnAngularSpeed = 0.45;

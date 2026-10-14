@@ -683,10 +683,10 @@ QWidget *Maintenance::createControlPage()
                                 &layout);
     addDoubleSpinBox(layout, QStringLiteral("geo.baseLatitudeDeg"), tr("地图基准纬度"), -90.0, 90.0, 8);
     addDoubleSpinBox(layout, QStringLiteral("geo.baseLongitudeDeg"), tr("地图基准经度"), -180.0, 180.0, 8);
-    addDoubleSpinBox(layout, "manualControl.maxLinearSpeed", tr("手动最大线速度 m/s"), 0.0, 5.0, 3);
+    addDoubleSpinBox(layout, "manualControl.maxLinearSpeed", tr("手动最大线速度 m/s"), 0.0, VehicleParameters::maxOperatingSpeedMps, 3);
     addDoubleSpinBox(layout, "manualControl.maxAngularSpeed", tr("手动最大角速度 rad/s"), 0.0, 5.0, 3);
     addSpinBox(layout, "manualControl.manualMotionRepeatIntervalMs", tr("手动心跳间隔"), 20, 1000, " ms");
-    addDoubleSpinBox(layout, "taskDefaults.speedLimit", tr("任务速度请求 m/s"), 0.0, 5.0, 3);
+    addDoubleSpinBox(layout, "taskDefaults.speedLimit", tr("任务速度请求 m/s（常用 0.10 / 0.20）"), VehicleParameters::minOperatingSpeedMps, VehicleParameters::maxOperatingSpeedMps, 3);
     addDoubleSpinBox(layout, "taskDefaults.goalToleranceMeters", tr("任务停车容差请求 m"), 0.0, 5.0, 3);
     addDoubleSpinBox(layout, "taskDefaults.angularSpeedLimit", tr("任务转向速度请求 rad/s"), 0.0, 5.0, 3);
     addDoubleSpinBox(layout, "taskDefaults.angleToleranceRad", tr("任务角度容差请求 rad"), 0.0, 5.0, 3);

@@ -13,11 +13,41 @@ class ConfigManagerTest : public QObject
     Q_OBJECT
 
 private slots:
+    void drivingSpeedBoundsAndLegacyMigration();
     void loadCustomConfigAndSanitize();
     void envOverridesSecretsAndReportsSchemaWarnings();
     void geoRoundTripKeepsPrecision();
     void unsupportedSchemaDoesNotMigrateOrEnableServices();
 };
+
+void ConfigManagerTest::drivingSpeedBoundsAndLegacyMigration()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    auto &cfg = ConfigManager::instance();
+    const auto path = dir.filePath("config.json");
+    const QList<QJsonObject> inputs{
+        {{"schemaVersion", 2}, {"manualControl", QJsonObject{{"maxLinearSpeed", 5.0}}},
+          {"taskDefaults", QJsonObject{{"speedLimit", .05}}}},
+        {{"schemaVersion", 2}, {"manualControl", QJsonObject{{"maxLinearSpeed", 0.0}}},
+          {"taskDefaults", QJsonObject{{"speedLimit", .20}}}},
+        {{"schemaVersion", 2}, {"taskDefaults", QJsonObject{{"speedLimit", 2.0}}}},
+        {{"schemaVersion", 1}, {"control", QJsonObject{{"maxLinearSpeed", .60}}}},
+        {{"schemaVersion", 2}},
+        {{"schemaVersion", 2}, {"manualControl", QJsonObject{{"maxLinearSpeed", .05}}}}
+    };
+    const QList<double> expectedManual{1.50, 0.0, 1.50, .60, 1.50, .10};
+    const QList<double> expectedTask{.10, .20, 1.50, .10, .10, .10};
+    for (qsizetype i = 0; i < inputs.size(); ++i) {
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        file.write(QJsonDocument(inputs[i]).toJson()); file.close();
+        cfg.setConfigFilePath(path); cfg.reload(); QVERIFY(cfg.loadedFromFile());
+        QCOMPARE(cfg.manualControl().maxLinearSpeed, expectedManual[i]);
+        QCOMPARE(cfg.taskDefaults().speedLimit, expectedTask[i]);
+    }
+    cfg.setConfigFilePath(QString());
+}
 
 void ConfigManagerTest::loadCustomConfigAndSanitize()
 {

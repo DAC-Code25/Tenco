@@ -5,7 +5,8 @@
 #include <optional>
 
 struct TaskCompileOptions {
-    double speedLimit = .25, goalToleranceMeters = .03, angularSpeedLimit = .35, angleToleranceRad = .05;
+    double speedLimit = VehicleParameters::defaultTrackingSpeedMps;
+    double goalToleranceMeters = .03, angularSpeedLimit = .35, angleToleranceRad = .05;
     QString safetyProfileId, rotationZoneId;
     bool repeatUntilStopped = false;
     int repeatCount = 1;

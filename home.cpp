@@ -224,7 +224,10 @@ void Home::applyManualControlConfig()
 {
     const auto &ctrl = ConfigManager::instance().manualControl();
     m_manualMotionRepeatIntervalMs = qBound(20, ctrl.manualMotionRepeatIntervalMs, 100);
-    if (ui && ui->doubleSpinBox) ui->doubleSpinBox->setRange(0, ctrl.maxLinearSpeed);
+    if (ui && ui->doubleSpinBox) {
+        ui->doubleSpinBox->setRange(ctrl.maxLinearSpeed > 0 ? VehicleParameters::minOperatingSpeedMps : 0,
+                                    ctrl.maxLinearSpeed);
+    }
     if (ui && ui->doubleSpinBox_2) ui->doubleSpinBox_2->setRange(0, ctrl.maxAngularSpeed);
     if (m_motionArbiter) {
         m_motionArbiter->setHeartbeatIntervalMs(m_manualMotionRepeatIntervalMs);

@@ -1,5 +1,6 @@
 #ifndef CONFIGMANAGER_H
 #define CONFIGMANAGER_H
+#include "vehicleparameters.h"
 
 #include <QObject>
 #include <QJsonObject>
@@ -19,13 +20,13 @@ public:
     };
 
     struct ManualControlConfig {
-        double maxLinearSpeed = 0.5;
+        double maxLinearSpeed = VehicleParameters::maxOperatingSpeedMps;
         double maxAngularSpeed = 0.5;
         int manualMotionRepeatIntervalMs = 40;
     };
 
     struct TaskDefaultsConfig {
-        double speedLimit = 0.25;
+        double speedLimit = VehicleParameters::defaultTrackingSpeedMps;
         double goalToleranceMeters = 0.03;
         double angularSpeedLimit = 0.35;
         double angleToleranceRad = 0.05;
