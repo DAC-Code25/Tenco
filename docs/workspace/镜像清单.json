@@ -74,8 +74,8 @@
       "mirror_sha256": "cfbaac2cc59b21a4ae4fe7f116a8f0ed25e66ef2f22c756f422d3ad5817ca25d"
     },
     "tools/tests/test_project_docs.py": {
-      "source_sha256": "1f834237940b183437ab06266aad6fa54af9d8b806cafbdb879843adeac85cae",
-      "mirror_sha256": "1f834237940b183437ab06266aad6fa54af9d8b806cafbdb879843adeac85cae"
+      "source_sha256": "d1d0a5aff3d3f7803f3be59d4db37ad471d98e3f71baea2ba26e771513fbbe1e",
+      "mirror_sha256": "d1d0a5aff3d3f7803f3be59d4db37ad471d98e3f71baea2ba26e771513fbbe1e"
     }
   },
   "entry_sha256": "db1f829839b7229e05e2f4475e3bb326ad64d46bc1b5049b300807956b96652e"

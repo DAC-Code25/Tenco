@@ -6,6 +6,7 @@ import importlib.util
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -13,7 +14,14 @@ SOURCE = Path(__file__).resolve().parents[1] / "project_docs.py"
 SPEC = importlib.util.spec_from_file_location("project_docs", SOURCE)
 assert SPEC and SPEC.loader
 DOCS = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(DOCS)
+# The same test is shipped inside immutable documentation mirrors.
+# Loading its tool must not leave a generated cache in that mirror.
+PREVIOUS_BYTECODE = sys.dont_write_bytecode
+sys.dont_write_bytecode = True
+try:
+    SPEC.loader.exec_module(DOCS)
+finally:
+    sys.dont_write_bytecode = PREVIOUS_BYTECODE
 SESSION = "01a13477-9b6f-7f43-8a41-5e5b77886c15"
 
 
