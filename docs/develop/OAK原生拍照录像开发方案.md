@@ -37,3 +37,5 @@ Jetson 完整 Release 构建/CTest，相关 HTTP/恢复及媒体回归。实际�
 能力探测结果：CAM_A IMX378 4056×3040、原生模式1.42～30FPS；探测结束恢复服务。Ubuntu已有libx264编码器和avdec_h264解码插件，缺少nvv4l2h264enc。采用相机硬件MJPEG原生JPEG输出（质量90）减少USB带宽，另保留低分辨率预览；照片直接保存原始JPEG避免二次损失。录像在独立有界工作线程用libavcodec解码/native H.264 CRF18编码、libavformat写分片MP4，按实际帧时刻写PTS，掉帧有统计；不降分辨率。实际负载/帧率不达标时调整编码策略并记录结果。分片MP4降低正常停止/采集掉线/异常退出时整段不可播放的风险；断电仍不承诺零损失。
 
 21:23 预检确认 Capture 为空、67G 可用；旧实现仅 960×540 JPEG预览/AVI MJPEG，原生传感器规格与新容器尚待探测。已发现 ffmpeg/libavformat 开发库和 Ubuntu GStreamer MJPEG 解码插件可用，具体方案待传感器探测后补齐。
+
+后续管理变更（2026-10-14 / 同会话）：服务源码已迁往并列独立项目 `oak-camera-service/`，上文 Tenco 服务路径/提交保留当时事实；线上目录及程序未因拆分改变。见 [迁移记录](相机服务独立项目迁移开发方案与记录.md)。

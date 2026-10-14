@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Maintain canonical workspace documentation and its two repository snapshots.
+"""Maintain canonical workspace documentation and independent repository snapshots.
 
 Run snapshot, sync, then check from the complete workspace. Independently cloned
 repository snapshots support check --documents-only; this is not a code audit.
@@ -35,17 +35,19 @@ FILES = PRIMARY + (
     "tools/project_docs.py", "工控机控制闭环与位姿直连系统开发方案.md",
     "docs/系统架构与测试覆盖审查-2026-09-19.md",
     "docs/位姿地图全链路修复与验证-2026-09-19.md",
+    "tools/tests/test_project_docs.py",
 )
 REPOSITORIES = {
     "src": ("origin", "main", "DAC-Code25/sensor-fusion-ros2"),
     "Tenco": ("Tenco", "master", "DAC-Code25/Tenco"),
+    "oak-camera-service": ("origin", "main", "DAC-Code25/oak-camera-service"),
 }
 ENTRY = """# 项目统一规范入口
 
-本仓库与另一个子项目共同组成工控机/Tenco 工作空间。
+本仓库与其他独立子项目共同组成工控机/Tenco/相机服务工作空间。
 
 1. 完整工作空间中，读取 [根 AGENTS](../AGENTS.md)，再按其顺序读取根 `docs/` 的当前状态、问题、变更、会话和总览。
-2. 独立克隆时，读取 [统一规范快照](docs/workspace/AGENTS.md) 与 [文档入口](docs/workspace/docs/README.md)；该快照注明日期、会话及两仓功能基线，不证明另一仓库或实车当前状态。
+2. 独立克隆时，读取 [统一规范快照](docs/workspace/AGENTS.md) 与 [文档入口](docs/workspace/docs/README.md)；该快照注明日期、会话及各仓功能基线，不证明其他仓库或实车当前状态。
 3. 本文件只提供入口，不另定义控制、Git、构建或记录规则。所有约束编辑源是工作空间根 AGENTS。
 4. `docs/workspace/` 由根 `tools/project_docs.py sync` 生成，禁止独立手改；独立克隆检查使用 `python docs/workspace/tools/project_docs.py check --documents-only`。
 
@@ -247,7 +249,7 @@ def snapshot(root: Path, session: str) -> None:
         "fingerprint_scope": "Git 纳管/未忽略文件，排除 docs/ 与 Markdown；检测源码、配置、测试和构建变化",
     }
     write(root / "docs/项目状态.json", (json.dumps(state, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
-    print("已采集两个仓库的分支、功能基线与源码指纹；请 sync 并 check。")
+    print(f"已采集 {len(repositories)} 个仓库的分支、功能基线与源码指纹；请 sync 并 check。")
 
 
 def expected_manifest(root: Path, state: dict) -> tuple[dict, dict[str, bytes]]:
@@ -294,7 +296,7 @@ def sync(root: Path, initialize_entries: bool) -> None:
         for relative, data in rendered.items():
             write(repo / "docs/workspace" / relative, data)
         write(repo / "docs/workspace/镜像清单.json", (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
-    print(f"已同步统一入口和 {len(rendered)} 个文件到 src、Tenco；未复制原始对话或附件。")
+    print(f"已同步统一入口和 {len(rendered)} 个文件到 {len(REPOSITORIES)} 个仓库；未复制原始对话或附件。")
 
 
 def check(root: Path, documents_only: bool) -> list[str]:
@@ -381,7 +383,7 @@ def main() -> int:
     parser.add_argument("--root", type=Path, default=ROOT, help="完整工作空间根，或独立镜像根")
     parser.add_argument("--session-id", help="snapshot 使用的真实当前会话 UUID")
     parser.add_argument("--documents-only", action="store_true", help="check 独立克隆文档快照，不检查整个项目源码")
-    parser.add_argument("--initialize-entries", action="store_true", help="sync 首次迁移已审阅的两个旧 AGENTS")
+    parser.add_argument("--initialize-entries", action="store_true", help="sync 迁移已审阅的旧 AGENTS 入口")
     args = parser.parse_args()
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -400,7 +402,7 @@ def main() -> int:
             if errors:
                 print("文档检查失败：\n" + "\n".join(errors))
                 return 1
-            mode = "独立文档快照（未验证整个工作空间源码）" if args.documents_only else "完整工作空间文档、源码指纹和两仓镜像"
+            mode = "独立文档快照（未验证整个工作空间源码）" if args.documents_only else f"完整工作空间文档、源码指纹和 {len(REPOSITORIES)} 个仓库镜像"
             print(f"检查通过：{mode}。")
     except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as exc:
         print(f"操作失败：{exc}", file=sys.stderr)
