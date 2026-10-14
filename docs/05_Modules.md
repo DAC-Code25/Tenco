@@ -73,7 +73,7 @@
 
 ## 5. 视频（MJPEG + 录像/截图）
 
-- `services/oak-camera/`：工控机独立 C++17/DepthAI/OpenCV HTTP 服务，与 Qt 本机直连后端分开构建。失败退避重建、缓存新鲜度、异常日志和有界 HTTP 生命周期；见[服务说明](../services/oak-camera/README.md)。真实 USB 恢复需部署后验收，模拟回归不代表在线版本已切换。
+- 工控机相机服务：源码位于并列独立项目 [oak-camera-service](https://github.com/DAC-Code25/oak-camera-service)，原 `services/oak-camera/` 已迁出。独立 C++17/DepthAI/OpenCV HTTP 服务，包含失败退避重建、缓存新鲜度、诊断和有界连接；Tenco 通过下列客户端调用，不编译该服务。真实 USB 恢复/长期验收仍见统一问题清单。
 
 - `abstractvideosource.h/.cpp`
   - 视频源统一接口：预览帧、状态、录像、截图
