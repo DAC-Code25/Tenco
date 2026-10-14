@@ -90,6 +90,7 @@ class WorkspaceTests(unittest.TestCase):
         self.assertTrue(DOCS.check(self.root / "oak-camera-service/docs/workspace", True))
 
     def test_camera_links_render_to_its_own_repository(self):
+        self.run_git(self.root / "oak-camera-service", "switch", "-c", "chore/temporary-task")
         path = self.root / "oak-camera-service/README.md"
         path.write_text("相机说明\n", encoding="utf-8")
         document = self.root / "docs/项目总览.md"

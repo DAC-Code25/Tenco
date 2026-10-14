@@ -17,7 +17,7 @@
 | [开发记录模板](templates/开发记录模板.md) | 实施、验证、前后逻辑、分支/会话与遗留 |
 | [会话交接模板](templates/会话交接模板.md) | 结束、暂停或切换会话前交接 |
 
-根文件是唯一编辑源；`src/`、`Tenco/`、`oak-camera-service/` 三个仓库的 `docs/workspace/` 是生成的受控快照，不能独立修改。相机服务独立入口见 [服务说明](https://github.com/DAC-Code25/oak-camera-service/blob/chore/standalone-project-v1/README.md)。完整对话、附件及本地临时证据不随镜像发布。专题计划和历史报告保留各自日期及事实，通过索引关联最新状态。
+根文件是唯一编辑源；`src/`、`Tenco/`、`oak-camera-service/` 三个仓库的 `docs/workspace/` 是生成的受控快照，不能独立修改。相机服务独立入口见 [服务说明](https://github.com/DAC-Code25/oak-camera-service/blob/main/README.md)。完整对话、附件及本地临时证据不随镜像发布。专题计划和历史报告保留各自日期及事实，通过索引关联最新状态。
 
 重新组装完整工作空间时，可从匹配版本的 `docs/workspace/` 按镜像清单恢复根文档/工具；先确认三份快照版本一致、目标无用户修改，再复制所列文件，分别克隆快照记录的三个源码仓库及分支，按上述目录并列放置。原始会话归档不在镜像中。
 

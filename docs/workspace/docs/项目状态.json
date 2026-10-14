@@ -1,25 +1,25 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-10-14T10:35:14+08:00",
+  "updated_at": "2026-10-14T10:44:49+08:00",
   "session_id": "01a13477-9b6f-7f43-8a41-5e5b77886c15",
   "timezone": "Asia/Shanghai",
   "repositories": {
     "src": {
-      "branch": "docs/oak-camera-standalone-v1",
-      "code_baseline": "55e91373f1e04696b64e30e7578d64c09c0cbc00",
-      "checkpoint_head": "c164aa372d9bfc706d9ea4a6ccfab64d86f7c8c7",
+      "branch": "fix/integrate-defaults-v1",
+      "code_baseline": "522fb1eb36bf30a735bbc5817e02f70c00a0d04f",
+      "checkpoint_head": "522fb1eb36bf30a735bbc5817e02f70c00a0d04f",
       "remote": "origin",
       "default_branch": "main",
       "default_baseline": "c4511358d0dde17643209844ba074803bb0c0d56",
-      "functional_fingerprint": "d101e0a81fc6ea2fa5eac18ba270fceee3bef068d94ce045408283d2ae2f7aed",
-      "functional_file_count": 545,
+      "functional_fingerprint": "ba5ab7f47ff5658bb55ffedecaeb1d9eb459e2b07ea65e1d80571a8ed311257f",
+      "functional_file_count": 546,
       "functional_tracked_changes": [],
       "functional_untracked_files": []
     },
     "Tenco": {
-      "branch": "refactor/oak-camera-standalone-v1",
+      "branch": "chore/integrate-defaults-v1",
       "code_baseline": "52cbeb295aaf79944d352482d96ee7dcf3919fc7",
-      "checkpoint_head": "3cf71bfa9b37bd5f1938851fe39329166ce2f92b",
+      "checkpoint_head": "a0d41fb0ad35ba5bcff76fe706161c4f095d5077",
       "remote": "Tenco",
       "default_branch": "master",
       "default_baseline": "8c5327a63295b0816e670ee1a9ea0f71197f3725",
@@ -29,9 +29,9 @@
       "functional_untracked_files": []
     },
     "oak-camera-service": {
-      "branch": "chore/standalone-project-v1",
+      "branch": "chore/integrate-defaults-v1",
       "code_baseline": "19d3ba1feddb387c46b5b05f441acc2021bfb4d5",
-      "checkpoint_head": "db57bf6a5b7d13157590bc7efefd64bc3e4b79d2",
+      "checkpoint_head": "32c308372e4322d35a6801422a3a8a6b70991aa9",
       "remote": "origin",
       "default_branch": "main",
       "default_baseline": "32918441be25957ff515cc500028644613ca7d60",

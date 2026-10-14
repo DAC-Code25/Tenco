@@ -197,7 +197,9 @@ def mirror_content(root: Path, name: str, state: dict) -> bytes:
                 relative = path.relative_to((root / repo_name).resolve())
             except ValueError:
                 continue
-            branch = state["repositories"][repo_name]["branch"]
+            # Task branches are deleted after integration. Current documents
+            # must retain working cross-repository links after that cleanup.
+            branch = state["repositories"][repo_name]["default_branch"]
             url = f"https://github.com/{slug}/blob/{quote(branch, safe='/')}/{quote(relative.as_posix(), safe='/')}"
             return f"[{label}]({url}{'#' + anchor if anchor else ''})"
         # Untracked local evidence remains named, without a broken mirror link.
