@@ -18,12 +18,12 @@
       "mirror_sha256": "e26bfae4b16575aeea83ddcd9ca464cc17c898414c2319d7e05e0dd47bf6bfaa"
     },
     "docs/当前状态.md": {
-      "source_sha256": "1d4c023765a825ab59cd4aa4c497c4aef0ffc8b77df1500e67402ca1bd75b78b",
-      "mirror_sha256": "423cde6efd1c3a74d82d5392c1343d32230a14bc270983d4453bd316466dcc4f"
+      "source_sha256": "22c3286e5dd58d4e18c3c1925a40573d28353a41cca10dc2a83723ee9198492c",
+      "mirror_sha256": "aa91569c045eb4b19022a24a5f11cdd6048c71c269f6199569f3592a8a984c7a"
     },
     "docs/变更记录.md": {
-      "source_sha256": "3c0cf418041355cbee3b15be30069c019c099b18a529d3baebd46fdfda77fc0d",
-      "mirror_sha256": "5a777f5556f9f97f8332712c23e7f3febbe596beb868c5a6fee9e3ac39afc2d5"
+      "source_sha256": "3bdb65ae5059696ac58d5833daabb81eed525a84cbd46d822f8a31d691e548e9",
+      "mirror_sha256": "526d2bd82c2a34f85ab8f51146714adf9ed6ecca53400a7e0981534c810623fe"
     },
     "docs/问题与待办.md": {
       "source_sha256": "aef61535b57409ddcd1467446a94316e5e10487cf085f6f150596e762c3e0143",
