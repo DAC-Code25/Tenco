@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-10-14T20:52:14+08:00",
+  "updated_at": "2026-10-14T20:57:38+08:00",
   "session_id": "01a13477-9b6f-7f43-8a41-5e5b77886c15",
   "timezone": "Asia/Shanghai",
   "repositories": {
     "src": {
       "branch": "fix/vehicle-parameters-20261014",
       "code_baseline": "b3ed1854368ce049a1a472e479b5485c25bfbf79",
-      "checkpoint_head": "b3ed1854368ce049a1a472e479b5485c25bfbf79",
+      "checkpoint_head": "a43de1fd2effe38f9076e088d2efc91579885d6b",
       "remote": "origin",
       "default_branch": "main",
       "default_baseline": "84bc603ef297b3ee32d7a120f473937d454260a5",
@@ -19,7 +19,7 @@
     "Tenco": {
       "branch": "fix/vehicle-parameters-20261014",
       "code_baseline": "ded32430b74ff6afef0de8b024b5eabe4d50aea1",
-      "checkpoint_head": "ded32430b74ff6afef0de8b024b5eabe4d50aea1",
+      "checkpoint_head": "24d6da3f715bcae4737aad12888ca9a396906afc",
       "remote": "Tenco",
       "default_branch": "master",
       "default_baseline": "a7e6d68512759e9e085cd6bf049fe02fe32dbd27",
@@ -31,7 +31,7 @@
     "oak-camera-service": {
       "branch": "fix/vehicle-parameters-20261014",
       "code_baseline": "248a85fd2b47380570620c1a72411a03d791664c",
-      "checkpoint_head": "8914106f506f734ffa01aae121b6870dc4c6c6f0",
+      "checkpoint_head": "beda7768182aa6a934482953a4e918832fd76b60",
       "remote": "origin",
       "default_branch": "main",
       "default_baseline": "2f4d90f58ac1bf85eb8dce4f38c0c594971dd181",
