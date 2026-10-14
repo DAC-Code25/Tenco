@@ -30,7 +30,7 @@
 
 ### 3.1 geo（地理基准）
 
-用于经纬度与本地坐标换算，地图模块会读取。
+保留历史经纬度换算工具。自动任务以工控机 ENU 原点及 MapFrameBinding 为准。
 
 - `geo.baseLatitudeDeg`
 - `geo.baseLongitudeDeg`
@@ -38,23 +38,13 @@
 对应代码：
 
 - 读取：`ConfigManager::geo()`（`configmanager.h/.cpp`）
-- 使用：`Map::handleModuleActivated()`（`map.cpp`）
+- 自动任务不以该项替代工控机 active 原点。
 
-### 3.2 control（路线跟随控制参数）
+### 3.2 手动、任务与位姿服务
 
-用于 `RouteFollower` 计算 `cmd_vel`（速度与角速度）。
+配置 schemaVersion=2。manualControl 保存手动速度上限和 20～100 ms 心跳；taskDefaults 保存任务期望速度、到达容差、安全通道与转向区域 ID。poseSource.baseUrl 和 tracking.baseUrl 均包含 /api/v1。PP 和速度规划参数只在工控机管理。
 
-关键字段示例：
-
-- `maxLinearSpeed` / `maxAngularSpeed`
-- `arrivalDistanceThreshold` / `arrivalAngleThresholdDeg`
-- `linearGain` / `angularGain`
-- `linearAccelerationLimit` / `linearDecelerationLimit`（限加减速）
-
-对应代码：
-
-- 读取：`ConfigManager::control()`
-- 使用：`HomeControlCoordinator::routeFollowerParamsFromConfig()` 生成 `RouteFollower::ControlParams`
+schema1 的 control 只迁移手动上限/心跳与任务请求容差，原文件保存为 .schema1.bak；不保留旧控制器开关、增益或 rowWork 网关。旧任务的停车容差作为原请求值保留，不静默改成新的 0.03 m。未知配置版本禁止启动新任务服务客户端。
 
 ### 3.3 routePlanning（路径搜索代价模型）
 
@@ -69,13 +59,9 @@
 - 读取：`ConfigManager::routePlanning()`
 - 使用：`MapRoutePlanner::findPathIds()`，由 `Map::findRoutePathIds()` 调用
 
-### 3.4 vehicle（车辆参数）
+### 3.4 工控机车辆标定
 
-用于和车辆物理相关的参数（当前更多是预留/可扩展）。
-
-- `wheelBaseMeters`
-- `wheelDiameterMeters`
-- `gearReduction`
+上位机不再保存独立 vehicle 参数。维护页回读标定版本、轮距、左右轮径、轮端 ticks、原点和控制配置。geo 仅保留既有经纬度换算工具配置；自动任务坐标使用 MapFrameBinding，不能用 geo 替代工控机原点。
 
 ### 3.5 video（视频流）
 
@@ -203,8 +189,6 @@ OAK/DepthAI 的完整落地方案见 `docs/develop/USB_OAK相机接入开发方�
 
 - `network.websocketUrl`：底盘控制 WebSocket
 - `network.statusReadUrl`：状态轮询接口
-- `network.writeInsUrl`：写寄存器/写模式接口
-- `network.saveFileUrl`：保存远端文件接口（例如 GPS 配置）
 - `network.authToken`：可选认证令牌，若非空会自动附加 `Authorization: Bearer <token>`
 - `network.statusPollIntervalMs`：轮询周期（ms）
 

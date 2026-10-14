@@ -14,7 +14,8 @@ private slots:
 void StatusProtocolTest::buildsDefaultReadRequests()
 {
     const QJsonArray requests = StatusProtocol::defaultReadRequests();
-    QCOMPARE(requests.size(), 9);
+    QCOMPARE(requests.size(), 8);
+    for (const auto& r : requests) QVERIFY(r.toObject()["address"].toString() != "100");
 
     const QJsonObject first = requests.at(0).toObject();
     QCOMPARE(first.value(QStringLiteral("address")).toString(), QString::fromUtf8(StatusProtocol::Address::kBatteryPercent));
@@ -24,8 +25,7 @@ void StatusProtocolTest::buildsDefaultReadRequests()
 
 void StatusProtocolTest::mapsAddressToFieldId()
 {
-    QCOMPARE(StatusProtocol::fieldIdFromAddress(QString::fromUtf8(StatusProtocol::Address::kVehiclePose)),
-             StatusProtocol::FieldId::VehiclePose);
+    QCOMPARE(StatusProtocol::fieldIdFromAddress(QStringLiteral("100")), StatusProtocol::FieldId::Unknown);
     QCOMPARE(StatusProtocol::fieldIdFromAddress(QString::fromUtf8(StatusProtocol::Address::kMapName)),
              StatusProtocol::FieldId::MapName);
     QCOMPARE(StatusProtocol::fieldIdFromAddress(QStringLiteral("not-exists")),

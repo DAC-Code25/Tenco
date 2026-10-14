@@ -31,7 +31,7 @@ void MotionCommandArbiter::setManualCommandConfig(const ManualCommandConfig &con
 
 void MotionCommandArbiter::setHeartbeatIntervalMs(int intervalMs)
 {
-    const int boundedInterval = qBound(20, intervalMs, 1000);
+    const int boundedInterval = qBound(20, intervalMs, 100);
     if (m_heartbeatIntervalMs == boundedInterval) {
         return;
     }
@@ -51,16 +51,14 @@ void MotionCommandArbiter::setChassisConnected(bool connected)
 
     if (!connected) {
         const bool hadMotionContext =
-            m_routeActive ||
             hasAnyHeldInput() ||
             m_manualHeartbeat.isActive() ||
             (m_hasLastCommand && isNonZero(m_lastCommand));
         m_chassisConnected = false;
         m_manualHeartbeat.stop();
         clearHeldInputs();
-        m_routeActive = false;
-        m_routeLinear = 0.0;
-        m_routeAngular = 0.0;
+
+
         rememberZeroCommand();
         if (hadMotionContext) {
             emit safetyStopRequested(QStringLiteral("chassis_disconnected"));
@@ -87,62 +85,34 @@ void MotionCommandArbiter::setManualInputActive(ManualInput input, bool active, 
         return;
     }
 
+    if (active && !(fromKeyboard ? m_manualConfig.keysEnabled : m_manualConfig.buttonsEnabled)) return;
     inputs[static_cast<size_t>(index)] = active;
-    evaluateManualCommand(true);
-}
-
-void MotionCommandArbiter::setRouteCommand(double linear, double angular)
-{
-    if (!m_chassisConnected) {
-        return;
-    }
-
-    m_routeActive = true;
-    m_routeLinear = linear;
-    m_routeAngular = angular;
-    if (m_manualHeartbeat.isActive()) {
-        m_manualHeartbeat.stop();
-    }
-    emitVelocity(currentRouteCommand(), true);
-}
-
-void MotionCommandArbiter::clearRouteCommand()
-{
-    if (!m_routeActive) {
-        return;
-    }
-
-    m_routeActive = false;
-    m_routeLinear = 0.0;
-    m_routeAngular = 0.0;
     evaluateManualCommand(true);
 }
 
 void MotionCommandArbiter::emergencyStop(const QString &reason)
 {
-    stopAll(normalizedReason(reason, QStringLiteral("emergency_stop")));
+    stopAll(normalizedReason(reason, QStringLiteral("emergency_stop")), true);
 }
 
-void MotionCommandArbiter::stopAll(const QString &reason)
+void MotionCommandArbiter::stopAll(const QString &reason, bool forceZero)
 {
     const bool hadMotionContext =
-        m_routeActive ||
         hasAnyHeldInput() ||
         m_manualHeartbeat.isActive() ||
         (m_hasLastCommand && isNonZero(m_lastCommand));
 
     m_manualHeartbeat.stop();
     clearHeldInputs();
-    m_routeActive = false;
-    m_routeLinear = 0.0;
-    m_routeAngular = 0.0;
+
+
 
     if (hadMotionContext) {
         emit safetyStopRequested(normalizedReason(reason, QStringLiteral("stop_all")));
     }
 
     const Command stopCommand;
-    if (m_chassisConnected) {
+    if (m_chassisConnected && (hadMotionContext || forceZero)) {
         emitVelocity(stopCommand, true);
     } else {
         rememberZeroCommand();
@@ -151,7 +121,7 @@ void MotionCommandArbiter::stopAll(const QString &reason)
 
 void MotionCommandArbiter::sendManualHeartbeat()
 {
-    if (m_routeActive) {
+    if (!m_chassisConnected) {
         m_manualHeartbeat.stop();
         return;
     }
@@ -225,14 +195,6 @@ MotionCommandArbiter::Command MotionCommandArbiter::currentManualCommand() const
     return command;
 }
 
-MotionCommandArbiter::Command MotionCommandArbiter::currentRouteCommand() const
-{
-    Command command;
-    command.linear = m_routeLinear;
-    command.angular = m_routeAngular;
-    return command;
-}
-
 void MotionCommandArbiter::clearHeldInputs()
 {
     m_buttonInputs.fill(false);
@@ -242,10 +204,6 @@ void MotionCommandArbiter::clearHeldInputs()
 void MotionCommandArbiter::evaluateManualCommand(bool forceEmit)
 {
     if (!m_chassisConnected) {
-        m_manualHeartbeat.stop();
-        return;
-    }
-    if (m_routeActive) {
         m_manualHeartbeat.stop();
         return;
     }

@@ -1,13 +1,17 @@
 # Tenco
 
-基于 **Qt Widgets** 的机器人/底盘上位机示例工程：提供状态监控、手动遥控、MJPEG 视频流显示/录像/截图，以及地图编辑与路线分段下发。
+项目统一规范与最新状态见 [AGENTS 入口](AGENTS.md) 和 [受控工作空间文档](docs/workspace/docs/README.md)。完整工作空间以根 `AGENTS.md`、`docs/当前状态.md` 和 `docs/问题与待办.md` 为准。
+
+工控机 OAK/DepthAI HTTP 相机服务由独立仓库 [oak-camera-service](https://github.com/DAC-Code25/oak-camera-service) 维护，完整工作空间位于与 Tenco 并列的 `oak-camera-service/`。Tenco 保留 HTTP 视频/拍照/录像客户端；服务独立构建和部署，不加入 Windows Qt 应用链接。原 `services/oak-camera/` 已迁出，历史开发记录保留；最新管理边界见 [迁移记录](docs/develop/相机服务独立项目迁移开发方案与记录.md)。
+
+基于 **Qt Widgets** 的机器人/底盘上位机示例工程：提供状态监控、手动遥控、MJPEG 视频流显示/录像/截图，以及地图编辑、任务规划与工控机任务下发。
 
 ## 功能概览
 
-- **状态监控（HTTP 轮询）**：电量/电压/温度/运行时长/当前地图名/速度/位姿等。
+- **状态监控（HTTP 轮询）**：电量/电压/温度/运行时长/当前地图名/速度等；融合位姿直接读取工控机。
 - **底盘控制（WebSocket）**：发送 `cmd_vel` 速度指令；支持按钮长按连发与键盘 `W/A/S/D` 控制。
 - **视频（HTTP MJPEG）**：实时显示、断线重连、录像（`.mjpeg`）与截图（`.jpg`）。
-- **地图/路线**：地图网格、点/线/弧路径编辑、路线队列、分段下发与执行反馈；支持“新建/加载/另存为/保存”与未保存内容确认。
+- **地图/路线**：地图网格、点/线/弧路径编辑、路线队列、完整任务上传与执行反馈；支持“新建/加载/另存为/保存”与未保存内容确认。
 - **数据存储**：本地 SQLite 持久化为基础，预留 PostgreSQL / TimescaleDB 中心化与时序扩展方案。
 - **窗口体验**：无边框窗口，支持拖动、置顶、最小化/最大化/关闭。
 
@@ -75,8 +79,10 @@ ctest --preset release
 `config.json` 结构示例（仓库已提供一份）：
 
 - `geo.baseLatitudeDeg / baseLongitudeDeg`：基准经纬度（地图模块用于坐标换算）。
-- `control.*`：路线跟随相关阈值与控制参数（最大速度、增益、到达判定、加减速限制等）。
-- `vehicle.*`：车辆参数（轮距、轮径、减速比）。
+- `manualControl.*`：手动速度上限和直连心跳。
+- `taskDefaults.*`：任务请求速度、停车容差和工控机安全区域 ID。
+- `poseSource.*` / `tracking.*`：工控机位姿、任务服务地址和超时。
+- 车辆标定由工控机统一管理，维护页只读显示当前版本。
 - `video.*`：视频流 URL（MJPEG）、重连间隔、是否自动启动、是否缩放显示。
 
 ## 网络与协议（需要按你的设备调整）
@@ -85,8 +91,6 @@ ctest --preset release
 
 - `network.websocketUrl`：WebSocket（底盘控制）
 - `network.statusReadUrl`：HTTP（状态轮询）
-- `network.writeInsUrl`：HTTP（写寄存器/模式等）
-- `network.saveFileUrl`：HTTP（保存远端文件，如 GPS 配置）
 - `network.authToken`：可选，若配置则自动以 `Authorization: Bearer <token>` 访问 HTTP/WebSocket
 - `network.statusPollIntervalMs`：状态轮询间隔（ms）
 - `database.*`：数据库后端与连接参数。默认使用本地 SQLite，后续生产中心库建议使用 PostgreSQL；高频状态/轨迹历史可扩展到 TimescaleDB。
@@ -100,7 +104,7 @@ ctest --preset release
 | `3f` | 电量百分比（Battery + `%`） |
 | `38` | 电池电压（V） |
 | `3c` | 模式（维护/手动/自动） |
-| `100` | 车辆位姿（x, y, theta），并同步到地图模块 |
+| 工控机 `/pose` | 权威 ENU/base_link 位姿，经坐标适配显示在地图 |
 | `320` | 当前地图名称 |
 | `20` | 速度显示（LCD） |
 | `13` | 电池温度（℃） |
@@ -114,10 +118,11 @@ ctest --preset release
 - `MainWindow`：承载导航栏与页面容器（`QStackedWidget`），并处理无边框拖动/置顶等。
 - `Home`：
   - `StatusClient`（内部使用 `HomeNetworkWorker + QThread`）：周期性 HTTP 拉取状态 → 更新 UI
-  - `ChassisClient`（`QWebSocket`）：发送速度指令 `cmd_vel` / 重启 / 停止定位等
+  - `ChassisClient`（`QWebSocket`）：独立手动 `cmd_vel` 与既有底盘维护操作，无许可握手
   - `VideoClient`（HTTP MJPEG）：解析 JPEG 帧 → 显示/录像/截图 + 断线重连
-  - `RouteFollower`：路线段跟随算法（输出速度命令，由 `Home` 转发给 `ChassisClient`）
-- `Map`：地图编辑器（`QGraphicsScene/View`），支持点/路径/路线队列；路线按段下发。
+  - `TaskCompiler`：常规/单垄/多垄任务编译，自动速度由工控机生成。
+  - `ControlSessionCoordinator`：任务操作会话、地图/计划版本、任务回读及明确接续。
+- `Map`：地图编辑器（`QGraphicsScene/View`），支持点/路径/路线队列；编译完整任务交工控机执行。
 - `ConfigManager`：单例配置加载与坐标换算。
 
 ## 开发文档（更详细）
@@ -139,10 +144,12 @@ ctest --preset release
 
 ### 路线执行链路
 
-1. `Map` 组装一段 polyline 后发出 `routeSegmentDispatched(...)`
-2. `Home` 接收后进入段队列并启动跟随定时器，持续发速度
-3. 段结束 `Home` 发出 `routeSegmentCompleted(bool)`
-4. `Map` 收到后继续发下一段，直到队列完成或取消
+1. `Map` 准备常规路线、单垄或多垄计划，经 `TaskCompiler` 编译完整任务。
+2. `TrackingClient` 上传任务；明确启动后，由工控机执行跟踪、速度规划、停稳、转向、等待与循环。
+3. `PoseClient` 获取工控机同源位姿，地图转换后显示车标；任务状态、事件和结果独立回读。
+4. 上位机重开时回读/预览/校核原计划，明确确认后显式恢复；退出不暂停已启动的普通自动任务。
+
+手动控制仍使用独立原 WebSocket 直达底盘，不依赖工控机许可。拍照外部确认业务继续由上位机协调。
 
 ## 常见问题（FAQ）
 
@@ -165,3 +172,7 @@ ctest --preset release
 
 
 
+
+## 工控机闭环版本
+
+使用 [操作与接口说明](docs/工控机闭环操作与接口.md)。自动任务由工控机执行标准 Pure Pursuit；上位机无本地自动控制器和旧 row-work 网关。手动保持原 WebSocket cmd_vel 报文，无需底盘许可，直接发送。自动任务不依赖上位机运行或手动输入。旧配置会备份后迁移；旧地图/单垄/多垄文件必须确认坐标绑定后上传。本车轮距 0.25 m、左右轮径 0.20 m，现有 Lua 不修改；现场仍须核实其余标定；默认配置不证明实车已验收。

@@ -21,44 +21,6 @@
 
 #include <cmath>
 
-class FakeRouteExecutor : public QObject
-{
-    Q_OBJECT
-
-public:
-    struct DispatchRecord {
-        int fromId = -1;
-        int toId = -1;
-        QList<QPointF> polyline;
-        double startTheta = 0.0;
-        double endTheta = 0.0;
-    };
-
-    Map *map = nullptr;
-    bool autoComplete = false;
-    bool completionResult = true;
-    QList<DispatchRecord> dispatches;
-
-public slots:
-    void handleDispatched(int fromId, int toId, const QList<QPointF> &polyline, double startTheta, double endTheta)
-    {
-        dispatches.append(DispatchRecord{fromId, toId, polyline, startTheta, endTheta});
-        if (!autoComplete || !map) {
-            return;
-        }
-
-        QTimer::singleShot(0, map, [this]() {
-            if (!map) {
-                return;
-            }
-            QMetaObject::invokeMethod(map,
-                                      "handleRouteSegmentCompleted",
-                                      Qt::QueuedConnection,
-                                      Q_ARG(bool, completionResult));
-        });
-    }
-};
-
 class MapRouteIntegrationTest : public QObject
 {
     Q_OBJECT
@@ -163,15 +125,6 @@ private:
         pumpEvents();
     }
 
-    void completeSegment(Map &map, bool success)
-    {
-        const bool invoked = QMetaObject::invokeMethod(&map,
-                                                       "handleRouteSegmentCompleted",
-                                                       Qt::DirectConnection,
-                                                       Q_ARG(bool, success));
-        QVERIFY(invoked);
-        pumpEvents();
-    }
 
     bool polylineContains(const QList<QPointF> &polyline, const QPointF &expected) const
     {
@@ -188,8 +141,6 @@ private slots:
     void showsTaskTabsForRouteAndRowWork();
     void showsRowWorkModeTabsForPrimitiveAndMission();
     void showsScrollableLeftEditorPanelWithStackedGroups();
-    void executesQueuedRouteEndToEnd();
-    void replansRemainingRouteAfterSegmentFailure();
 };
 
 void MapRouteIntegrationTest::showsTaskTabsForRouteAndRowWork()
@@ -250,101 +201,7 @@ void MapRouteIntegrationTest::showsScrollableLeftEditorPanelWithStackedGroups()
     QVERIFY(requireChild<QGroupBox>(mapPage, "mapPathBox") != nullptr);
 }
 
-void MapRouteIntegrationTest::executesQueuedRouteEndToEnd()
-{
-    QMainWindow window;
-    Ui::MainWindow ui;
-    ui.setupUi(&window);
 
-    Map map(&ui);
-    QWidget *mapPage = ui.mapPage;
-    QVERIFY(mapPage != nullptr);
-
-    addPoint(mapPage, 0.0, 0.0, 0.0);
-    addPoint(mapPage, 5.0, 0.0, 0.0);
-    addPoint(mapPage, 10.0, 0.0, 0.0);
-
-    addPath(mapPage, 1, 2);
-    addPath(mapPage, 2, 3);
-
-    addRoute(mapPage, 1, 2);
-    addRoute(mapPage, 2, 3);
-
-    map.updateVehiclePose(0.0, 0.0, 0.0);
-    pumpEvents();
-
-    FakeRouteExecutor executor;
-    executor.map = &map;
-    executor.autoComplete = true;
-    connect(&map, &Map::routeSegmentDispatched, &executor, &FakeRouteExecutor::handleDispatched);
-
-    QSignalSpy completedSpy(&map, &Map::routeQueueCompletedOnce);
-
-    startRoute(mapPage);
-
-    QTRY_COMPARE_WITH_TIMEOUT(executor.dispatches.size(), 2, 1000);
-    QTRY_COMPARE_WITH_TIMEOUT(completedSpy.count(), 1, 1000);
-
-    QCOMPARE(executor.dispatches.at(0).fromId, 1);
-    QCOMPARE(executor.dispatches.at(0).toId, 2);
-    QCOMPARE(executor.dispatches.at(1).fromId, 2);
-    QCOMPARE(executor.dispatches.at(1).toId, 3);
-
-    auto *queueList = requireChild<QListWidget>(mapPage, "mapRouteQueueList");
-    QCOMPARE(queueList->count(), 2);
-    QVERIFY(queueList->item(0)->text().contains(QStringLiteral("点1 → 点2")));
-    QVERIFY(queueList->item(1)->text().contains(QStringLiteral("点2 → 点3")));
-}
-
-void MapRouteIntegrationTest::replansRemainingRouteAfterSegmentFailure()
-{
-    QMainWindow window;
-    Ui::MainWindow ui;
-    ui.setupUi(&window);
-
-    Map map(&ui);
-    QWidget *mapPage = ui.mapPage;
-    QVERIFY(mapPage != nullptr);
-
-    addPoint(mapPage, 0.0, 0.0, 0.0);
-    addPoint(mapPage, 5.0, 0.0, 0.0);
-    addPoint(mapPage, 10.0, 0.0, 0.0);
-    addPoint(mapPage, 5.0, 5.0, 0.0);
-
-    addPath(mapPage, 1, 2);
-    addPath(mapPage, 2, 3);
-    addRoute(mapPage, 1, 3);
-
-    map.updateVehiclePose(0.0, 0.0, 0.0);
-    pumpEvents();
-
-    FakeRouteExecutor executor;
-    executor.map = &map;
-    connect(&map, &Map::routeSegmentDispatched, &executor, &FakeRouteExecutor::handleDispatched);
-
-    startRoute(mapPage);
-    QTRY_COMPARE_WITH_TIMEOUT(executor.dispatches.size(), 1, 1000);
-    QCOMPARE(executor.dispatches.constFirst().fromId, 1);
-    QCOMPARE(executor.dispatches.constFirst().toId, 3);
-
-    addPath(mapPage, 2, 4);
-    addPath(mapPage, 4, 3);
-    removePath(mapPage, 2, 3);
-
-    map.updateVehiclePose(5.0, 0.0, 0.0);
-    pumpEvents();
-
-    completeSegment(map, false);
-
-    QTRY_COMPARE_WITH_TIMEOUT(executor.dispatches.size(), 2, 1000);
-    QCOMPARE(executor.dispatches.at(1).fromId, 2);
-    QCOMPARE(executor.dispatches.at(1).toId, 3);
-    QVERIFY(polylineContains(executor.dispatches.at(1).polyline, QPointF(5.0, 5.0)));
-
-    auto *queueList = requireChild<QListWidget>(mapPage, "mapRouteQueueList");
-    QCOMPARE(queueList->count(), 1);
-    QVERIFY(queueList->item(0)->text().contains(QStringLiteral("点2 → 点3")));
-}
 
 QTEST_MAIN(MapRouteIntegrationTest)
 #include "test_map_route_integration.moc"

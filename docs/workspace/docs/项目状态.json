@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-10-14T10:44:49+08:00",
+  "session_id": "01a13477-9b6f-7f43-8a41-5e5b77886c15",
+  "timezone": "Asia/Shanghai",
+  "repositories": {
+    "src": {
+      "branch": "fix/integrate-defaults-v1",
+      "code_baseline": "522fb1eb36bf30a735bbc5817e02f70c00a0d04f",
+      "checkpoint_head": "522fb1eb36bf30a735bbc5817e02f70c00a0d04f",
+      "remote": "origin",
+      "default_branch": "main",
+      "default_baseline": "c4511358d0dde17643209844ba074803bb0c0d56",
+      "functional_fingerprint": "ba5ab7f47ff5658bb55ffedecaeb1d9eb459e2b07ea65e1d80571a8ed311257f",
+      "functional_file_count": 546,
+      "functional_tracked_changes": [],
+      "functional_untracked_files": []
+    },
+    "Tenco": {
+      "branch": "chore/integrate-defaults-v1",
+      "code_baseline": "52cbeb295aaf79944d352482d96ee7dcf3919fc7",
+      "checkpoint_head": "a0d41fb0ad35ba5bcff76fe706161c4f095d5077",
+      "remote": "Tenco",
+      "default_branch": "master",
+      "default_baseline": "8c5327a63295b0816e670ee1a9ea0f71197f3725",
+      "functional_fingerprint": "115f6287f8166bb40f43e34469fbb9df320df5183fbb6e1f69d0506752aeee54",
+      "functional_file_count": 158,
+      "functional_tracked_changes": [],
+      "functional_untracked_files": []
+    },
+    "oak-camera-service": {
+      "branch": "chore/integrate-defaults-v1",
+      "code_baseline": "19d3ba1feddb387c46b5b05f441acc2021bfb4d5",
+      "checkpoint_head": "32c308372e4322d35a6801422a3a8a6b70991aa9",
+      "remote": "origin",
+      "default_branch": "main",
+      "default_baseline": "32918441be25957ff515cc500028644613ca7d60",
+      "functional_fingerprint": "8dac2fd414a4077ed7afbc776070f45bfa8880cdcdc0eecfc3bbcf85b666c79e",
+      "functional_file_count": 16,
+      "functional_tracked_changes": [],
+      "functional_untracked_files": []
+    }
+  },
+  "scope": "本机源码与文档快照；非实车或另一克隆的实时状态",
+  "fingerprint_scope": "Git 纳管/未忽略文件，排除 docs/ 与 Markdown；检测源码、配置、测试和构建变化"
+}

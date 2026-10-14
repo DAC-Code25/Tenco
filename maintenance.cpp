@@ -340,10 +340,8 @@ bool scrollParentArea(QWidget *widget, QWheelEvent *wheelEvent)
 QString parameterDescription(const QString &key)
 {
     static const QHash<QString, QString> descriptions = {
-        {QStringLiteral("network.websocketUrl"), QStringLiteral("底盘 WebSocket 控制地址，用于首页/地图向小车发送速度和控制指令。控制器 IP 或端口变化时修改。")},
-        {QStringLiteral("network.statusReadUrl"), QStringLiteral("状态读取 HTTP 地址，用于获取电量、位姿、速度等运行状态。状态页无数据或换控制器时检查。")},
-        {QStringLiteral("network.writeInsUrl"), QStringLiteral("写寄存器 HTTP 地址，用于向控制器写入部分控制/任务指令。接口地址变化时修改。")},
-        {QStringLiteral("network.saveFileUrl"), QStringLiteral("地图保存 HTTP 地址，用于把地图或路径文件保存到控制器侧。地图保存失败时检查。")},
+        {QStringLiteral("network.websocketUrl"), QStringLiteral("底盘 WebSocket 控制地址，用于首页向小车发送手动速度及本通道停止指令。控制器 IP 或端口变化时修改。")},
+        {QStringLiteral("network.statusReadUrl"), QStringLiteral("状态读取 HTTP 地址，用于获取电量、电压和设备模式等运行状态。状态页无数据或换控制器时检查。")},
         {QStringLiteral("network.authToken"), QStringLiteral("接口认证 Token，需要与控制器服务保持一致。认证失败或服务更换密钥时修改。")},
         {QStringLiteral("network.statusPollIntervalMs"), QStringLiteral("状态轮询周期。数值越小状态越实时，但网络和控制器负载越高。")},
         {QStringLiteral("network.statusRequestTimeoutMs"), QStringLiteral("单次状态请求超时时间。太小容易误判离线，太大会让故障恢复变慢。")},
@@ -386,37 +384,10 @@ QString parameterDescription(const QString &key)
         {QStringLiteral("gimbal.maxPitch"), QStringLiteral("俯仰下俯方向软限位，基于 PLC 反馈俯仰角判断。设置前需确认相机和线缆不会干涉。")},
         {QStringLiteral("gimbal.safetyStopTimeoutMs"), QStringLiteral("点动安全超时。按键/按钮持续按下超过该时间会自动停止，防止松开事件丢失后机构持续运动。")},
 
-        {QStringLiteral("rowWork.enabled"), QStringLiteral("是否启用地图页直线/多垄作业服务。关闭后不再轮询或下发作业命令。")},
-        {QStringLiteral("rowWork.gatewayBaseUrl"), QStringLiteral("工控机作业服务基地址，用于下发作业计划、启动/停止任务和查询作业状态。")},
-        {QStringLiteral("rowWork.statusPollIntervalMs"), QStringLiteral("作业状态轮询周期。越小状态越实时，但工控机接口请求更频繁。")},
-        {QStringLiteral("rowWork.commandTimeoutMs"), QStringLiteral("作业命令请求超时时间，包括计划下发、启动、暂停、停止等操作。")},
-        {QStringLiteral("rowWork.autoRefreshPlanStatus"), QStringLiteral("地图页是否自动刷新作业状态。现场联调时可关闭以减少请求干扰。")},
 
         {QStringLiteral("geo.baseLatitudeDeg"), QStringLiteral("地图本地坐标换算的基准纬度。基准点变化会影响后续坐标换算，不会自动重投影已有点。")},
         {QStringLiteral("geo.baseLongitudeDeg"), QStringLiteral("地图本地坐标换算的基准经度。应与现场地图/定位坐标系保持一致。")},
-        {QStringLiteral("control.arrivalDistanceThreshold"), QStringLiteral("距离目标点小于该值时认为到点。过大可能提前到点，过小可能在目标附近反复调整。")},
-        {QStringLiteral("control.arrivalAngleThresholdDeg"), QStringLiteral("航向误差小于该角度时认为朝向满足到点条件。")},
-        {QStringLiteral("control.maxLinearSpeed"), QStringLiteral("路径跟踪允许的最大前进线速度。现场颠簸、定位抖动或狭窄垄间应适当降低。")},
-        {QStringLiteral("control.maxAngularSpeed"), QStringLiteral("路径跟踪允许的最大角速度。过大会导致转向激烈，过小会导致纠偏慢。")},
-        {QStringLiteral("control.linearGain"), QStringLiteral("线速度控制增益。越大越积极接近目标，但可能引起速度波动。")},
-        {QStringLiteral("control.angularGain"), QStringLiteral("角速度控制增益。越大纠偏越快，但定位噪声大时容易左右摆动。")},
-        {QStringLiteral("control.headingStopThresholdDeg"), QStringLiteral("航向误差超过该阈值时停止前进，优先修正朝向，避免偏航较大时继续冲出轨迹。")},
-        {QStringLiteral("control.headingSlowdownThresholdDeg"), QStringLiteral("航向误差超过该阈值后开始降低线速度，用于提升大偏差时的行驶稳定性。")},
-        {QStringLiteral("control.headingSlowdownFactor"), QStringLiteral("航向减速系数。数值越小，大航向误差时前进速度降得越多。")},
-        {QStringLiteral("control.nearTargetDistanceMultiplier"), QStringLiteral("近目标区距离倍率。到点阈值乘以该倍率后进入近目标减速区。")},
-        {QStringLiteral("control.nearTargetSpeedMultiplier"), QStringLiteral("近目标区速度倍率。越小越稳，但到点耗时更长。")},
-        {QStringLiteral("control.linearAccelerationLimit"), QStringLiteral("线速度加速限制，用于避免前进速度突变导致车体冲击或打滑。")},
-        {QStringLiteral("control.linearDecelerationLimit"), QStringLiteral("线速度减速限制，用于控制减速平顺性。过小会导致停车距离变长。")},
-        {QStringLiteral("control.angularAccelerationLimit"), QStringLiteral("角速度加速限制，用于避免转向指令突变。")},
-        {QStringLiteral("control.angularDecelerationLimit"), QStringLiteral("角速度减速限制，用于控制停止转向时的平顺性。")},
-        {QStringLiteral("control.finalAdjustLinearSpeed"), QStringLiteral("终点姿态微调阶段允许的线速度。通常应小于正常最大线速度。")},
-        {QStringLiteral("control.finalAdjustAngularSpeed"), QStringLiteral("终点姿态微调阶段允许的角速度。用于最后对准目标朝向。")},
-        {QStringLiteral("control.routeFollowerUpdateIntervalMs"), QStringLiteral("路径跟踪控制循环周期。周期越短响应越快，但控制计算和通信更频繁。")},
-        {QStringLiteral("control.manualMotionRepeatIntervalMs"), QStringLiteral("首页手动速度指令长按连发周期。越小遥控响应越连续，但底盘通信压力越高。")},
 
-        {QStringLiteral("vehicle.wheelBaseMeters"), QStringLiteral("左右轮中心距。用于车辆几何标定和后续里程计/控制换算，应按实车测量填写。")},
-        {QStringLiteral("vehicle.wheelDiameterMeters"), QStringLiteral("车轮直径。用于速度、里程和轮速换算，应按实际轮胎外径填写。")},
-        {QStringLiteral("vehicle.gearReduction"), QStringLiteral("电机到车轮的总减速比。用于后续电机转速与车轮速度换算。")},
 
         {QStringLiteral("logging.level"), QStringLiteral("运行日志最低输出等级。debug 最详细，info 适合调试，warn/error 适合现场稳定运行。")},
         {QStringLiteral("logging.consoleEnabled"), QStringLiteral("是否输出到 Qt Creator 应用程序输出或终端。现场发布版可关闭以减少控制台噪声。")},
@@ -627,12 +598,10 @@ QWidget *Maintenance::createNetworkPage()
 {
     QFormLayout *layout = nullptr;
     auto *page = createFormPage(tr("通信参数"),
-                                tr("包含底盘、状态轮询、写寄存器和地图保存的接口地址，以及认证 token 和轮询间隔。"),
+                                tr("包含底盘手动直连和设备状态轮询地址，以及认证 token 和轮询间隔。"),
                                 &layout);
     addLineEdit(layout, QStringLiteral("network.websocketUrl"), tr("底盘 WebSocket"));
     addLineEdit(layout, QStringLiteral("network.statusReadUrl"), tr("状态读取 HTTP"));
-    addLineEdit(layout, QStringLiteral("network.writeInsUrl"), tr("写寄存器 HTTP"));
-    addLineEdit(layout, QStringLiteral("network.saveFileUrl"), tr("地图保存 HTTP"));
     addLineEdit(layout, QStringLiteral("network.authToken"), tr("认证 Token"));
     addSpinBox(layout, QStringLiteral("network.statusPollIntervalMs"), tr("状态轮询间隔"), 50, 5000, QStringLiteral(" ms"));
     addSpinBox(layout, QStringLiteral("network.statusRequestTimeoutMs"), tr("状态请求超时"), 500, 30000, QStringLiteral(" ms"));
@@ -695,15 +664,14 @@ QWidget *Maintenance::createGimbalPage()
 
 QWidget *Maintenance::createRowWorkPage()
 {
-    QFormLayout *layout = nullptr;
-    auto *page = createFormPage(tr("直线作业"),
-                                tr("配置工控机作业服务地址、状态轮询和命令超时。适用于行间作业状态同步。"),
-                                &layout);
-    addCheckBox(layout, QStringLiteral("rowWork.enabled"), tr("启用作业服务"));
-    addLineEdit(layout, QStringLiteral("rowWork.gatewayBaseUrl"), tr("工控机作业服务"));
-    addSpinBox(layout, QStringLiteral("rowWork.statusPollIntervalMs"), tr("状态轮询间隔"), 100, 10000, QStringLiteral(" ms"));
-    addSpinBox(layout, QStringLiteral("rowWork.commandTimeoutMs"), tr("命令超时"), 1000, 20000, QStringLiteral(" ms"));
-    addCheckBox(layout, QStringLiteral("rowWork.autoRefreshPlanStatus"), tr("自动刷新作业状态"));
+    QFormLayout* layout = nullptr;
+    auto* page = createFormPage(tr("工控机连接"), tr("位姿和任务使用独立服务；手动控制继续直连底盘。"), &layout);
+    addCheckBox(layout, "poseSource.enabled", tr("位姿服务启用"));
+    addLineEdit(layout, "poseSource.baseUrl", tr("位姿服务地址"));
+    addSpinBox(layout, "poseSource.requestTimeoutMs", tr("位姿服务请求超时"), 500, 10000, " ms");
+    addCheckBox(layout, "tracking.enabled", tr("任务服务启用"));
+    addLineEdit(layout, "tracking.baseUrl", tr("任务服务地址"));
+    addSpinBox(layout, "tracking.requestTimeoutMs", tr("任务服务请求超时"), 500, 10000, " ms");
     return page;
 }
 
@@ -711,42 +679,47 @@ QWidget *Maintenance::createControlPage()
 {
     QFormLayout *layout = nullptr;
     auto *page = createFormPage(tr("定位与控制"),
-                                tr("包含地图基准坐标和路径跟踪控制参数。修改后会影响地图换算和跟踪控制。"),
+                                tr("配置手动速度与任务请求值；自动控制硬限制以工控机配置为准。"),
                                 &layout);
     addDoubleSpinBox(layout, QStringLiteral("geo.baseLatitudeDeg"), tr("地图基准纬度"), -90.0, 90.0, 8);
     addDoubleSpinBox(layout, QStringLiteral("geo.baseLongitudeDeg"), tr("地图基准经度"), -180.0, 180.0, 8);
-    addDoubleSpinBox(layout, QStringLiteral("control.arrivalDistanceThreshold"), tr("到点距离阈值"), 0.01, 10.0, 3, QStringLiteral(" m"));
-    addDoubleSpinBox(layout, QStringLiteral("control.arrivalAngleThresholdDeg"), tr("到点角度阈值"), 0.0, 180.0, 2, QStringLiteral(" deg"));
-    addDoubleSpinBox(layout, QStringLiteral("control.maxLinearSpeed"), tr("最大线速度"), 0.0, 5.0, 3, QStringLiteral(" m/s"));
-    addDoubleSpinBox(layout, QStringLiteral("control.maxAngularSpeed"), tr("最大角速度"), 0.0, 5.0, 3, QStringLiteral(" rad/s"));
-    addDoubleSpinBox(layout, QStringLiteral("control.linearGain"), tr("线速度增益"), 0.0, 20.0, 3);
-    addDoubleSpinBox(layout, QStringLiteral("control.angularGain"), tr("角速度增益"), 0.0, 20.0, 3);
-    addDoubleSpinBox(layout, QStringLiteral("control.headingStopThresholdDeg"), tr("航向停止阈值"), 0.0, 180.0, 2, QStringLiteral(" deg"));
-    addDoubleSpinBox(layout, QStringLiteral("control.headingSlowdownThresholdDeg"), tr("航向减速阈值"), 0.0, 180.0, 2, QStringLiteral(" deg"));
-    addDoubleSpinBox(layout, QStringLiteral("control.headingSlowdownFactor"), tr("航向减速系数"), 0.0, 1.0, 3);
-    addDoubleSpinBox(layout, QStringLiteral("control.nearTargetDistanceMultiplier"), tr("近目标距离倍率"), 1.0, 20.0, 3);
-    addDoubleSpinBox(layout, QStringLiteral("control.nearTargetSpeedMultiplier"), tr("近目标速度倍率"), 0.0, 1.0, 3);
-    addDoubleSpinBox(layout, QStringLiteral("control.linearAccelerationLimit"), tr("线加速度限制"), 0.0, 10.0, 3);
-    addDoubleSpinBox(layout, QStringLiteral("control.linearDecelerationLimit"), tr("线减速度限制"), 0.0, 10.0, 3);
-    addDoubleSpinBox(layout, QStringLiteral("control.angularAccelerationLimit"), tr("角加速度限制"), 0.0, 10.0, 3);
-    addDoubleSpinBox(layout, QStringLiteral("control.angularDecelerationLimit"), tr("角减速度限制"), 0.0, 10.0, 3);
-    addDoubleSpinBox(layout, QStringLiteral("control.finalAdjustLinearSpeed"), tr("终点调整线速度"), 0.0, 5.0, 3);
-    addDoubleSpinBox(layout, QStringLiteral("control.finalAdjustAngularSpeed"), tr("终点调整角速度"), 0.0, 5.0, 3);
-    addSpinBox(layout, QStringLiteral("control.routeFollowerUpdateIntervalMs"), tr("路径跟踪更新周期"), 20, 1000, QStringLiteral(" ms"));
-    addSpinBox(layout, QStringLiteral("control.manualMotionRepeatIntervalMs"), tr("手动速度连发周期"), 20, 1000, QStringLiteral(" ms"));
+    addDoubleSpinBox(layout, "manualControl.maxLinearSpeed", tr("手动最大线速度 m/s"), 0.0, 5.0, 3);
+    addDoubleSpinBox(layout, "manualControl.maxAngularSpeed", tr("手动最大角速度 rad/s"), 0.0, 5.0, 3);
+    addSpinBox(layout, "manualControl.manualMotionRepeatIntervalMs", tr("手动心跳间隔"), 20, 1000, " ms");
+    addDoubleSpinBox(layout, "taskDefaults.speedLimit", tr("任务速度请求 m/s"), 0.0, 5.0, 3);
+    addDoubleSpinBox(layout, "taskDefaults.goalToleranceMeters", tr("任务停车容差请求 m"), 0.0, 5.0, 3);
+    addDoubleSpinBox(layout, "taskDefaults.angularSpeedLimit", tr("任务转向速度请求 rad/s"), 0.0, 5.0, 3);
+    addDoubleSpinBox(layout, "taskDefaults.angleToleranceRad", tr("任务角度容差请求 rad"), 0.0, 5.0, 3);
+    addLineEdit(layout, "taskDefaults.safetyProfileId", tr("场地安全配置ID"));
+    addLineEdit(layout, "taskDefaults.rotationZoneId", tr("转向区域ID"));
     return page;
 }
 
 QWidget *Maintenance::createVehiclePage()
 {
     QFormLayout *layout = nullptr;
-    auto *page = createFormPage(tr("车辆标定"),
-                                tr("维护底盘几何和传动基础参数。当前主要用于配置留档和后续控制/里程计换算。"),
-                                &layout);
-    addDoubleSpinBox(layout, QStringLiteral("vehicle.wheelBaseMeters"), tr("轮距"), 0.01, 10.0, 3, QStringLiteral(" m"));
-    addDoubleSpinBox(layout, QStringLiteral("vehicle.wheelDiameterMeters"), tr("轮径"), 0.01, 2.0, 3, QStringLiteral(" m"));
-    addDoubleSpinBox(layout, QStringLiteral("vehicle.gearReduction"), tr("减速比"), 0.01, 500.0, 3);
+    auto *page = createFormPage(tr("工控机标定与原点"),
+        tr("车辆标定、原点和自动控制参数由工控机统一管理。此处显示当前回读值。"), &layout);
+    m_ipcConfiguration = new QLabel(tr("尚未连接工控机"), page);
+    m_ipcConfiguration->setWordWrap(true);
+    m_ipcConfiguration->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    layout->addRow(m_ipcConfiguration);
     return page;
+}
+
+void Maintenance::setIpcConfiguration(const QJsonObject& config)
+{
+    if (!m_ipcConfiguration) return;
+    if (config.isEmpty()) { m_ipcConfiguration->setText(tr("工控机状态未知，请重新连接")); return; }
+    const auto cal = config["calibration"].toObject();
+    const auto origin = config["origin"].toObject()["active"].toObject();
+    m_ipcConfiguration->setText(tr("标定版本：%1（%2）\n轮距：%3 m\n左/右轮径：%4 / %5 m\n轮端 ticks/圈：%6\n原点版本：%7\n纬度/经度：%8 / %9\n高度：%10 m\n控制配置：%11")
+        .arg(cal["calibrationId"].toString(), cal["verified"].toBool() ? tr("已核实") : tr("未核实"))
+        .arg(cal["wheelBaseMeters"].toDouble()).arg(cal["leftWheelDiameterMeters"].toDouble())
+        .arg(cal["rightWheelDiameterMeters"].toDouble()).arg(cal["ticksPerWheelRevolution"].toDouble())
+        .arg(origin["originRevision"].toString()).arg(origin["latitude"].toDouble(),0,'f',8)
+        .arg(origin["longitude"].toDouble(),0,'f',8).arg(origin["altitude"].toDouble())
+        .arg(config["profile_revision"].toString()));
 }
 
 QWidget *Maintenance::createLoggingPage()
@@ -908,9 +881,7 @@ void Maintenance::runConfigSelfCheck()
     if (snap.video.backend == QStringLiteral("oak_depthai") && snap.video.deviceId.trimmed().isEmpty()) {
         warnings << tr("OAK 后端未指定设备 ID：单设备可为空，多设备现场建议指定。");
     }
-    if (snap.vehicle.wheelBaseMeters <= 0.0 || snap.vehicle.wheelDiameterMeters <= 0.0 || snap.vehicle.gearReduction <= 0.0) {
-        warnings << tr("车辆标定参数必须大于 0。");
-    }
+
 
     const QString message = warnings.isEmpty()
                                 ? tr("配置自检通过。当前表单参数格式、主要范围和路径设置未发现明显问题。")
@@ -1059,8 +1030,6 @@ void Maintenance::loadSnapshotToForm(const ConfigManager::ConfigSnapshot &snap)
     m_loading = true;
     setLineValue(QStringLiteral("network.websocketUrl"), snap.network.websocketUrl);
     setLineValue(QStringLiteral("network.statusReadUrl"), snap.network.statusReadUrl);
-    setLineValue(QStringLiteral("network.writeInsUrl"), snap.network.writeInsUrl);
-    setLineValue(QStringLiteral("network.saveFileUrl"), snap.network.saveFileUrl);
     setLineValue(QStringLiteral("network.authToken"), snap.network.authToken);
     setIntValue(QStringLiteral("network.statusPollIntervalMs"), snap.network.statusPollIntervalMs);
     setIntValue(QStringLiteral("network.statusRequestTimeoutMs"), snap.network.statusRequestTimeoutMs);
@@ -1108,11 +1077,6 @@ void Maintenance::loadSnapshotToForm(const ConfigManager::ConfigSnapshot &snap)
     setIntValue(QStringLiteral("gimbal.maxPitch"), snap.gimbal.maxPitch);
     setIntValue(QStringLiteral("gimbal.safetyStopTimeoutMs"), snap.gimbal.safetyStopTimeoutMs);
 
-    setBoolValue(QStringLiteral("rowWork.enabled"), snap.rowWork.enabled);
-    setLineValue(QStringLiteral("rowWork.gatewayBaseUrl"), snap.rowWork.gatewayBaseUrl);
-    setIntValue(QStringLiteral("rowWork.statusPollIntervalMs"), snap.rowWork.statusPollIntervalMs);
-    setIntValue(QStringLiteral("rowWork.commandTimeoutMs"), snap.rowWork.commandTimeoutMs);
-    setBoolValue(QStringLiteral("rowWork.autoRefreshPlanStatus"), snap.rowWork.autoRefreshPlanStatus);
 
     setComboValue(QStringLiteral("logging.level"), snap.logging.level);
     setBoolValue(QStringLiteral("logging.consoleEnabled"), snap.logging.consoleEnabled);
@@ -1129,31 +1093,24 @@ void Maintenance::loadSnapshotToForm(const ConfigManager::ConfigSnapshot &snap)
     setBoolValue(QStringLiteral("logging.redactSensitiveData"), snap.logging.redactSensitiveData);
     setPlainTextValue(QStringLiteral("logging.categoryRules"), snap.logging.categoryRules.join(QStringLiteral("\n")));
 
+    setDoubleValue("manualControl.maxLinearSpeed", snap.manualControl.maxLinearSpeed);
+    setDoubleValue("manualControl.maxAngularSpeed", snap.manualControl.maxAngularSpeed);
+    setIntValue("manualControl.manualMotionRepeatIntervalMs", snap.manualControl.manualMotionRepeatIntervalMs);
+    setDoubleValue("taskDefaults.speedLimit", snap.taskDefaults.speedLimit);
+    setDoubleValue("taskDefaults.goalToleranceMeters", snap.taskDefaults.goalToleranceMeters);
+    setDoubleValue("taskDefaults.angularSpeedLimit", snap.taskDefaults.angularSpeedLimit);
+    setDoubleValue("taskDefaults.angleToleranceRad", snap.taskDefaults.angleToleranceRad);
+    setLineValue("taskDefaults.safetyProfileId", snap.taskDefaults.safetyProfileId);
+    setLineValue("taskDefaults.rotationZoneId", snap.taskDefaults.rotationZoneId);
+    setBoolValue("poseSource.enabled", snap.poseSource.enabled);
+    setLineValue("poseSource.baseUrl", snap.poseSource.baseUrl);
+    setIntValue("poseSource.requestTimeoutMs", snap.poseSource.requestTimeoutMs);
+    setBoolValue("tracking.enabled", snap.tracking.enabled);
+    setLineValue("tracking.baseUrl", snap.tracking.baseUrl);
+    setIntValue("tracking.requestTimeoutMs", snap.tracking.requestTimeoutMs);
     setDoubleValue(QStringLiteral("geo.baseLatitudeDeg"), snap.geo.baseLatitudeDeg);
     setDoubleValue(QStringLiteral("geo.baseLongitudeDeg"), snap.geo.baseLongitudeDeg);
-    setDoubleValue(QStringLiteral("control.arrivalDistanceThreshold"), snap.control.arrivalDistanceThreshold);
-    setDoubleValue(QStringLiteral("control.arrivalAngleThresholdDeg"), snap.control.arrivalAngleThresholdDeg);
-    setDoubleValue(QStringLiteral("control.maxLinearSpeed"), snap.control.maxLinearSpeed);
-    setDoubleValue(QStringLiteral("control.maxAngularSpeed"), snap.control.maxAngularSpeed);
-    setDoubleValue(QStringLiteral("control.linearGain"), snap.control.linearGain);
-    setDoubleValue(QStringLiteral("control.angularGain"), snap.control.angularGain);
-    setDoubleValue(QStringLiteral("control.headingStopThresholdDeg"), snap.control.headingStopThresholdDeg);
-    setDoubleValue(QStringLiteral("control.headingSlowdownThresholdDeg"), snap.control.headingSlowdownThresholdDeg);
-    setDoubleValue(QStringLiteral("control.headingSlowdownFactor"), snap.control.headingSlowdownFactor);
-    setDoubleValue(QStringLiteral("control.nearTargetDistanceMultiplier"), snap.control.nearTargetDistanceMultiplier);
-    setDoubleValue(QStringLiteral("control.nearTargetSpeedMultiplier"), snap.control.nearTargetSpeedMultiplier);
-    setDoubleValue(QStringLiteral("control.linearAccelerationLimit"), snap.control.linearAccelerationLimit);
-    setDoubleValue(QStringLiteral("control.linearDecelerationLimit"), snap.control.linearDecelerationLimit);
-    setDoubleValue(QStringLiteral("control.angularAccelerationLimit"), snap.control.angularAccelerationLimit);
-    setDoubleValue(QStringLiteral("control.angularDecelerationLimit"), snap.control.angularDecelerationLimit);
-    setDoubleValue(QStringLiteral("control.finalAdjustLinearSpeed"), snap.control.finalAdjustLinearSpeed);
-    setDoubleValue(QStringLiteral("control.finalAdjustAngularSpeed"), snap.control.finalAdjustAngularSpeed);
-    setIntValue(QStringLiteral("control.routeFollowerUpdateIntervalMs"), snap.control.routeFollowerUpdateIntervalMs);
-    setIntValue(QStringLiteral("control.manualMotionRepeatIntervalMs"), snap.control.manualMotionRepeatIntervalMs);
 
-    setDoubleValue(QStringLiteral("vehicle.wheelBaseMeters"), snap.vehicle.wheelBaseMeters);
-    setDoubleValue(QStringLiteral("vehicle.wheelDiameterMeters"), snap.vehicle.wheelDiameterMeters);
-    setDoubleValue(QStringLiteral("vehicle.gearReduction"), snap.vehicle.gearReduction);
 
     m_cleanFingerprint = snapshotFingerprint(snap);
     m_loading = false;
@@ -1166,8 +1123,6 @@ ConfigManager::ConfigSnapshot Maintenance::collectSnapshot() const
     auto snap = ConfigManager::instance().snapshot();
     snap.network.websocketUrl = lineValue(QStringLiteral("network.websocketUrl"));
     snap.network.statusReadUrl = lineValue(QStringLiteral("network.statusReadUrl"));
-    snap.network.writeInsUrl = lineValue(QStringLiteral("network.writeInsUrl"));
-    snap.network.saveFileUrl = lineValue(QStringLiteral("network.saveFileUrl"));
     snap.network.authToken = lineValue(QStringLiteral("network.authToken"));
     snap.network.statusPollIntervalMs = intValue(QStringLiteral("network.statusPollIntervalMs"));
     snap.network.statusRequestTimeoutMs = intValue(QStringLiteral("network.statusRequestTimeoutMs"));
@@ -1223,11 +1178,6 @@ ConfigManager::ConfigSnapshot Maintenance::collectSnapshot() const
     snap.gimbal.maxPitch = intValue(QStringLiteral("gimbal.maxPitch"));
     snap.gimbal.safetyStopTimeoutMs = intValue(QStringLiteral("gimbal.safetyStopTimeoutMs"));
 
-    snap.rowWork.enabled = boolValue(QStringLiteral("rowWork.enabled"));
-    snap.rowWork.gatewayBaseUrl = lineValue(QStringLiteral("rowWork.gatewayBaseUrl"));
-    snap.rowWork.statusPollIntervalMs = intValue(QStringLiteral("rowWork.statusPollIntervalMs"));
-    snap.rowWork.commandTimeoutMs = intValue(QStringLiteral("rowWork.commandTimeoutMs"));
-    snap.rowWork.autoRefreshPlanStatus = boolValue(QStringLiteral("rowWork.autoRefreshPlanStatus"));
 
     snap.logging.level = comboValue(QStringLiteral("logging.level"));
     snap.logging.consoleEnabled = boolValue(QStringLiteral("logging.consoleEnabled"));
@@ -1252,30 +1202,23 @@ ConfigManager::ConfigSnapshot Maintenance::collectSnapshot() const
         }
     }
 
+    snap.manualControl.maxLinearSpeed = doubleValue("manualControl.maxLinearSpeed");
+    snap.manualControl.maxAngularSpeed = doubleValue("manualControl.maxAngularSpeed");
+    snap.manualControl.manualMotionRepeatIntervalMs = intValue("manualControl.manualMotionRepeatIntervalMs");
+    snap.taskDefaults.speedLimit = doubleValue("taskDefaults.speedLimit");
+    snap.taskDefaults.goalToleranceMeters = doubleValue("taskDefaults.goalToleranceMeters");
+    snap.taskDefaults.angularSpeedLimit = doubleValue("taskDefaults.angularSpeedLimit");
+    snap.taskDefaults.angleToleranceRad = doubleValue("taskDefaults.angleToleranceRad");
+    snap.taskDefaults.safetyProfileId = lineValue("taskDefaults.safetyProfileId");
+    snap.taskDefaults.rotationZoneId = lineValue("taskDefaults.rotationZoneId");
+    snap.poseSource.enabled = boolValue("poseSource.enabled");
+    snap.poseSource.baseUrl = lineValue("poseSource.baseUrl");
+    snap.poseSource.requestTimeoutMs = intValue("poseSource.requestTimeoutMs");
+    snap.tracking.enabled = boolValue("tracking.enabled");
+    snap.tracking.baseUrl = lineValue("tracking.baseUrl");
+    snap.tracking.requestTimeoutMs = intValue("tracking.requestTimeoutMs");
     snap.geo.baseLatitudeDeg = doubleValue(QStringLiteral("geo.baseLatitudeDeg"));
     snap.geo.baseLongitudeDeg = doubleValue(QStringLiteral("geo.baseLongitudeDeg"));
-    snap.control.arrivalDistanceThreshold = doubleValue(QStringLiteral("control.arrivalDistanceThreshold"));
-    snap.control.arrivalAngleThresholdDeg = doubleValue(QStringLiteral("control.arrivalAngleThresholdDeg"));
-    snap.control.maxLinearSpeed = doubleValue(QStringLiteral("control.maxLinearSpeed"));
-    snap.control.maxAngularSpeed = doubleValue(QStringLiteral("control.maxAngularSpeed"));
-    snap.control.linearGain = doubleValue(QStringLiteral("control.linearGain"));
-    snap.control.angularGain = doubleValue(QStringLiteral("control.angularGain"));
-    snap.control.headingStopThresholdDeg = doubleValue(QStringLiteral("control.headingStopThresholdDeg"));
-    snap.control.headingSlowdownThresholdDeg = doubleValue(QStringLiteral("control.headingSlowdownThresholdDeg"));
-    snap.control.headingSlowdownFactor = doubleValue(QStringLiteral("control.headingSlowdownFactor"));
-    snap.control.nearTargetDistanceMultiplier = doubleValue(QStringLiteral("control.nearTargetDistanceMultiplier"));
-    snap.control.nearTargetSpeedMultiplier = doubleValue(QStringLiteral("control.nearTargetSpeedMultiplier"));
-    snap.control.linearAccelerationLimit = doubleValue(QStringLiteral("control.linearAccelerationLimit"));
-    snap.control.linearDecelerationLimit = doubleValue(QStringLiteral("control.linearDecelerationLimit"));
-    snap.control.angularAccelerationLimit = doubleValue(QStringLiteral("control.angularAccelerationLimit"));
-    snap.control.angularDecelerationLimit = doubleValue(QStringLiteral("control.angularDecelerationLimit"));
-    snap.control.finalAdjustLinearSpeed = doubleValue(QStringLiteral("control.finalAdjustLinearSpeed"));
-    snap.control.finalAdjustAngularSpeed = doubleValue(QStringLiteral("control.finalAdjustAngularSpeed"));
-    snap.control.routeFollowerUpdateIntervalMs = intValue(QStringLiteral("control.routeFollowerUpdateIntervalMs"));
-    snap.control.manualMotionRepeatIntervalMs = intValue(QStringLiteral("control.manualMotionRepeatIntervalMs"));
-    snap.vehicle.wheelBaseMeters = doubleValue(QStringLiteral("vehicle.wheelBaseMeters"));
-    snap.vehicle.wheelDiameterMeters = doubleValue(QStringLiteral("vehicle.wheelDiameterMeters"));
-    snap.vehicle.gearReduction = doubleValue(QStringLiteral("vehicle.gearReduction"));
     return snap;
 }
 
@@ -1301,19 +1244,14 @@ bool Maintenance::validateSnapshot(const ConfigManager::ConfigSnapshot &snapshot
     if (!requireUrl(snapshot.network.statusReadUrl, tr("状态读取 HTTP"))) {
         return false;
     }
-    if (!requireUrl(snapshot.network.writeInsUrl, tr("写寄存器 HTTP"))) {
-        return false;
-    }
-    if (!requireUrl(snapshot.network.saveFileUrl, tr("地图保存 HTTP"))) {
-        return false;
-    }
     if (!requireUrl(snapshot.video.streamUrl, tr("默认预览流 URL"), true)) {
         return false;
     }
     if (!requireUrl(snapshot.video.controlBaseUrl, tr("相机控制基地址"), true)) {
         return false;
     }
-    if (snapshot.rowWork.enabled && !requireUrl(snapshot.rowWork.gatewayBaseUrl, tr("作业服务地址"))) {
+    if ((snapshot.tracking.enabled && !requireUrl(snapshot.tracking.baseUrl, tr("任务服务地址"))) ||
+        (snapshot.poseSource.enabled && !requireUrl(snapshot.poseSource.baseUrl, tr("位姿服务地址")))) {
         return false;
     }
     if (snapshot.gimbal.enabled && snapshot.gimbal.plcHost.trimmed().isEmpty()) {
@@ -1342,14 +1280,7 @@ bool Maintenance::validateSnapshot(const ConfigManager::ConfigSnapshot &snapshot
         }
         return false;
     }
-    if (snapshot.vehicle.wheelBaseMeters <= 0.0 ||
-        snapshot.vehicle.wheelDiameterMeters <= 0.0 ||
-        snapshot.vehicle.gearReduction <= 0.0) {
-        if (errorMessage) {
-            *errorMessage = tr("车辆标定参数必须大于 0");
-        }
-        return false;
-    }
+
     if (snapshot.logging.maxFileBytes < 256 * 1024 || snapshot.logging.auditMaxFileBytes < 256 * 1024) {
         if (errorMessage) {
             *errorMessage = tr("日志文件大小不能小于 256 KB");
@@ -1548,8 +1479,6 @@ QJsonObject Maintenance::snapshotFingerprint(const ConfigManager::ConfigSnapshot
         {QStringLiteral("network"),
          QJsonObject{{QStringLiteral("websocketUrl"), snapshot.network.websocketUrl.trimmed()},
                      {QStringLiteral("statusReadUrl"), snapshot.network.statusReadUrl.trimmed()},
-                     {QStringLiteral("writeInsUrl"), snapshot.network.writeInsUrl.trimmed()},
-                     {QStringLiteral("saveFileUrl"), snapshot.network.saveFileUrl.trimmed()},
                      {QStringLiteral("authToken"), snapshot.network.authToken.trimmed()},
                      {QStringLiteral("statusPollIntervalMs"), snapshot.network.statusPollIntervalMs},
                      {QStringLiteral("statusRequestTimeoutMs"), snapshot.network.statusRequestTimeoutMs},
@@ -1591,12 +1520,6 @@ QJsonObject Maintenance::snapshotFingerprint(const ConfigManager::ConfigSnapshot
                      {QStringLiteral("minPitch"), snapshot.gimbal.minPitch},
                      {QStringLiteral("maxPitch"), snapshot.gimbal.maxPitch},
                      {QStringLiteral("safetyStopTimeoutMs"), snapshot.gimbal.safetyStopTimeoutMs}}},
-        {QStringLiteral("rowWork"),
-         QJsonObject{{QStringLiteral("enabled"), snapshot.rowWork.enabled},
-                     {QStringLiteral("gatewayBaseUrl"), snapshot.rowWork.gatewayBaseUrl.trimmed()},
-                     {QStringLiteral("statusPollIntervalMs"), snapshot.rowWork.statusPollIntervalMs},
-                     {QStringLiteral("commandTimeoutMs"), snapshot.rowWork.commandTimeoutMs},
-                     {QStringLiteral("autoRefreshPlanStatus"), snapshot.rowWork.autoRefreshPlanStatus}}},
         {QStringLiteral("logging"),
          QJsonObject{{QStringLiteral("level"), snapshot.logging.level.trimmed()},
                      {QStringLiteral("consoleEnabled"), snapshot.logging.consoleEnabled},
@@ -1613,30 +1536,10 @@ QJsonObject Maintenance::snapshotFingerprint(const ConfigManager::ConfigSnapshot
                      {QStringLiteral("redactSensitiveData"), snapshot.logging.redactSensitiveData},
                      {QStringLiteral("categoryRules"),
                       QJsonArray::fromStringList(snapshot.logging.categoryRules)}}},
-        {QStringLiteral("control"),
-         QJsonObject{{QStringLiteral("arrivalDistanceThreshold"), snapshot.control.arrivalDistanceThreshold},
-                     {QStringLiteral("arrivalAngleThresholdDeg"), snapshot.control.arrivalAngleThresholdDeg},
-                     {QStringLiteral("maxLinearSpeed"), snapshot.control.maxLinearSpeed},
-                     {QStringLiteral("maxAngularSpeed"), snapshot.control.maxAngularSpeed},
-                     {QStringLiteral("linearGain"), snapshot.control.linearGain},
-                     {QStringLiteral("angularGain"), snapshot.control.angularGain},
-                     {QStringLiteral("headingStopThresholdDeg"), snapshot.control.headingStopThresholdDeg},
-                     {QStringLiteral("headingSlowdownThresholdDeg"), snapshot.control.headingSlowdownThresholdDeg},
-                     {QStringLiteral("headingSlowdownFactor"), snapshot.control.headingSlowdownFactor},
-                     {QStringLiteral("nearTargetDistanceMultiplier"), snapshot.control.nearTargetDistanceMultiplier},
-                     {QStringLiteral("nearTargetSpeedMultiplier"), snapshot.control.nearTargetSpeedMultiplier},
-                     {QStringLiteral("linearAccelerationLimit"), snapshot.control.linearAccelerationLimit},
-                     {QStringLiteral("linearDecelerationLimit"), snapshot.control.linearDecelerationLimit},
-                     {QStringLiteral("angularAccelerationLimit"), snapshot.control.angularAccelerationLimit},
-                     {QStringLiteral("angularDecelerationLimit"), snapshot.control.angularDecelerationLimit},
-                     {QStringLiteral("finalAdjustLinearSpeed"), snapshot.control.finalAdjustLinearSpeed},
-                     {QStringLiteral("finalAdjustAngularSpeed"), snapshot.control.finalAdjustAngularSpeed},
-                     {QStringLiteral("routeFollowerUpdateIntervalMs"), snapshot.control.routeFollowerUpdateIntervalMs},
-                     {QStringLiteral("manualMotionRepeatIntervalMs"), snapshot.control.manualMotionRepeatIntervalMs}}},
-        {QStringLiteral("vehicle"),
-         QJsonObject{{QStringLiteral("wheelBaseMeters"), snapshot.vehicle.wheelBaseMeters},
-                     {QStringLiteral("wheelDiameterMeters"), snapshot.vehicle.wheelDiameterMeters},
-                     {QStringLiteral("gearReduction"), snapshot.vehicle.gearReduction}}}
+        {"manualControl", QJsonObject{{"maxLinearSpeed", snapshot.manualControl.maxLinearSpeed},{"maxAngularSpeed", snapshot.manualControl.maxAngularSpeed},{"manualMotionRepeatIntervalMs", snapshot.manualControl.manualMotionRepeatIntervalMs}}},
+        {"taskDefaults", QJsonObject{{"speedLimit", snapshot.taskDefaults.speedLimit},{"goalToleranceMeters", snapshot.taskDefaults.goalToleranceMeters},{"angularSpeedLimit", snapshot.taskDefaults.angularSpeedLimit},{"angleToleranceRad", snapshot.taskDefaults.angleToleranceRad},{"safetyProfileId", snapshot.taskDefaults.safetyProfileId},{"rotationZoneId", snapshot.taskDefaults.rotationZoneId}}},
+        {"poseSource", QJsonObject{{"enabled", snapshot.poseSource.enabled},{"baseUrl", snapshot.poseSource.baseUrl},{"requestTimeoutMs", snapshot.poseSource.requestTimeoutMs}}},
+        {"tracking", QJsonObject{{"enabled", snapshot.tracking.enabled},{"baseUrl", snapshot.tracking.baseUrl},{"requestTimeoutMs", snapshot.tracking.requestTimeoutMs}}},
     };
 }
 

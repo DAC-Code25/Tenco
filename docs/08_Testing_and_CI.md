@@ -8,7 +8,7 @@
 
 本项目已落地的 UT 模块：
 
-- `RouteFollower`：`tests/test_routefollower.cpp`
+- `TaskCompiler`：`tests/test_taskcompiler.cpp`、`tests/test_ipc_clients.cpp`
 - `ConfigManager`：`tests/test_configmanager.cpp`
 - `RoutePathFinder`：`tests/test_routepathfinder.cpp`
 - `MapRoutePlanner`：`tests/test_maprouteplanner.cpp`（验证路线代价配置会影响路径选择）

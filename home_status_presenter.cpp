@@ -1,6 +1,5 @@
 #include "home_status_presenter.h"
 
-#include "routefollower.h"
 #include "ui_mainwindow.h"
 
 #include <QJsonValue>
@@ -21,13 +20,9 @@ constexpr const char *kDisconnectedStyle =
 }
 
 HomeStatusPresenter::HomeStatusPresenter(Ui::MainWindow *ui,
-                                         RouteFollower *routeFollower,
-                                         LogHandler logHandler,
-                                         PoseHandler poseHandler)
+                                         LogHandler logHandler)
     : m_ui(ui)
-    , m_routeFollower(routeFollower)
     , m_logHandler(std::move(logHandler))
-    , m_poseHandler(std::move(poseHandler))
 {
 }
 
@@ -79,9 +74,6 @@ bool HomeStatusPresenter::handleNetworkFailure(int httpStatus, const QString &er
         }
     }
 
-    if (m_routeFollower) {
-        m_routeFollower->setPoseValid(false);
-    }
 
     return wasConnected;
 }
@@ -150,30 +142,6 @@ void HomeStatusPresenter::applyStatusField(StatusProtocol::FieldId fieldId,
         }
         break;
     }
-    case StatusProtocol::FieldId::VehiclePose:
-        if (values.size() >= 3) {
-            const double x = values.at(0).toDouble();
-            const double y = values.at(1).toDouble();
-            const double theta = values.at(2).toDouble();
-            if (m_routeFollower) {
-                m_routeFollower->updatePose(x, y, theta);
-            }
-            if (m_poseHandler) {
-                m_poseHandler(x, y, theta);
-            }
-
-            if (m_ui->lineEdit_Position) {
-                QStringList parts;
-                parts.reserve(values.size());
-                for (const QJsonValue &value : values) {
-                    parts << QString::number(value.toDouble(), 'f', 5);
-                }
-                m_ui->lineEdit_Position->setText(parts.join(", "));
-            }
-        } else if (m_routeFollower) {
-            m_routeFollower->setPoseValid(false);
-        }
-        break;
     case StatusProtocol::FieldId::MapName:
         if (m_ui->lineEdit_mapname) {
             m_ui->lineEdit_mapname->setText(QStringLiteral("当前地图:   ") + firstValue.toString());

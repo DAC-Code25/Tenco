@@ -17,10 +17,6 @@ bool isFiniteNumber(double value)
     return std::isfinite(value);
 }
 
-QString normalizedState(const QString &value)
-{
-    return value.trimmed();
-}
 } // namespace
 
 bool RowWorkPlan::isValid() const
@@ -31,25 +27,6 @@ bool RowWorkPlan::isValid() const
 double RowWorkPlan::lineLength() const
 {
     return RowWorkGeometry::lineLength(*this);
-}
-
-bool RowWorkStatus::isActive() const
-{
-    const QString normalized = state.trimmed();
-    return normalized == QStringLiteral("ExecutingForward")
-           || normalized == QStringLiteral("PauseAtCheckpoint")
-           || normalized == QStringLiteral("TurnAtEnd")
-           || normalized == QStringLiteral("ExecutingBackward")
-           || normalized == QStringLiteral("TurnAtStart")
-           || normalized == QStringLiteral("Paused")
-           || normalized == QStringLiteral("ManualOverride");
-}
-
-bool RowWorkStatus::isFaulted() const
-{
-    return state.trimmed() == QStringLiteral("Fault")
-           || !faultCode.trimmed().isEmpty()
-           || !faultMessage.trimmed().isEmpty();
 }
 
 bool RowWorkGeometry::hasUsableLine(const RowWorkPlan &plan)
@@ -172,6 +149,8 @@ QJsonObject RowWorkJson::checkpointToJson(const RowCheckpoint &checkpoint)
         {QStringLiteral("name"), checkpoint.name.trimmed()},
         {QStringLiteral("progress"), checkpoint.progress},
         {QStringLiteral("dwellMs"), checkpoint.dwellMs},
+        {QStringLiteral("capturePhoto"), checkpoint.capturePhoto},
+        {QStringLiteral("actionTimeoutMs"), checkpoint.actionTimeoutMs},
         {QStringLiteral("enabled"), checkpoint.enabled},
         {QStringLiteral("triggerOnForward"), checkpoint.triggerOnForward},
         {QStringLiteral("triggerOnBackward"), checkpoint.triggerOnBackward}
@@ -192,6 +171,8 @@ bool RowWorkJson::checkpointFromJson(const QJsonObject &json, RowCheckpoint *out
     outCheckpoint->name = json.value(QStringLiteral("name")).toString().trimmed();
     outCheckpoint->progress = progress;
     outCheckpoint->dwellMs = json.value(QStringLiteral("dwellMs")).toInt(outCheckpoint->dwellMs);
+    outCheckpoint->capturePhoto = json.value("capturePhoto").toBool(false);
+    outCheckpoint->actionTimeoutMs = json.value("actionTimeoutMs").toInt(30000);
     outCheckpoint->enabled = json.value(QStringLiteral("enabled")).toBool(outCheckpoint->enabled);
     outCheckpoint->triggerOnForward = json.value(QStringLiteral("triggerOnForward")).toBool(outCheckpoint->triggerOnForward);
     outCheckpoint->triggerOnBackward = json.value(QStringLiteral("triggerOnBackward")).toBool(outCheckpoint->triggerOnBackward);
@@ -203,7 +184,6 @@ QJsonObject RowWorkJson::paramsToJson(const RowWorkParams &params)
     return QJsonObject{
         {QStringLiteral("baseLinearSpeed"), params.baseLinearSpeed},
         {QStringLiteral("maxLinearSpeed"), params.maxLinearSpeed},
-        {QStringLiteral("endpointSlowdownDistance"), params.endpointSlowdownDistance},
         {QStringLiteral("endpointArrivalDistance"), params.endpointArrivalDistance},
         {QStringLiteral("checkpointArrivalTolerance"), params.checkpointArrivalTolerance},
         {QStringLiteral("turnAngularSpeed"), params.turnAngularSpeed},
@@ -224,7 +204,6 @@ bool RowWorkJson::paramsFromJson(const QJsonObject &json, RowWorkParams *outPara
 
     outParams->baseLinearSpeed = readDouble(QStringLiteral("baseLinearSpeed"), outParams->baseLinearSpeed);
     outParams->maxLinearSpeed = readDouble(QStringLiteral("maxLinearSpeed"), outParams->maxLinearSpeed);
-    outParams->endpointSlowdownDistance = readDouble(QStringLiteral("endpointSlowdownDistance"), outParams->endpointSlowdownDistance);
     outParams->endpointArrivalDistance = readDouble(QStringLiteral("endpointArrivalDistance"), outParams->endpointArrivalDistance);
     outParams->checkpointArrivalTolerance = readDouble(QStringLiteral("checkpointArrivalTolerance"), outParams->checkpointArrivalTolerance);
     outParams->turnAngularSpeed = readDouble(QStringLiteral("turnAngularSpeed"), outParams->turnAngularSpeed);
@@ -235,6 +214,8 @@ bool RowWorkJson::paramsFromJson(const QJsonObject &json, RowWorkParams *outPara
 QJsonObject RowWorkJson::planToJson(const RowWorkPlan &plan)
 {
     QJsonObject root{
+        {QStringLiteral("schemaVersion"), 2},
+        {QStringLiteral("frameBinding"), plan.frameBinding.toJson()},
         {QStringLiteral("planId"), plan.planId.trimmed()},
         {QStringLiteral("version"), plan.version},
         {QStringLiteral("frameId"), plan.frameId.trimmed().isEmpty() ? QStringLiteral("map") : plan.frameId.trimmed()},
@@ -262,7 +243,11 @@ bool RowWorkJson::planFromJson(const QJsonObject &json, RowWorkPlan *outPlan)
         return false;
     }
 
-    RowWorkPlan plan = *outPlan;
+    const int schema = json.value("schemaVersion").toInt(1);
+    if (schema < 1 || schema > 2) return false;
+    RowWorkPlan plan;
+    if (schema == 2) plan.frameBinding = MapFrameBinding::fromJson(json["frameBinding"].toObject());
+    else { plan.params.endpointArrivalDistance = .25; plan.params.checkpointArrivalTolerance = .15; }
     plan.planId = json.value(QStringLiteral("planId")).toString(plan.planId).trimmed();
     plan.version = json.value(QStringLiteral("version")).toInt(plan.version);
     plan.frameId = json.value(QStringLiteral("frameId")).toString(plan.frameId).trimmed();
@@ -300,66 +285,5 @@ bool RowWorkJson::planFromJson(const QJsonObject &json, RowWorkPlan *outPlan)
     }
     plan.checkpoints = checkpoints;
     *outPlan = plan;
-    return true;
-}
-
-bool RowWorkJson::statusFromJson(const QJsonObject &json, RowWorkStatus *outStatus)
-{
-    if (!outStatus || json.isEmpty()) {
-        return false;
-    }
-
-    RowWorkStatus status = *outStatus;
-    status.success = json.value(QStringLiteral("success")).toBool(status.success);
-    status.message = json.value(QStringLiteral("message")).toString(status.message).trimmed();
-    status.mode = json.value(QStringLiteral("mode")).toString(status.mode).trimmed();
-    status.state = normalizedState(json.value(QStringLiteral("state")).toString(status.state));
-    status.controlOwner = json.value(QStringLiteral("controlOwner")).toString(status.controlOwner).trimmed();
-    status.planId = json.value(QStringLiteral("planId")).toString(status.planId).trimmed();
-    status.planVersion = json.value(QStringLiteral("planVersion")).toInt(status.planVersion);
-    status.poseFresh = json.value(QStringLiteral("poseFresh")).toBool(status.poseFresh);
-    status.poseAgeMs = json.value(QStringLiteral("poseAgeMs")).toInt(status.poseAgeMs);
-    status.lateralError = json.value(QStringLiteral("lateralError")).toDouble(status.lateralError);
-    status.headingErrorDeg = json.value(QStringLiteral("headingErrorDeg")).toDouble(status.headingErrorDeg);
-    status.progress = json.value(QStringLiteral("progress")).toDouble(status.progress);
-    status.lineLength = json.value(QStringLiteral("lineLength")).toDouble(status.lineLength);
-    status.currentDirection = json.value(QStringLiteral("currentDirection")).toString(status.currentDirection).trimmed();
-    status.currentCheckpointIndex = json.value(QStringLiteral("currentCheckpointIndex")).toInt(status.currentCheckpointIndex);
-    status.pauseRemainingMs = json.value(QStringLiteral("pauseRemainingMs")).toInt(status.pauseRemainingMs);
-    if (json.contains(QStringLiteral("recordingPauseRemainingMs"))) {
-        status.pauseRemainingMs = json.value(QStringLiteral("recordingPauseRemainingMs")).toInt(status.pauseRemainingMs);
-    }
-    status.faultCode = json.value(QStringLiteral("faultCode")).toString(status.faultCode).trimmed();
-    status.faultMessage = json.value(QStringLiteral("faultMessage")).toString(status.faultMessage).trimmed();
-    status.lastEvent = json.value(QStringLiteral("lastEvent")).toString(status.lastEvent).trimmed();
-
-    *outStatus = status;
-    return true;
-}
-
-bool RowWorkJson::capturePoseResponseFromJson(const QJsonObject &json,
-                                              RowWorkPose *outPose,
-                                              int *outSampleDurationMs,
-                                              int *outSampleCount,
-                                              QString *outMessage)
-{
-    if (!outPose || json.isEmpty()) {
-        return false;
-    }
-
-    const QJsonObject poseObj = json.value(QStringLiteral("pose")).toObject();
-    if (!poseFromJson(poseObj, outPose)) {
-        return false;
-    }
-
-    if (outSampleDurationMs) {
-        *outSampleDurationMs = json.value(QStringLiteral("sampleDurationMs")).toInt(0);
-    }
-    if (outSampleCount) {
-        *outSampleCount = json.value(QStringLiteral("sampleCount")).toInt(0);
-    }
-    if (outMessage) {
-        *outMessage = json.value(QStringLiteral("message")).toString().trimmed();
-    }
     return true;
 }

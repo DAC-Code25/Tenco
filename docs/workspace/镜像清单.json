@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "snapshot_at": "2026-10-14T10:44:49+08:00",
+  "session_id": "01a13477-9b6f-7f43-8a41-5e5b77886c15",
+  "canonical_source": "完整工作空间根目录，禁止独立编辑本镜像",
+  "hash_normalization": "UTF-8 文本的 CRLF 规范化为 LF；其他字节不变",
+  "files": {
+    "AGENTS.md": {
+      "source_sha256": "dc73d753f480dd5431bf603db23859e2f208507e66707ae71d60ff91870cae51",
+      "mirror_sha256": "dc73d753f480dd5431bf603db23859e2f208507e66707ae71d60ff91870cae51"
+    },
+    "docs/README.md": {
+      "source_sha256": "4085d312d3000b179387b84b691b6f215561c4d00b0cbdabbfdf2ecf7fe7066d",
+      "mirror_sha256": "a6c5a56088d5f20724faa16df6b59eb966066e77228b3ff53ee472e10eec71e7"
+    },
+    "docs/项目总览.md": {
+      "source_sha256": "b6cc054817df030e0eb1af3c81f4f7941c9cfb0f0148a27fe665c4acb2d9e843",
+      "mirror_sha256": "d760bd7fa79c4c5acd221a9e55c0529ff357c28c5bd952ea303597c6d3985412"
+    },
+    "docs/当前状态.md": {
+      "source_sha256": "2ea439a8589483c2c135e720470a5bc3a673f59b68439c556a938a0d0515398a",
+      "mirror_sha256": "a2716c42bbd29fd4780485d0a25a12137fe0c6e448fb0f0811007b3ac93235b2"
+    },
+    "docs/变更记录.md": {
+      "source_sha256": "965fc5b841b7d9eba65b4f73e24cf1dddc0e0035c18489cf75eafa52310f55f8",
+      "mirror_sha256": "5a8718c381cf975ea88be7e9112cc2328aa2ec785e072909b33a07e6dac8312d"
+    },
+    "docs/问题与待办.md": {
+      "source_sha256": "82985a76fb8355ca6d15d407d64c087f86ae50d6a36972235e56b51e1e532d87",
+      "mirror_sha256": "223434d0c2caa5edb43a41dec3f79406aa3e8c214941da81b85a8e1f405a13ab"
+    },
+    "docs/会话索引.md": {
+      "source_sha256": "62c8f2514c84e99da56c168187758c951ea17fa224f82c850043d313330fed9f",
+      "mirror_sha256": "e1608c25b542b1cdc64e57ef76f69657febd2d29bef7742504e6e88e229b3bae"
+    },
+    "docs/项目状态.json": {
+      "source_sha256": "c2021b928874087316d96cb2350925e07c4bd52119cbe06a2d602686c3d886b9",
+      "mirror_sha256": "c2021b928874087316d96cb2350925e07c4bd52119cbe06a2d602686c3d886b9"
+    },
+    "docs/templates/开发方案模板.md": {
+      "source_sha256": "980b90ad955cb662dd603407e9775d5983f1a422db97b6e235eb7281b7cec695",
+      "mirror_sha256": "980b90ad955cb662dd603407e9775d5983f1a422db97b6e235eb7281b7cec695"
+    },
+    "docs/templates/开发记录模板.md": {
+      "source_sha256": "d1e1ef42605d7864e9a0b27b66105a23b9d8c3ab72cbee02e59857bd038aae9d",
+      "mirror_sha256": "d1e1ef42605d7864e9a0b27b66105a23b9d8c3ab72cbee02e59857bd038aae9d"
+    },
+    "docs/templates/会话交接模板.md": {
+      "source_sha256": "25483cec394531f2fd57888f2f21e207f9e063e465123cc6ed31d84d588f93f7",
+      "mirror_sha256": "25483cec394531f2fd57888f2f21e207f9e063e465123cc6ed31d84d588f93f7"
+    },
+    "docs/develop/项目文档治理开发方案.md": {
+      "source_sha256": "4cf931c68d780c7cfc127db29b88bbc32721cc39a151085b6819a111105498db",
+      "mirror_sha256": "4cf931c68d780c7cfc127db29b88bbc32721cc39a151085b6819a111105498db"
+    },
+    "docs/develop/项目文档治理开发记录.md": {
+      "source_sha256": "3ee95182767c2aa6010cebfc6cc91278c42346e7a7aef5150c76d4b6d7b77d4a",
+      "mirror_sha256": "3ee95182767c2aa6010cebfc6cc91278c42346e7a7aef5150c76d4b6d7b77d4a"
+    },
+    "tools/project_docs.py": {
+      "source_sha256": "8fd29a9eee9d31954702cfa0e4975ce433f537661f42258dff6de599edb4fd15",
+      "mirror_sha256": "8fd29a9eee9d31954702cfa0e4975ce433f537661f42258dff6de599edb4fd15"
+    },
+    "工控机控制闭环与位姿直连系统开发方案.md": {
+      "source_sha256": "04a0653ad34d75bf3f7f1df51878651023019f77a7e3a5bf8f87e20260e2ccba",
+      "mirror_sha256": "04a0653ad34d75bf3f7f1df51878651023019f77a7e3a5bf8f87e20260e2ccba"
+    },
+    "docs/系统架构与测试覆盖审查-2026-09-19.md": {
+      "source_sha256": "ffac176772946b7b6bfe9fb8612840dc2549bce4834b13802e220a089022881b",
+      "mirror_sha256": "ecff1ee6017be473b6a9245e7cd6feac3d00e0435d129172891bff304d343729"
+    },
+    "docs/位姿地图全链路修复与验证-2026-09-19.md": {
+      "source_sha256": "cfbaac2cc59b21a4ae4fe7f116a8f0ed25e66ef2f22c756f422d3ad5817ca25d",
+      "mirror_sha256": "cfbaac2cc59b21a4ae4fe7f116a8f0ed25e66ef2f22c756f422d3ad5817ca25d"
+    },
+    "tools/tests/test_project_docs.py": {
+      "source_sha256": "d9244c2336726492f3f89c49ae8638ea04db07063bf6d269721e5678a9392e4c",
+      "mirror_sha256": "d9244c2336726492f3f89c49ae8638ea04db07063bf6d269721e5678a9392e4c"
+    }
+  },
+  "entry_sha256": "db1f829839b7229e05e2f4475e3bb326ad64d46bc1b5049b300807956b96652e"
+}

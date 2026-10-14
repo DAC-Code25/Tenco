@@ -10,7 +10,6 @@ enum class FieldId {
     BatteryPercent,
     BatteryVoltage,
     WorkMode,
-    VehiclePose,
     MapName,
     Velocity,
     BatteryTemperature,
@@ -24,7 +23,6 @@ namespace Address
 inline constexpr const char *kBatteryPercent = "3f";
 inline constexpr const char *kBatteryVoltage = "38";
 inline constexpr const char *kWorkMode = "3c";
-inline constexpr const char *kVehiclePose = "100";
 inline constexpr const char *kMapName = "320";
 inline constexpr const char *kVelocity = "20";
 inline constexpr const char *kBatteryTemperature = "13";

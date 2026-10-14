@@ -21,7 +21,6 @@ class AbstractVideoSource;
 class CameraControlClient;
 class StatusClient;
 class ChassisClient;
-class RouteFollower;
 class MotionCommandArbiter;
 class HomeStatusPresenter;
 class HomeVideoPresenter;
@@ -42,16 +41,17 @@ public:
     bool handleKeyRelease(int key, Qt::KeyboardModifiers modifiers, bool isAutoRepeat);
 
 signals:
-    void vehiclePoseUpdated(double x, double y, double theta);
-    void routeSegmentCompleted(bool success);
+    void originUpdateRequested(double latitude, double longitude);
+
+public:
+    ChassisClient* chassisClient() const { return m_chassisClient; }
+    MotionCommandArbiter* motionArbiter() const { return m_motionArbiter; }
 
 public slots:
-    void followRouteSegment(int fromPointId, int toPointId, const QList<QPointF> &polyline, double startTheta, double endTheta);
-    void handleRouteQueueCompleted();
-    void cancelRouteExecution();
     void stopMotionForSafety(const QString &reason);
 
 private slots:
+    void applyManualControlConfig();
     void applyRuntimeConfig();
     void handleStatusPacket(const QJsonObject &packet);
     void handleNetworkFailure(int httpStatus, const QString &errorString, const QByteArray &responseBody);
@@ -93,7 +93,6 @@ private:
     void initialize();
     void setupImageSwitches();
     void initializeMotionControl();
-    void applyRouteFollowerConfig();
     void applyStatusClientConfig();
     void applyChassisClientConfig();
     void applyVideoConfig();
@@ -151,7 +150,6 @@ private:
     AbstractVideoSource *m_videoSource = nullptr;
     CameraControlClient *m_cameraControlClient = nullptr;
     GimbalControlClient *m_gimbalControlClient = nullptr;
-    RouteFollower *m_routeFollower = nullptr;
     MotionCommandArbiter *m_motionArbiter = nullptr;
     std::unique_ptr<HomeStatusPresenter> m_statusPresenter;
     std::unique_ptr<HomeVideoPresenter> m_videoPresenter;

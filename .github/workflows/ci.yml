@@ -44,3 +44,11 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build/ci-${{ matrix.build_type }} --output-on-failure
+      - name: 保存测试报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qt-tests-${{ matrix.build_type }}
+          path: |
+            build/ci-${{ matrix.build_type }}/tests/tenco_test_*.txt
+            build/ci-${{ matrix.build_type }}/Testing/Temporary/LastTest.log

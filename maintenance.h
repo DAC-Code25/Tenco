@@ -32,6 +32,7 @@ public:
     explicit Maintenance(Ui::MainWindow *ui, QObject *parent = nullptr);
     bool confirmLeaveIfDirty(QWidget *parentWidget = nullptr);
     bool hasUnsavedChanges() const;
+    void setIpcConfiguration(const QJsonObject& configuration);
 
 private:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -83,6 +84,7 @@ private:
 
     Ui::MainWindow *ui;
     QLabel *m_statusLabel = nullptr;
+    QLabel *m_ipcConfiguration = nullptr;
     QPushButton *m_loadConfigButton = nullptr;
     QPushButton *m_restoreBackupButton = nullptr;
     QPushButton *m_saveButton = nullptr;

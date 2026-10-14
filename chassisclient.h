@@ -9,7 +9,7 @@
 class QTimer;
 class QWebSocket;
 
-// Wraps the chassis WebSocket protocol (cmd_vel, reboot, stopLocation, etc.).
+// Independent direct connection to the existing chassis WebSocket.
 class ChassisClient : public QObject
 {
     Q_OBJECT
@@ -34,10 +34,8 @@ public:
     void connectToHost();
     void disconnectFromHost();
     bool isConnected() const;
-
     void sendVelocityCommand(double xVel, double thetaVel);
     void sendRebootCommand();
-    void sendStopLocation();
 
 signals:
     void connected();
@@ -53,7 +51,6 @@ private slots:
 private:
     void openIfPossible();
     void sendJson(const QJsonObject &packetObj, const QJsonObject &msgObj);
-    void sendStartupMessagesIfNeeded();
     int currentReconnectDelayMs() const;
 
     QUrl m_url;
@@ -64,8 +61,8 @@ private:
     int m_reconnectMaxIntervalMs = 15000;
     int m_reconnectAttempt = 0;
     bool m_manualDisconnect = false;
-    bool m_startupMessagesSent = false;
     QString m_authToken;
+
 };
 
 #endif // CHASSISCLIENT_H

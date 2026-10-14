@@ -11,7 +11,6 @@
 
 #include <functional>
 
-class RouteFollower;
 
 namespace Ui {
 class MainWindow;
@@ -21,12 +20,9 @@ class HomeStatusPresenter
 {
 public:
     using LogHandler = std::function<void(const QString &)>;
-    using PoseHandler = std::function<void(double x, double y, double theta)>;
 
     HomeStatusPresenter(Ui::MainWindow *ui,
-                        RouteFollower *routeFollower,
-                        LogHandler logHandler,
-                        PoseHandler poseHandler);
+                        LogHandler logHandler);
 
     void handleStatusPacket(const QJsonObject &packet);
     bool handleNetworkFailure(int httpStatus, const QString &errorString, const QByteArray &responseBody);
@@ -39,9 +35,7 @@ private:
     void applyStatusField(StatusProtocol::FieldId fieldId, const QJsonArray &values, const QJsonValue &firstValue);
 
     Ui::MainWindow *m_ui = nullptr;
-    RouteFollower *m_routeFollower = nullptr;
     LogHandler m_logHandler;
-    PoseHandler m_poseHandler;
     bool m_lastConnectionStatus = false;
     bool m_connectionRestored = false;
 };

@@ -44,4 +44,4 @@
 
 1. `config.json` 里每个 URL 指向哪个服务、返回什么（见 `docs/06_Network_and_Protocol.md`）
 2. 首页闭环链路：状态轮询更新 UI；手动控制下发 `cmd_vel`；视频拉流显示（见 `docs/04_Architecture.md`）
-3. 地图路线闭环链路：Map → Home → RouteFollower → ChassisClient → Map（见 `docs/04_Architecture.md`）
+3. 地图路线闭环链路：Map → TaskCompiler → TrackingClient → 工控机 → Map（见 `docs/04_Architecture.md`）

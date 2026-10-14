@@ -24,6 +24,7 @@ QJsonObject MapDocumentCodec::toJson(const MapDocument &doc)
 {
     QJsonObject root;
     root.insert(QStringLiteral("schemaVersion"), doc.schemaVersion);
+    root.insert("frameBinding", doc.frameBinding.toJson());
     if (!doc.savedAtIsoUtc.trimmed().isEmpty()) {
         root.insert(QStringLiteral("savedAt"), doc.savedAtIsoUtc.trimmed());
     }
@@ -83,12 +84,13 @@ bool MapDocumentCodec::fromJson(const QJsonObject &json,
 
     MapDocument doc;
     const int schemaVersion = json.value(QStringLiteral("schemaVersion")).toInt(1);
-    if (schemaVersion > maxSupportedSchemaVersion) {
+    if (schemaVersion < 1 || schemaVersion > maxSupportedSchemaVersion) {
         setError(errorMessage,
                  QStringLiteral("schemaVersion 过新: %1 > %2").arg(schemaVersion).arg(maxSupportedSchemaVersion));
         return false;
     }
     doc.schemaVersion = schemaVersion;
+    if (schemaVersion >= 2) doc.frameBinding = MapFrameBinding::fromJson(json["frameBinding"].toObject());
     doc.savedAtIsoUtc = json.value(QStringLiteral("savedAt")).toString().trimmed();
 
     doc.gridWidth = json.value(QStringLiteral("gridWidth")).toInt();

@@ -3,6 +3,7 @@
 
 #include "rowworktypes.h"
 #include "rowmissiontypes.h"
+#include "trackingtypes.h"
 
 #include <QList>
 #include <QString>
@@ -34,7 +35,8 @@ struct MapDocumentPath
 
 struct MapDocument
 {
-    int schemaVersion = 1;
+    int schemaVersion = 2;
+    MapFrameBinding frameBinding;
     QString savedAtIsoUtc;
     int gridWidth = 0;
     int gridHeight = 0;
@@ -51,7 +53,7 @@ struct MapDocument
 namespace MapDocumentCodec
 {
 QJsonObject toJson(const MapDocument &doc);
-bool fromJson(const QJsonObject &json, MapDocument *outDoc, QString *errorMessage = nullptr, int maxSupportedSchemaVersion = 1);
+bool fromJson(const QJsonObject &json, MapDocument *outDoc, QString *errorMessage = nullptr, int maxSupportedSchemaVersion = 2);
 } // namespace MapDocumentCodec
 
 #endif // MAPDOCUMENT_H

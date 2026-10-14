@@ -18,26 +18,31 @@ public:
         double baseLongitudeDeg = 0.0;
     };
 
-    struct ControlConfig {
-        double arrivalDistanceThreshold = 0.2; // meters
-        double arrivalAngleThresholdDeg = 5.0; // degrees
-        double maxLinearSpeed = 0.5;          // m/s
-        double maxAngularSpeed = 0.5;         // rad/s
-        double linearGain = 0.8;
-        double angularGain = 1.0;
-        double headingStopThresholdDeg = 90.0;
-        double headingSlowdownThresholdDeg = 45.0;
-        double headingSlowdownFactor = 0.3;
-        double nearTargetDistanceMultiplier = 3.0;
-        double nearTargetSpeedMultiplier = 0.4;
-        double linearAccelerationLimit = 0.6;   // m/s^2
-        double linearDecelerationLimit = 0.8;   // m/s^2
-        double angularAccelerationLimit = 1.2;  // rad/s^2
-        double angularDecelerationLimit = 1.5;  // rad/s^2
-        double finalAdjustLinearSpeed = 0.2;    // m/s
-        double finalAdjustAngularSpeed = 0.6;   // rad/s
-        int routeFollowerUpdateIntervalMs = 100;
+    struct ManualControlConfig {
+        double maxLinearSpeed = 0.5;
+        double maxAngularSpeed = 0.5;
         int manualMotionRepeatIntervalMs = 40;
+    };
+
+    struct TaskDefaultsConfig {
+        double speedLimit = 0.25;
+        double goalToleranceMeters = 0.03;
+        double angularSpeedLimit = 0.35;
+        double angleToleranceRad = 0.05;
+        QString safetyProfileId = {};
+        QString rotationZoneId = {};
+    };
+
+    struct PoseSourceConfig {
+        bool enabled = true;
+        QString baseUrl = QStringLiteral("http://192.168.31.13:18131/api/v1");
+        int requestTimeoutMs = 3000;
+    };
+
+    struct TrackingConfig {
+        bool enabled = true;
+        QString baseUrl = QStringLiteral("http://192.168.31.13:18130/api/v1");
+        int requestTimeoutMs = 3000;
     };
 
     struct RoutePlanningConfig {
@@ -46,11 +51,6 @@ public:
         double arcPenalty = 0.05;
     };
 
-    struct VehicleConfig {
-        double wheelBaseMeters = 0.6;
-        double wheelDiameterMeters = 0.2;
-        double gearReduction = 1.0;
-    };
 
     struct VideoConfig {
         struct StreamOption {
@@ -77,8 +77,6 @@ public:
     struct NetworkConfig {
         QString websocketUrl;
         QString statusReadUrl;
-        QString writeInsUrl;
-        QString saveFileUrl;
         QString authToken;
         int statusPollIntervalMs = 100;
         int statusRequestTimeoutMs = 3000;
@@ -86,14 +84,6 @@ public:
         bool chassisAutoReconnect = true;
         int chassisReconnectIntervalMs = 1000;
         int chassisReconnectMaxIntervalMs = 15000;
-    };
-
-    struct RowWorkConfig {
-        bool enabled = false;
-        QString gatewayBaseUrl;
-        int statusPollIntervalMs = 300;
-        int commandTimeoutMs = 3000;
-        bool autoRefreshPlanStatus = true;
     };
 
     struct GimbalConfig {
@@ -157,12 +147,13 @@ public:
 
     struct ConfigSnapshot {
         GeoConfig geo;
-        ControlConfig control;
+        ManualControlConfig manualControl;
+        TaskDefaultsConfig taskDefaults;
+        PoseSourceConfig poseSource;
+        TrackingConfig tracking;
         RoutePlanningConfig routePlanning;
-        VehicleConfig vehicle;
         VideoConfig video;
         NetworkConfig network;
-        RowWorkConfig rowWork;
         GimbalConfig gimbal;
         LoggingConfig logging;
         DatabaseConfig database;
@@ -183,12 +174,13 @@ public:
     bool restoreLatestBackup(QString *errorMessage = nullptr, bool applyAfterRestore = true);
 
     const GeoConfig &geo() const { return m_geo; }
-    const ControlConfig &control() const { return m_control; }
+    const ManualControlConfig &manualControl() const { return m_manualControl; }
+    const TaskDefaultsConfig &taskDefaults() const { return m_taskDefaults; }
+    const PoseSourceConfig &poseSource() const { return m_poseSource; }
+    const TrackingConfig &tracking() const { return m_tracking; }
     const RoutePlanningConfig &routePlanning() const { return m_routePlanning; }
-    const VehicleConfig &vehicle() const { return m_vehicle; }
     const VideoConfig &video() const { return m_video; }
     const NetworkConfig &network() const { return m_network; }
-    const RowWorkConfig &rowWork() const { return m_rowWork; }
     const GimbalConfig &gimbal() const { return m_gimbal; }
     const LoggingConfig &logging() const { return m_logging; }
     const DatabaseConfig &database() const { return m_database; }
@@ -220,12 +212,13 @@ private:
     QJsonObject toJsonObject() const;
 
     GeoConfig m_geo;
-    ControlConfig m_control;
+    ManualControlConfig m_manualControl;
+    TaskDefaultsConfig m_taskDefaults;
+    PoseSourceConfig m_poseSource;
+    TrackingConfig m_tracking;
     RoutePlanningConfig m_routePlanning;
-    VehicleConfig m_vehicle;
     VideoConfig m_video;
     NetworkConfig m_network;
-    RowWorkConfig m_rowWork;
     GimbalConfig m_gimbal;
     LoggingConfig m_logging;
     DatabaseConfig m_database;
