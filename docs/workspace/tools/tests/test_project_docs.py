@@ -10,6 +10,10 @@ import sys
 import tempfile
 import unittest
 
+for stream in (sys.stdout, sys.stderr):
+    if hasattr(stream, "reconfigure"):
+        stream.reconfigure(encoding="utf-8")
+
 SOURCE = Path(__file__).resolve().parents[1] / "project_docs.py"
 SPEC = importlib.util.spec_from_file_location("project_docs", SOURCE)
 assert SPEC and SPEC.loader
