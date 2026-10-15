@@ -18,20 +18,20 @@
       "mirror_sha256": "29132e3af35a56e85e5f794a5e11e075e173adb442f7666deedaf5358709500d"
     },
     "docs/当前状态.md": {
-      "source_sha256": "5c5b50611df1d651febd84740f5055b4710788dec9f6a38c6665bf5653fe9cf8",
-      "mirror_sha256": "ef8a89c538b3d6e5b3db756674dd02c13a61fdbc4dd35eea18df22091c4cbd84"
+      "source_sha256": "5be8c4b9348a0637ddf1c4024e8442acfa8122c52085b75ffe93dfc25c54b24f",
+      "mirror_sha256": "84686395980620bba59962534b60a1dc72c26dde86564ba45e9fe71f732afb11"
     },
     "docs/变更记录.md": {
-      "source_sha256": "89f31f82798da6e77ce8153d309fe317bae53a51da24618f75a02f638765e7f7",
-      "mirror_sha256": "ab532a03e772266db4d239fd2003af6eecbe94704b3de782c9e044e833a51627"
+      "source_sha256": "eef123e33408152c20ee61713e200f303b43c5d767844a773345ead6c9eec8c5",
+      "mirror_sha256": "bfc45d79c3d43563c68015f8c079c694462d0cb8f40f3ba267dfe79acadc51ff"
     },
     "docs/问题与待办.md": {
       "source_sha256": "80feac1136e00b5a138936ce434c4ae1bbf31e2ddae9a8e12cf7721a853ea731",
       "mirror_sha256": "5c1b46f947a28c4c7857e2aabe9ae8d3fa56ec64e489064018c32d78ccaaa128"
     },
     "docs/会话索引.md": {
-      "source_sha256": "11a4598ab899356dac3642afa641e400f126c83fcf04595823da42a390e61ac7",
-      "mirror_sha256": "3513630fd4f4783ceede0c632b6beb369364a9c1a863c4d8e646e9759221ef22"
+      "source_sha256": "f43243a010df569fc7ecae8b9879a8952d7f9b19aa26fcfaaa7d9fc6d9002ae5",
+      "mirror_sha256": "387fb49c578c3ffe02e619ee3d3537ed14562a0633b074c90a0487d07a5916d8"
     },
     "docs/项目状态.json": {
       "source_sha256": "7e8c1c1aa0cd54f34c808a3625c8cb3907bfa2034228aab94aa800fe9db5088a",
