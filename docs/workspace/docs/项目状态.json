@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-10-15T22:21:55+08:00",
+  "updated_at": "2026-10-15T22:26:37+08:00",
   "session_id": "01a13477-9b6f-7f43-8a41-5e5b77886c15",
   "timezone": "Asia/Shanghai",
   "repositories": {
     "src": {
       "branch": "feat/camera-media-settings-20261015",
       "code_baseline": "b3ed1854368ce049a1a472e479b5485c25bfbf79",
-      "checkpoint_head": "f3798c22b1c8630bb407b59b5e121c56cfe9221b",
+      "checkpoint_head": "b72cfddd3b31e76c4768e9e8bcb34e6dfd7abd47",
       "remote": "origin",
       "default_branch": "main",
       "default_baseline": "84bc603ef297b3ee32d7a120f473937d454260a5",
@@ -18,57 +18,27 @@
     },
     "Tenco": {
       "branch": "feat/camera-media-settings-20261015",
-      "code_baseline": "b35a3cd4ab4df2e226482b25a6899ac5d6798d58",
-      "checkpoint_head": "b35a3cd4ab4df2e226482b25a6899ac5d6798d58",
+      "code_baseline": "5c476c6368e32dfd3b0512d4bed738334fcdfe59",
+      "checkpoint_head": "5c476c6368e32dfd3b0512d4bed738334fcdfe59",
       "remote": "Tenco",
       "default_branch": "master",
       "default_baseline": "a7e6d68512759e9e085cd6bf049fe02fe32dbd27",
       "functional_fingerprint": "f25046514aecfc918a3ee747de0c1884ea41a23bbf572f342e738dc976e6c019",
       "functional_file_count": 164,
-      "functional_tracked_changes": [
-        "CMakeLists.txt",
-        "jsonhttpclient.cpp",
-        "maintenance.cpp",
-        "tests/CMakeLists.txt"
-      ],
-      "functional_untracked_files": [
-        "camerasettingsclient.cpp",
-        "camerasettingsclient.h",
-        "camerasettingspanel.cpp",
-        "camerasettingspanel.h",
-        "tests/test_camera_settings.cpp"
-      ]
+      "functional_tracked_changes": [],
+      "functional_untracked_files": []
     },
     "oak-camera-service": {
       "branch": "feat/camera-media-settings-20261015",
-      "code_baseline": "f588bf840d78baea5c8d0abfb201f5f98bc6ee74",
-      "checkpoint_head": "f588bf840d78baea5c8d0abfb201f5f98bc6ee74",
+      "code_baseline": "7110d8f78fe425e9c41e87909b268137af90098a",
+      "checkpoint_head": "7110d8f78fe425e9c41e87909b268137af90098a",
       "remote": "origin",
       "default_branch": "main",
       "default_baseline": "2f4d90f58ac1bf85eb8dce4f38c0c594971dd181",
       "functional_fingerprint": "8c7c88fbca876a97694ba96b553e7b690bc19d7999e5c4f20de0095655a00281",
       "functional_file_count": 21,
-      "functional_tracked_changes": [
-        "CMakeLists.txt",
-        "include/oak_camera_device.h",
-        "include/oak_capture_source.h",
-        "include/oak_native_recorder.h",
-        "src/depthai_capture_source.cpp",
-        "src/oak_camera_device.cpp",
-        "src/oak_camera_service_main.cpp",
-        "src/oak_native_recorder.cpp",
-        "systemd/20-native-capture.conf",
-        "tests/fake_capture_source.cpp",
-        "tests/test_http.py",
-        "tests/test_recovery.cpp"
-      ],
-      "functional_untracked_files": [
-        "include/oak_media_settings.h",
-        "scripts/deploy_media_settings.py",
-        "src/oak_media_settings.cpp",
-        "tests/test_deploy_transaction.py",
-        "tests/test_settings.py"
-      ]
+      "functional_tracked_changes": [],
+      "functional_untracked_files": []
     }
   },
   "scope": "本机源码与文档快照；非实车或另一克隆的实时状态",
