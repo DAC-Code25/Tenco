@@ -84,7 +84,8 @@ bool JsonHttpClient::request(const QString &lane, const QString &method, const Q
         auto *upload = new OneShotBody(QJsonDocument(body).toJson(QJsonDocument::Compact));
         request.setAttribute(QNetworkRequest::DoNotBufferUploadDataAttribute, true);
         request.setHeader(QNetworkRequest::ContentLengthHeader, upload->bytesAvailable());
-        reply = m_manager.post(request, upload);
+        reply = method == "POST" ? m_manager.post(request, upload)
+                                 : m_manager.sendCustomRequest(request, method.toUtf8(), upload);
         upload->setParent(reply);
     }
     reply->setReadBufferSize(responseLimit + 1);

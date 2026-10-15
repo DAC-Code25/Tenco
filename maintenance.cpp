@@ -1,4 +1,5 @@
 #include "maintenance.h"
+#include "camerasettingspanel.h"
 
 #include "configmanager.h"
 #include "loggingmanager.h"
@@ -623,15 +624,21 @@ QWidget *Maintenance::createVideoPage()
     addLineEdit(layout, QStringLiteral("video.controlBaseUrl"), tr("相机控制基地址"));
     addPlainTextEdit(layout, QStringLiteral("video.streamOptions"), tr("视频流选项 JSON"), tr("[{\"name\":\"前置彩色相机\",\"url\":\"http://...\"}]"));
     addLineEdit(layout, QStringLiteral("video.deviceId"), tr("OAK 设备 ID"));
-    addSpinBox(layout, QStringLiteral("video.previewWidth"), tr("预览宽度"), 320, 4096);
-    addSpinBox(layout, QStringLiteral("video.previewHeight"), tr("预览高度"), 240, 3040);
-    addSpinBox(layout, QStringLiteral("video.previewFps"), tr("预览帧率"), 1, 120);
-    addComboBox(layout, QStringLiteral("video.recordMode"), tr("录像模式"), {QStringLiteral("host_opencv")});
-    addLineEdit(layout, QStringLiteral("video.recordCodec"), tr("录像编码"));
+    addSpinBox(layout, QStringLiteral("video.previewWidth"), tr("本地 OAK 后端预览宽度"), 320, 4096);
+    addSpinBox(layout, QStringLiteral("video.previewHeight"), tr("本地 OAK 后端预览高度"), 240, 3040);
+    addSpinBox(layout, QStringLiteral("video.previewFps"), tr("本地 OAK 后端预览帧率"), 1, 120);
+    addComboBox(layout, QStringLiteral("video.recordMode"), tr("本地 OAK 后端录像模式"), {QStringLiteral("host_opencv")});
+    addLineEdit(layout, QStringLiteral("video.recordCodec"), tr("本地 OAK 后端录像编码"));
     addSpinBox(layout, QStringLiteral("video.reconnectIntervalMs"), tr("重连间隔"), 200, 30000, QStringLiteral(" ms"));
     addSpinBox(layout, QStringLiteral("video.cameraRequestTimeoutMs"), tr("相机控制请求超时"), 1000, 30000, QStringLiteral(" ms"));
     addCheckBox(layout, QStringLiteral("video.autoStart"), tr("启动后自动预览"));
     addCheckBox(layout, QStringLiteral("video.scaleContents"), tr("视频自适应拉伸"));
+    auto *remote = new CameraSettingsPanel(page);
+    remote->setConnectionProvider([this] {
+        return CameraSettingsConnection{QUrl(lineValue("video.controlBaseUrl")),
+            lineValue("network.authToken"), intValue("video.cameraRequestTimeoutMs")};
+    });
+    qobject_cast<QVBoxLayout *>(page->layout())->insertWidget(0, remote);
     return page;
 }
 
