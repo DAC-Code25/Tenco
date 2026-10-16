@@ -101,12 +101,12 @@
   },
   "schemaVersion": 2,
   "manualControl": {
-    "maxLinearSpeed": 0.6,
+    "maxLinearSpeed": 1.5,
     "maxAngularSpeed": 0.8,
     "manualMotionRepeatIntervalMs": 40
   },
   "taskDefaults": {
-    "speedLimit": 0.25,
+    "speedLimit": 0.1,
     "goalToleranceMeters": 0.03,
     "angularSpeedLimit": 0.35,
     "angleToleranceRad": 0.05,

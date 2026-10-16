@@ -25,6 +25,9 @@ class Compiler {
         for (double number : {options.speedLimit, options.goalToleranceMeters, options.angularSpeedLimit,
                               options.angleToleranceRad})
             require(std::isfinite(number) && number > 0, "任务速度或到达容差无效");
+        require(options.speedLimit >= VehicleParameters::minOperatingSpeedMps &&
+                    options.speedLimit <= VehicleParameters::maxOperatingSpeedMps,
+                "任务行驶速度应在 0.10～1.50 m/s 内");
         require(!options.safetyProfileId.isEmpty(), "请先选择工控机已核实的作业通道");
         require(options.repeatCount > 0, "循环次数必须大于零");
     }
@@ -105,9 +108,11 @@ class Compiler {
                     row.frameBinding.context.controllerProfileRevision ==
                         frame.binding().context.controllerProfileRevision,
                 "单垄文件尚未确认当前地图、原点和标定，请重新确认坐标或示教");
-        require(std::isfinite(row.params.baseLinearSpeed) && row.params.baseLinearSpeed > 0 &&
+        require(std::isfinite(row.params.baseLinearSpeed) &&
+                    row.params.baseLinearSpeed >= VehicleParameters::minOperatingSpeedMps &&
                     std::isfinite(row.params.maxLinearSpeed) &&
                     row.params.maxLinearSpeed >= row.params.baseLinearSpeed &&
+                    row.params.maxLinearSpeed <= VehicleParameters::maxOperatingSpeedMps &&
                     std::isfinite(row.params.turnAngularSpeed) && row.params.turnAngularSpeed > 0,
                 "单垄速度无效");
         const double angularLimit = options.angularSpeedLimit;

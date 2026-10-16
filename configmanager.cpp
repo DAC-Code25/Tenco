@@ -15,6 +15,7 @@
 #include <QtGlobal>
 #include <QtMath>
 #include <utility>
+#include <cmath>
 
 Q_LOGGING_CATEGORY(lcConfigManager, "tenco.config")
 
@@ -461,7 +462,8 @@ void ConfigManager::applyJsonObjectToCurrentConfig(const QJsonObject &root)
         m_manualControl.maxLinearSpeed = legacy.value("maxLinearSpeed").toDouble(m_manualControl.maxLinearSpeed);
         m_manualControl.maxAngularSpeed = legacy.value("maxAngularSpeed").toDouble(m_manualControl.maxAngularSpeed);
         m_manualControl.manualMotionRepeatIntervalMs = legacy.value("manualMotionRepeatIntervalMs").toInt(40);
-        m_taskDefaults.speedLimit = legacy.value("maxLinearSpeed").toDouble(m_taskDefaults.speedLimit);
+        // A manual ceiling is not a nominal automatic work speed.
+        m_taskDefaults.speedLimit = VehicleParameters::defaultTrackingSpeedMps;
         m_taskDefaults.goalToleranceMeters = legacy.value("arrivalDistanceThreshold").toDouble(m_taskDefaults.goalToleranceMeters);
         m_taskDefaults.angleToleranceRad = qDegreesToRadians(legacy.value("arrivalAngleThresholdDeg").toDouble(3.0));
     }
@@ -1033,10 +1035,18 @@ void ConfigManager::loadDefaults()
 
 void ConfigManager::sanitizeConfig()
 {
-    m_manualControl.maxLinearSpeed = qBound(0.0, m_manualControl.maxLinearSpeed, 5.0);
+    m_manualControl.maxLinearSpeed = std::isfinite(m_manualControl.maxLinearSpeed)
+        ? qBound(0.0, m_manualControl.maxLinearSpeed, VehicleParameters::maxOperatingSpeedMps)
+        : VehicleParameters::maxOperatingSpeedMps;
+    if (m_manualControl.maxLinearSpeed > 0 &&
+        m_manualControl.maxLinearSpeed < VehicleParameters::minOperatingSpeedMps)
+        m_manualControl.maxLinearSpeed = VehicleParameters::minOperatingSpeedMps;
     m_manualControl.maxAngularSpeed = qBound(0.0, m_manualControl.maxAngularSpeed, 5.0);
     m_manualControl.manualMotionRepeatIntervalMs = qBound(20, m_manualControl.manualMotionRepeatIntervalMs, 100);
-    m_taskDefaults.speedLimit = qBound(0.01, m_taskDefaults.speedLimit, 5.0);
+    m_taskDefaults.speedLimit = std::isfinite(m_taskDefaults.speedLimit)
+        ? qBound(VehicleParameters::minOperatingSpeedMps, m_taskDefaults.speedLimit,
+                 VehicleParameters::maxOperatingSpeedMps)
+        : VehicleParameters::defaultTrackingSpeedMps;
     m_taskDefaults.goalToleranceMeters = qBound(0.01, m_taskDefaults.goalToleranceMeters, 1.0);
     m_taskDefaults.angularSpeedLimit = qBound(0.01, m_taskDefaults.angularSpeedLimit, 3.0);
     m_taskDefaults.angleToleranceRad = qBound(0.01, m_taskDefaults.angleToleranceRad, 0.5);

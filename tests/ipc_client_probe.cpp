@@ -40,7 +40,7 @@ int main(int argc, char **argv) {
     MapFrameBinding binding;
     binding.confirmed = true;
     binding.context = {"test-map",       "simulation-origin", "test-transform",
-                       "simulation-cal", "simulation-1",      1};
+                       "simulation-cal-20261014", "simulation-vehicle-20261014",      1};
     binding.enuTranslation = {10, -4};
     binding.enuYawOffsetRad = M_PI_2;
     map.m_binding = binding;

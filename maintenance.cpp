@@ -1,4 +1,5 @@
 #include "maintenance.h"
+#include "camerasettingspanel.h"
 
 #include "configmanager.h"
 #include "loggingmanager.h"
@@ -623,15 +624,21 @@ QWidget *Maintenance::createVideoPage()
     addLineEdit(layout, QStringLiteral("video.controlBaseUrl"), tr("相机控制基地址"));
     addPlainTextEdit(layout, QStringLiteral("video.streamOptions"), tr("视频流选项 JSON"), tr("[{\"name\":\"前置彩色相机\",\"url\":\"http://...\"}]"));
     addLineEdit(layout, QStringLiteral("video.deviceId"), tr("OAK 设备 ID"));
-    addSpinBox(layout, QStringLiteral("video.previewWidth"), tr("预览宽度"), 320, 4096);
-    addSpinBox(layout, QStringLiteral("video.previewHeight"), tr("预览高度"), 240, 3040);
-    addSpinBox(layout, QStringLiteral("video.previewFps"), tr("预览帧率"), 1, 120);
-    addComboBox(layout, QStringLiteral("video.recordMode"), tr("录像模式"), {QStringLiteral("host_opencv")});
-    addLineEdit(layout, QStringLiteral("video.recordCodec"), tr("录像编码"));
+    addSpinBox(layout, QStringLiteral("video.previewWidth"), tr("本地 OAK 后端预览宽度"), 320, 4096);
+    addSpinBox(layout, QStringLiteral("video.previewHeight"), tr("本地 OAK 后端预览高度"), 240, 3040);
+    addSpinBox(layout, QStringLiteral("video.previewFps"), tr("本地 OAK 后端预览帧率"), 1, 120);
+    addComboBox(layout, QStringLiteral("video.recordMode"), tr("本地 OAK 后端录像模式"), {QStringLiteral("host_opencv")});
+    addLineEdit(layout, QStringLiteral("video.recordCodec"), tr("本地 OAK 后端录像编码"));
     addSpinBox(layout, QStringLiteral("video.reconnectIntervalMs"), tr("重连间隔"), 200, 30000, QStringLiteral(" ms"));
     addSpinBox(layout, QStringLiteral("video.cameraRequestTimeoutMs"), tr("相机控制请求超时"), 1000, 30000, QStringLiteral(" ms"));
     addCheckBox(layout, QStringLiteral("video.autoStart"), tr("启动后自动预览"));
     addCheckBox(layout, QStringLiteral("video.scaleContents"), tr("视频自适应拉伸"));
+    auto *remote = new CameraSettingsPanel(page);
+    remote->setConnectionProvider([this] {
+        return CameraSettingsConnection{QUrl(lineValue("video.controlBaseUrl")),
+            lineValue("network.authToken"), intValue("video.cameraRequestTimeoutMs")};
+    });
+    qobject_cast<QVBoxLayout *>(page->layout())->insertWidget(0, remote);
     return page;
 }
 
@@ -683,10 +690,10 @@ QWidget *Maintenance::createControlPage()
                                 &layout);
     addDoubleSpinBox(layout, QStringLiteral("geo.baseLatitudeDeg"), tr("地图基准纬度"), -90.0, 90.0, 8);
     addDoubleSpinBox(layout, QStringLiteral("geo.baseLongitudeDeg"), tr("地图基准经度"), -180.0, 180.0, 8);
-    addDoubleSpinBox(layout, "manualControl.maxLinearSpeed", tr("手动最大线速度 m/s"), 0.0, 5.0, 3);
+    addDoubleSpinBox(layout, "manualControl.maxLinearSpeed", tr("手动最大线速度 m/s"), 0.0, VehicleParameters::maxOperatingSpeedMps, 3);
     addDoubleSpinBox(layout, "manualControl.maxAngularSpeed", tr("手动最大角速度 rad/s"), 0.0, 5.0, 3);
     addSpinBox(layout, "manualControl.manualMotionRepeatIntervalMs", tr("手动心跳间隔"), 20, 1000, " ms");
-    addDoubleSpinBox(layout, "taskDefaults.speedLimit", tr("任务速度请求 m/s"), 0.0, 5.0, 3);
+    addDoubleSpinBox(layout, "taskDefaults.speedLimit", tr("任务速度请求 m/s（常用 0.10 / 0.20）"), VehicleParameters::minOperatingSpeedMps, VehicleParameters::maxOperatingSpeedMps, 3);
     addDoubleSpinBox(layout, "taskDefaults.goalToleranceMeters", tr("任务停车容差请求 m"), 0.0, 5.0, 3);
     addDoubleSpinBox(layout, "taskDefaults.angularSpeedLimit", tr("任务转向速度请求 rad/s"), 0.0, 5.0, 3);
     addDoubleSpinBox(layout, "taskDefaults.angleToleranceRad", tr("任务角度容差请求 rad"), 0.0, 5.0, 3);

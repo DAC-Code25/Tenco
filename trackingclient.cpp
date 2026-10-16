@@ -171,7 +171,7 @@ void TrackingClient::pollStatus() {
     });
 }
 void TrackingClient::pollMetadata() {
-    if (m_clock.elapsed() < m_nextMetadata)
+    if (!fresh() || m_clock.elapsed() < m_nextMetadata)
         return;
     m_nextMetadata = m_clock.elapsed() + 1000;
     m_http.request("health", "GET", "/health", {}, {}, {}, [this](const JsonHttpResult &r) {
@@ -285,7 +285,11 @@ void TrackingClient::pollCommands() {
     });
 }
 void TrackingClient::pollEvents() {
-    if (!fresh() || m_clock.elapsed() < m_nextEvents)
+    // Status and the event cursor belong to the same boot. A new event is
+    // advertised by status; querying an already consumed cursor only returns
+    // an empty response. Keep the cursor unchanged on errors and partial pages.
+    if (!fresh() || (m_status.hasEventSequence && m_status.lastEventSeq <= m_eventCursor) ||
+        m_clock.elapsed() < m_nextEvents)
         return;
     m_nextEvents = m_clock.elapsed() + 200;
     QUrlQuery q;

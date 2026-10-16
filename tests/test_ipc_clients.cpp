@@ -90,6 +90,85 @@ static QJsonObject statusObject(quint64 seq, const QString &boot) {
 class IpcClientsTest : public QObject {
     Q_OBJECT
   private slots:
+    void eventPollingFollowsAdvertisedSequenceAndRecovers() {
+        HttpFixture server;
+        quint64 seq = 0, advertised = 0;
+        QString boot = "boot-a";
+        bool offline = false, gap = false, legacy = false;
+        int eventRequests = 0, metadataRequests = 0;
+        server.handler = [&](auto *socket, const QByteArray &path, const QJsonObject &) {
+            if (path.startsWith("/api/v1/status")) {
+                auto status = statusObject(++seq, boot);
+                status["lastEventSeq"] = QString::number(advertised);
+                if (legacy) status.remove("lastEventSeq");
+                HttpFixture::reply(socket, status, offline ? 503 : 200);
+            } else if (path.startsWith("/api/v1/events")) {
+                ++eventRequests;
+                if (legacy) {
+                    HttpFixture::reply(socket, {{"apiVersion", 1}, {"bootId", boot}, {"events", QJsonArray{}}});
+                    return;
+                }
+                if (gap) {
+                    gap = false;
+                    QVERIFY(path.contains("after=0"));
+                    HttpFixture::reply(socket, {{"code", "event_cursor_expired"}}, 410);
+                    return;
+                }
+                QJsonArray events;
+                if (boot == "boot-a") {
+                    // Paginated burst: status advertises 3, first page only has 1.
+                    if (path.contains("after=0")) events.append(QJsonObject{{"seq", "1"}});
+                    else if (path.contains("after=1")) {
+                        events.append(QJsonObject{{"seq", "2"}});
+                        events.append(QJsonObject{{"seq", "3"}});
+                    } else QFAIL("queried an already consumed cursor");
+                } else {
+                    QVERIFY(path.contains("after=2"));
+                    events.append(QJsonObject{{"seq", "3"}});
+                }
+                HttpFixture::reply(socket, {{"apiVersion", 1}, {"bootId", boot}, {"events", events}});
+            } else if (path.endsWith("/health") || path.endsWith("/configuration")) {
+                ++metadataRequests;
+                HttpFixture::reply(socket, {{"apiVersion", 1}, {"bootId", boot}, {"ready", true}});
+            } else HttpFixture::reply(socket, {}, 404);
+        };
+        TrackingClient client;
+        QSignalSpy events(&client, &TrackingClient::eventReceived);
+        QSignalSpy resync(&client, &TrackingClient::eventsResynchronized);
+        client.configure(server.url(), {}, 200);
+        client.start();
+        QTRY_VERIFY(client.fresh());
+        QTRY_VERIFY(metadataRequests >= 2);
+        QTest::qWait(600);
+        QCOMPARE(eventRequests, 0);
+        advertised = 3;
+        QTRY_COMPARE(events.count(), 3);
+        QCOMPARE(eventRequests, 2);
+        QTest::qWait(450);
+        QCOMPARE(eventRequests, 2);
+        offline = true;
+        QTRY_VERIFY(!client.fresh());
+        QTest::qWait(250); // Allow requests accepted while fresh to finish.
+        const int offlineMetadata = metadataRequests;
+        QTest::qWait(1100);
+        QCOMPARE(metadataRequests, offlineMetadata);
+        // New boot resets the old cursor; an expired retained page resynchronizes.
+        boot = "boot-b"; advertised = 2; gap = true; offline = false;
+        QTRY_COMPARE(resync.count(), 1);
+        const int afterGap = eventRequests;
+        QTest::qWait(450);
+        QCOMPARE(eventRequests, afterGap);
+        advertised = 3;
+        QTRY_COMPARE(events.count(), 4);
+        QTest::qWait(450);
+        QCOMPARE(eventRequests, afterGap + 1);
+        // Older compatible services omit the optional status cursor. They must
+        // retain periodic event reads rather than silently losing all events.
+        legacy = true;
+        QTRY_VERIFY(eventRequests > afterGap + 1);
+        client.stop();
+    }
+
     void reopenedClientRequiresExplicitConfirmedRemotePlan_data() {
         QTest::addColumn<bool>("largePlan");
         QTest::newRow("small-plan") << false;

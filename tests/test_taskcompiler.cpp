@@ -17,6 +17,39 @@ class TaskCompilerTest : public QObject {
         return o;
     }
   private slots:
+    void drivingSpeedRange() {
+        TaskRouteSection line;
+        line.id = "line";
+        line.points = {{0, 0}, {0, 2}};
+        for (double speed : {.10, .20, 1.50}) {
+            auto settings = options(); settings.speedLimit = speed;
+            const auto route = TaskCompiler::route({line}, binding(), settings);
+            QVERIFY2(route.ok(), qPrintable(route.error));
+            QCOMPARE(route.plan["steps"].toArray()[0].toObject()["speedLimit"].toDouble(), speed);
+        }
+        for (double speed : {.099, 1.501}) {
+            auto settings = options(); settings.speedLimit = speed;
+            QVERIFY(!TaskCompiler::route({line}, binding(), settings).ok());
+        }
+        RowWorkPlan row;
+        row.frameBinding = binding();
+        row.hasStartPose = row.hasEndPose = true;
+        row.endPose = {0, 2, 0};
+        auto settings = options(); settings.speedLimit = .20;
+        for (double speed : {.10, .20}) {
+            row.params.baseLinearSpeed = speed;
+            RowWorkPlan restored;
+            QVERIFY(RowWorkJson::planFromJson(RowWorkJson::planToJson(row), &restored));
+            const auto compiled = TaskCompiler::row(restored, binding(), settings, false);
+            QVERIFY2(compiled.ok(), qPrintable(compiled.error));
+            QCOMPARE(compiled.plan["steps"].toArray()[0].toObject()["speedLimit"].toDouble(), speed);
+        }
+        row.params.maxLinearSpeed = 1.501;
+        QVERIFY(!TaskCompiler::row(row, binding(), settings, false).ok());
+        row.params.maxLinearSpeed = .20;
+        row.params.baseLinearSpeed = .099;
+        QVERIFY(!TaskCompiler::row(row, binding(), settings, false).ok());
+    }
     void axesAndRoundtrip() {
         auto b = binding();
         MapFrameAdapter identity(b);

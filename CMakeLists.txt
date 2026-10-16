@@ -99,6 +99,8 @@ target_link_libraries(tenco_map_model PUBLIC Qt6::Core tenco_config tenco_motion
 tenco_configure_target(tenco_map_model)
 
 qt_add_library(tenco_network STATIC
+    camerasettingsclient.h
+    camerasettingsclient.cpp
     jsonhttpclient.h
     jsonhttpclient.cpp
     poseclient.h
@@ -147,6 +149,10 @@ target_link_libraries(tenco_video PUBLIC
     tenco_config
 )
 tenco_configure_target(tenco_video)
+
+qt_add_library(tenco_camera_settings STATIC camerasettingspanel.h camerasettingspanel.cpp)
+target_link_libraries(tenco_camera_settings PUBLIC Qt6::Widgets tenco_network)
+tenco_configure_target(tenco_camera_settings)
 
 qt_add_executable(Tenco
     main.cpp
@@ -214,6 +220,7 @@ target_link_libraries(Tenco PRIVATE
     tenco_map_model
     tenco_network
     tenco_video
+    tenco_camera_settings
 )
 
 if(TENCO_ENABLE_OAK_CAMERA)

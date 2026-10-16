@@ -1,5 +1,6 @@
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Test Network Sql)
 
+
 qt_add_executable(tenco_ipc_client_probe ipc_client_probe.cpp ../controlsessioncoordinator.h ../controlsessioncoordinator.cpp
     ../externaleventcoordinator.h ../externaleventcoordinator.cpp
     ../map.h ../map.cpp ../mapgraphicsview.h ../mapgraphicsview.cpp
@@ -130,3 +131,6 @@ tenco_add_test(tenco_test_pose_map_chain
 set_property(TARGET tenco_test_pose_map_chain PROPERTY AUTOUIC_SEARCH_PATHS "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_link_libraries(tenco_test_pose_map_chain PRIVATE Qt6::Widgets Qt6::Network
     tenco_config tenco_logging tenco_motion tenco_map_model tenco_network)
+
+tenco_add_test(tenco_test_camera_settings test_camera_settings.cpp)
+target_link_libraries(tenco_test_camera_settings PRIVATE tenco_camera_settings Qt6::Widgets)
