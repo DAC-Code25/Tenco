@@ -39,6 +39,7 @@ struct TrackingSnapshot {
     QString bootId, state, taskId, executionId, stepId;
     QString pauseReason, faultCode, result, waitingEventId;
     quint64 seq = 0, stateVersion = 0, lastEventSeq = 0;
+    bool hasEventSequence = false;
     int taskRevision = 0, stepIndex = 0, loopIndex = 0;
     double progressMeters = 0, lengthMeters = 0, lateralError = 0, headingErrorRad = 0;
     double remainingAngleRad = 0, remainingWaitMs = 0, measuredV = 0, measuredOmega = 0;

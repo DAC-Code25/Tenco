@@ -138,7 +138,8 @@ bool TrackingJson::status(const QJsonObject &o, TrackingSnapshot *out, QString *
     s.stepId = o["stepId"].toString();
     if (s.bootId.isEmpty() || !sequence(o["seq"], &s.seq) || !sequence(o["stateVersion"], &s.stateVersion))
         return reject(error, QStringLiteral("任务序号无效"));
-    if (o.contains("lastEventSeq") && !sequence(o["lastEventSeq"], &s.lastEventSeq))
+    s.hasEventSequence = o.contains("lastEventSeq");
+    if (s.hasEventSequence && !sequence(o["lastEventSeq"], &s.lastEventSeq))
         return reject(error, QStringLiteral("事件序号无效"));
     if (!QStringList{"Idle", "Ready", "Starting", "Aligning", "Tracking", "Braking", "Turning", "Waiting",
                      "Pausing", "Paused", "Aborting", "Completed", "Aborted", "Fault"}
