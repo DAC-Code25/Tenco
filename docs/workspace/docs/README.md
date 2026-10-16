@@ -15,6 +15,7 @@
 | [机器快照](项目状态.json) | 已采集的仓库基线/分支/功能源码指纹，辅助检测说明是否过时 |
 | [云台旋转轴间歇失效排查](https://github.com/DAC-Code25/Tenco/blob/master/docs/develop/%E4%BA%91%E5%8F%B0%E6%97%8B%E8%BD%AC%E8%BD%B4%E9%97%B4%E6%AD%87%E5%A4%B1%E6%95%88%E6%8E%92%E6%9F%A5%E6%96%B9%E6%A1%88%E4%B8%8E%E8%AE%B0%E5%BD%95.md) | PLC只读证据、已知链路、候选根因与待现场验证P-012；未实施控制修复 |
 | [无线网络流量与优化](https://github.com/DAC-Code25/Tenco/blob/master/docs/%E6%97%A0%E7%BA%BF%E7%BD%91%E7%BB%9C%E6%B5%81%E9%87%8F%E4%B8%8E%E4%BC%98%E5%8C%96%E8%AF%B4%E6%98%8E.md) | 实测视频内容/IP包、配置频率、同质量优化、2.4GHz交付波动和P-013现场验收边界 |
+| [相机部署与三仓默认同步](https://github.com/DAC-Code25/oak-camera-service/blob/main/docs/develop/%E7%9B%B8%E6%9C%BA%E9%83%A8%E7%BD%B2%E4%B8%8E%E4%B8%89%E4%BB%93%E5%90%8C%E6%AD%A5%E5%BC%80%E5%8F%91%E6%96%B9%E6%A1%88%E4%B8%8E%E8%AE%B0%E5%BD%95.md) | 最新线上哈希/媒体保护/实测、PR覆盖与分支清理、现场实验保护及受控源码交付 |
 | [开发方案模板](templates/开发方案模板.md) | 代码修改前复制到对应仓库 `docs/develop/` |
 | [开发记录模板](templates/开发记录模板.md) | 实施、验证、前后逻辑、分支/会话与遗留 |
 | [会话交接模板](templates/会话交接模板.md) | 结束、暂停或切换会话前交接 |
