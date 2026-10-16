@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-10-16T16:28:02+08:00",
+  "updated_at": "2026-10-16T16:33:57+08:00",
   "session_id": "01a13477-9b6f-7f43-8a41-5e5b77886c15",
   "timezone": "Asia/Shanghai",
   "repositories": {
     "src": {
-      "branch": "chore/deploy-sync-defaults-20261016",
+      "branch": "main",
       "code_baseline": "b3ed1854368ce049a1a472e479b5485c25bfbf79",
       "checkpoint_head": "a3664143f5c4d80de61a6e2fd532d41719c008d2",
       "remote": "origin",
@@ -17,7 +17,7 @@
       "functional_untracked_files": []
     },
     "Tenco": {
-      "branch": "chore/deploy-sync-defaults-20261016",
+      "branch": "master",
       "code_baseline": "b4d333a2425e827263c47337dfff49e3aaf8692d",
       "checkpoint_head": "ccbc04fab029142f4265d317f7968e2ab6f323a4",
       "remote": "Tenco",
@@ -29,12 +29,12 @@
       "functional_untracked_files": []
     },
     "oak-camera-service": {
-      "branch": "chore/deploy-sync-defaults-20261016",
+      "branch": "main",
       "code_baseline": "c832910ba8160c7c493d00a16b940e95687cf934",
-      "checkpoint_head": "d47a7a3703e670e62768b7417915e8d520d87528",
+      "checkpoint_head": "8a0423dde1458427bec259189229afc79a8d9b07",
       "remote": "origin",
       "default_branch": "main",
-      "default_baseline": "d47a7a3703e670e62768b7417915e8d520d87528",
+      "default_baseline": "8a0423dde1458427bec259189229afc79a8d9b07",
       "functional_fingerprint": "66ae2416753b4e894f25afa0aacff9c8b1546869ef8c7bb8a1a4c7a8c3d43a8a",
       "functional_file_count": 21,
       "functional_tracked_changes": [],
