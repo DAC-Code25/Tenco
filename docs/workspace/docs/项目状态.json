@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-10-16T11:42:48+08:00",
+  "updated_at": "2026-10-16T11:45:25+08:00",
   "session_id": "01a13477-9b6f-7f43-8a41-5e5b77886c15",
   "timezone": "Asia/Shanghai",
   "repositories": {
     "src": {
       "branch": "docs/gimbal-startup-diagnosis-20261016",
       "code_baseline": "b3ed1854368ce049a1a472e479b5485c25bfbf79",
-      "checkpoint_head": "8b9aa2a4248421f992617cd3bcb315afb4ac34cb",
+      "checkpoint_head": "1a3c101a8b182e391f613dfde7a333923ff12e86",
       "remote": "origin",
       "default_branch": "main",
       "default_baseline": "84bc603ef297b3ee32d7a120f473937d454260a5",
@@ -19,7 +19,7 @@
     "Tenco": {
       "branch": "docs/gimbal-startup-diagnosis-20261016",
       "code_baseline": "5c476c6368e32dfd3b0512d4bed738334fcdfe59",
-      "checkpoint_head": "534757427be3dbc58489de3b544d117d3857ebee",
+      "checkpoint_head": "3832e01f0251dd19b86e2d190d53ba678a6cb2d2",
       "remote": "Tenco",
       "default_branch": "master",
       "default_baseline": "a7e6d68512759e9e085cd6bf049fe02fe32dbd27",
@@ -31,7 +31,7 @@
     "oak-camera-service": {
       "branch": "docs/gimbal-startup-diagnosis-20261016",
       "code_baseline": "7110d8f78fe425e9c41e87909b268137af90098a",
-      "checkpoint_head": "50c9962035c1fed13d24485694fc8a83976741d5",
+      "checkpoint_head": "6da86ba745a5d751bf9f8b4dbb4bd89ee01783e1",
       "remote": "origin",
       "default_branch": "main",
       "default_baseline": "2f4d90f58ac1bf85eb8dce4f38c0c594971dd181",
