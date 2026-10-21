@@ -45,6 +45,14 @@ class HttpFixture : public QTcpServer {
         });
     }
     QUrl url() const { return QUrl(QString("http://127.0.0.1:%1/api/v1").arg(serverPort())); }
+    static QByteArray requestHeader(QTcpSocket *socket, const QByteArray &name) {
+        for (const auto &line : socket->property("requestHeaders").toByteArray().split('\n')) {
+            const auto colon = line.indexOf(':');
+            if (colon >= 0 && line.left(colon).trimmed().compare(name, Qt::CaseInsensitive) == 0)
+                return line.mid(colon + 1).trimmed();
+        }
+        return {};
+    }
     static void reply(QTcpSocket *socket, const QJsonObject &json, int code = 200) {
         const auto bytes = QJsonDocument(json).toJson(QJsonDocument::Compact);
         socket->write("HTTP/1.1 " + QByteArray::number(code) +
@@ -303,7 +311,7 @@ class IpcClientsTest : public QObject {
         server.handler = [&](auto *socket, const QByteArray &path, const QJsonObject &) {
             ++requests;
             QCOMPARE(path, QByteArray("/api/v1/pose/stream"));
-            QVERIFY(socket->property("requestHeaders").toByteArray().contains("Authorization: Bearer stream-secret"));
+            QCOMPARE(HttpFixture::requestHeader(socket, "Authorization"), QByteArray("Bearer stream-secret"));
             source = HttpFixture::stream(socket, [&] {
                 if (sent == 60) {
                     source->stop();
@@ -453,8 +461,12 @@ class IpcClientsTest : public QObject {
     }
     void poseStreamHandlesFragmentedAndCoalescedLinesWithoutLifetimeLimit() {
         HttpFixture server;
+        QPointer<QTcpSocket> stream;
+        int requests = 0;
         server.handler = [&](auto *socket, const QByteArray &path, const QJsonObject &) {
+            ++requests;
             QCOMPARE(path, QByteArray("/api/v1/pose/stream"));
+            stream = socket;
             HttpFixture::streamHeaders(socket);
             const auto first = QJsonDocument(poseObject()).toJson(QJsonDocument::Compact) + "\r\n";
             HttpFixture::chunk(socket, first.left(17));
@@ -472,10 +484,27 @@ class IpcClientsTest : public QObject {
         PoseClient client;
         client.configure(server.url(), {}, 1000);
         QSignalSpy received(&client, &PoseClient::poseChanged);
+        QSignalSpy errors(&client, &PoseClient::errorOccurred);
         client.start();
         QTRY_COMPARE_WITH_TIMEOUT(received.size(), 900, 5000);
         QCOMPARE(client.snapshot().seq, quint64(900));
+        for (int index = 0; index < received.size(); ++index) {
+            const auto pose = qvariant_cast<ControlPoseSnapshot>(received[index][0]);
+            QCOMPARE(pose.seq, quint64(index + 1));
+            QCOMPARE(pose.position, QPointF());
+            QCOMPARE(pose.yaw, 0.0);
+        }
+        QCOMPARE(errors.size(), 0);
+        QCOMPARE(requests, 1);
+        QVERIFY(stream);
+        // Parsing the large queued batch can exceed freshness on a slow host.
+        // A newly produced sample must still arrive fresh on this same stream.
+        HttpFixture::chunk(stream, QJsonDocument(poseObject("901")).toJson(QJsonDocument::Compact) + '\n');
+        QTRY_COMPARE_WITH_TIMEOUT(received.size(), 901, 500);
+        QCOMPARE(client.snapshot().seq, quint64(901));
         QVERIFY(client.fresh());
+        QCOMPARE(errors.size(), 0);
+        QCOMPARE(requests, 1);
         client.stop();
     }
     void poseStreamRejectsInvalidResponsesWithoutPollingFallback_data() {
