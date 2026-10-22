@@ -748,6 +748,17 @@ class IpcClientsTest : public QObject {
         QTest::qWait(500);
         QCOMPARE(photos, 1);
         QCOMPARE(acks, 0);
+        // Operator resolution requires a current status and live session;
+        // the observation wait above does not synchronize either condition.
+        QTRY_VERIFY2(tracking.fresh() && tracking.hasSession() &&
+                         tracking.snapshot().waitingEventId == "execution/8" &&
+                         tracking.snapshot().state == "Waiting" &&
+                         tracking.snapshot().executionId == "execution" &&
+                         tracking.snapshot().stepId == "photo",
+                     qPrintable(QString("fresh=%1 session=%2 state=%3 event=%4 execution=%5 step=%6")
+                                    .arg(tracking.fresh()).arg(tracking.hasSession())
+                                    .arg(tracking.snapshot().state, tracking.snapshot().waitingEventId,
+                                         tracking.snapshot().executionId, tracking.snapshot().stepId)));
         QVERIFY(!recovered.resolveCurrent("execution/old", true));
         QVERIFY(recovered.resolveCurrent("execution/8", true));
         QTRY_COMPARE(acks, 1);
