@@ -142,21 +142,15 @@ Help::Help(Ui::MainWindow *ui, QObject *parent)
     , ui(ui)
 {
     m_documents = {
-        {tr("OAK 相机接入方案"),
-         tr("工控机 OAK 相机接入、HTTP 接口、视频流和 systemd 托管说明。"),
-         QStringLiteral("docs/develop/USB_OAK相机接入开发方案.md")},
-        {tr("首页云台控制方案"),
-         tr("PLC Modbus、云台/升降控制、键盘快捷键和安全限位说明。"),
-         QStringLiteral("docs/develop/首页云台控制开发方案.md")},
-        {tr("直线/多垄作业控制方案"),
-         tr("双端点示教、直线保持、多垄切换、工控机控制闭环和鲁棒性说明。"),
-         QStringLiteral("docs/develop/多垄穿梭作业闭环系统开发方案.md")},
-        {tr("维护配置管理方案"),
-         tr("维护页配置项、保存/应用、备份恢复、热加载和生产维护说明。"),
-         QStringLiteral("docs/develop/维护界面配置管理开发方案.md")},
-        {tr("帮助界面开发方案"),
-         tr("帮助页定位、分类导航、故障排查、文档入口和运行信息说明。"),
-         QStringLiteral("docs/develop/帮助界面开发方案.md")}
+        {tr("操作与控制接口"),
+         tr("地图示教、完整任务、位姿推送、工控机控制接口和故障处理。"),
+         QStringLiteral("docs/工控机闭环操作与接口.md")},
+        {tr("配置与使用说明"),
+         tr("本地构建、配置分组、手动控制、云台和相机使用说明。"),
+         QStringLiteral("README.md")},
+        {tr("网络流量与排查"),
+         tr("无线网络流量、测量方法、预览设置和已知波动说明。"),
+         QStringLiteral("docs/无线网络流量与优化说明.md")}
     };
 
     buildUi();
@@ -684,7 +678,7 @@ QWidget *Help::createShortcutPage()
 QWidget *Help::createDocumentPage()
 {
     auto *page = createThemePage(tr("文档资料"),
-                                 tr("打开项目已有开发文档。第一版使用系统默认程序打开 Markdown 文件。"));
+                                 tr("打开项目使用说明和接口文档，使用系统默认程序打开 Markdown 文件。"));
     auto *content = qobject_cast<QScrollArea *>(page->layout()->itemAt(0)->widget())->widget();
     auto *layout = qobject_cast<QVBoxLayout *>(content->layout());
 

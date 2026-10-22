@@ -4,6 +4,7 @@
 #include "poseclient.h"
 #include "trackingclient.h"
 #include <QJsonArray>
+#include <QDateTime>
 #include <QJsonDocument>
 #include <QPointer>
 #include <QTcpServer>
@@ -36,6 +37,7 @@ class HttpFixture : public QTcpServer {
                     if (data->size() < end + 4 + length)
                         return;
                     socket->setProperty("handled", true);
+                    socket->setProperty("requestHeaders", header);
                     handler(socket, header.split(' ').value(1),
                             QJsonDocument::fromJson(data->mid(end + 4, length)).object());
                 });
@@ -43,12 +45,39 @@ class HttpFixture : public QTcpServer {
         });
     }
     QUrl url() const { return QUrl(QString("http://127.0.0.1:%1/api/v1").arg(serverPort())); }
+    static QByteArray requestHeader(QTcpSocket *socket, const QByteArray &name) {
+        for (const auto &line : socket->property("requestHeaders").toByteArray().split('\n')) {
+            const auto colon = line.indexOf(':');
+            if (colon >= 0 && line.left(colon).trimmed().compare(name, Qt::CaseInsensitive) == 0)
+                return line.mid(colon + 1).trimmed();
+        }
+        return {};
+    }
     static void reply(QTcpSocket *socket, const QJsonObject &json, int code = 200) {
         const auto bytes = QJsonDocument(json).toJson(QJsonDocument::Compact);
         socket->write("HTTP/1.1 " + QByteArray::number(code) +
                       " Result\r\nContent-Type: application/json\r\nContent-Length: " +
                       QByteArray::number(bytes.size()) + "\r\nConnection: close\r\n\r\n" + bytes);
         socket->disconnectFromHost();
+    }
+    static void streamHeaders(QTcpSocket *socket) {
+        socket->write("HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\n"
+                      "Transfer-Encoding: chunked\r\nCache-Control: no-store\r\n\r\n");
+    }
+    static void chunk(QTcpSocket *socket, const QByteArray &data) {
+        socket->write(QByteArray::number(data.size(), 16) + "\r\n" + data + "\r\n");
+    }
+    static QTimer *stream(QTcpSocket *socket, std::function<QJsonObject()> next, int intervalMs = 20) {
+        streamHeaders(socket);
+        auto *timer = new QTimer(socket);
+        timer->setTimerType(Qt::PreciseTimer);
+        QObject::connect(timer, &QTimer::timeout, socket, [socket, next] {
+            const auto object = next();
+            if (!object.isEmpty())
+                chunk(socket, QJsonDocument(object).toJson(QJsonDocument::Compact) + '\n');
+        });
+        timer->start(intervalMs);
+        return timer;
     }
 };
 
@@ -63,6 +92,7 @@ static QJsonObject poseObject(const QString &seq = "1", const QString &boot = "p
             {"clockDomain", "system"},
             {"localizationMode", "nominal"},
             {"stateAgeMs", 0},
+            {"sendTime", QDateTime::currentMSecsSinceEpoch() / 1000.0},
             {"positionObservationAgeMs", 0},
             {"headingObservationAgeMs", 0},
             {"pose", QJsonObject{{"x", 0}, {"y", 0}, {"yaw", 0}}},
@@ -252,6 +282,7 @@ class IpcClientsTest : public QObject {
         quint64 seq = 0;
         bool publish = true;
         server.handler = [&](auto *socket, const auto &, const auto &) {
+            HttpFixture::stream(socket, [&] {
             auto object = poseObject(QString::number(publish ? ++seq : seq));
             object["stateAgeMs"] = 220;
             object["positionObservationAgeMs"] = 8000;
@@ -259,7 +290,8 @@ class IpcClientsTest : public QObject {
             object["positionReliable"] = false;
             object["headingReliable"] = false;
             object["localizationMode"] = "degraded";
-            HttpFixture::reply(socket, object);
+            return object;
+            });
         };
         PoseClient client;
         client.configure(server.url(), {});
@@ -269,6 +301,305 @@ class IpcClientsTest : public QObject {
         publish = false;
         QTest::qWait(420);
         QVERIFY(!client.fresh());
+        client.stop();
+    }
+    void poseStreamReceivesEach50HzSampleAndAuthorizes() {
+        HttpFixture server;
+        quint64 sent = 0;
+        int requests = 0;
+        QTimer *source = nullptr;
+        server.handler = [&](auto *socket, const QByteArray &path, const QJsonObject &) {
+            ++requests;
+            QCOMPARE(path, QByteArray("/api/v1/pose/stream"));
+            QCOMPARE(HttpFixture::requestHeader(socket, "Authorization"), QByteArray("Bearer stream-secret"));
+            source = HttpFixture::stream(socket, [&] {
+                if (sent == 60) {
+                    source->stop();
+                    return QJsonObject{};
+                }
+                auto object = poseObject(QString::number(++sent));
+                object["pose"] = QJsonObject{{"x", 1.234}, {"y", -2.345}, {"yaw", .456}};
+                return object;
+            });
+        };
+        PoseClient client;
+        client.configure(server.url(), "stream-secret", 500);
+        QSignalSpy received(&client, &PoseClient::poseChanged);
+        QElapsedTimer elapsed;
+        elapsed.start();
+        client.start();
+        QTRY_COMPARE_WITH_TIMEOUT(received.size(), 60, 1800);
+        QVERIFY2(elapsed.elapsed() < 1800, "50 Hz source was throttled by the client's status timer");
+        QCOMPARE(requests, 1);
+        for (int index = 0; index < received.size(); ++index) {
+            const auto pose = qvariant_cast<ControlPoseSnapshot>(received[index][0]);
+            QCOMPARE(pose.seq, quint64(index + 1));
+            QCOMPARE(pose.position, QPointF(1.234, -2.345));
+            QCOMPARE(pose.yaw, .456);
+            QVERIFY(pose.validForControl);
+        }
+        QVERIFY(client.fresh()); // Stream lifetime must not become transport age.
+        client.stop();
+    }
+    void poseStreamSlowHeadersDoNotAgeEveryFutureSample() {
+        HttpFixture server;
+        quint64 seq = 0;
+        int requests = 0;
+        server.handler = [&](auto *socket, const QByteArray &path, const QJsonObject &) {
+            ++requests;
+            QCOMPARE(path, QByteArray("/api/v1/pose/stream"));
+            // Establishment exceeds the state freshness window, then the
+            // source starts sending current samples on this same connection.
+            QTimer::singleShot(450, socket, [&, socket] {
+                HttpFixture::stream(socket, [&] { return poseObject(QString::number(++seq)); });
+            });
+        };
+        PoseClient client;
+        client.configure(server.url(), {}, 1000);
+        QSignalSpy received(&client, &PoseClient::poseChanged);
+        QSignalSpy errors(&client, &PoseClient::errorOccurred);
+        QElapsedTimer elapsed;
+        elapsed.start();
+        client.start();
+        QTRY_VERIFY_WITH_TIMEOUT(received.size() >= 20, 1600);
+        QVERIFY(elapsed.elapsed() >= 800);
+        QCOMPARE(requests, 1);
+        QCOMPARE(errors.size(), 0);
+        QVERIFY(client.fresh());
+        for (const auto &arguments : received) {
+            const auto pose = qvariant_cast<ControlPoseSnapshot>(arguments[0]);
+            QVERIFY(pose.validForControl);
+            QVERIFY(pose.stateAgeMs < 150);
+        }
+        client.stop();
+    }
+    void poseStreamQueuedSamplesAgeAndCurrentSamplesRecoverWithoutClockSync() {
+        HttpFixture server;
+        QPointer<QTcpSocket> stream;
+        QElapsedTimer sourceClock;
+        constexpr double serverEpoch = 12345.0; // Deliberately unrelated to the client's wall clock.
+        server.handler = [&](auto *socket, const QByteArray &, const QJsonObject &) {
+            stream = socket;
+            HttpFixture::streamHeaders(socket);
+            auto pose = poseObject();
+            pose["sendTime"] = serverEpoch;
+            sourceClock.start();
+            HttpFixture::chunk(socket, QJsonDocument(pose).toJson(QJsonDocument::Compact) + '\n');
+        };
+        PoseClient client;
+        client.configure(server.url(), {}, 1500);
+        QSignalSpy received(&client, &PoseClient::poseChanged);
+        client.start();
+        QTRY_VERIFY(client.fresh());
+        // The next frame represents a sample queued shortly after the first,
+        // but delivered after a transport/UI pause longer than 350 ms.
+        QTest::qWait(450);
+        auto queued = poseObject("2");
+        queued["sendTime"] = serverEpoch + .02;
+        queued["pose"] = QJsonObject{{"x", 1.234}, {"y", -2.345}, {"yaw", .456}};
+        HttpFixture::chunk(stream, QJsonDocument(queued).toJson(QJsonDocument::Compact) + '\n');
+        QTRY_COMPARE(received.size(), 2);
+        const auto old = qvariant_cast<ControlPoseSnapshot>(received[1][0]);
+        QVERIFY(old.stateAgeMs > 350);
+        QVERIFY(!old.validForControl);
+        QVERIFY(!client.fresh());
+        QCOMPARE(old.position, QPointF(1.234, -2.345));
+        QCOMPARE(old.yaw, .456);
+        // As the queue drains, a sample sent now becomes fresh immediately,
+        // without reconnecting and without dropping any per-sample signal.
+        auto current = queued;
+        current["seq"] = "3";
+        current["sendTime"] = serverEpoch + sourceClock.elapsed() / 1000.0;
+        HttpFixture::chunk(stream, QJsonDocument(current).toJson(QJsonDocument::Compact) + '\n');
+        QTRY_COMPARE(received.size(), 3);
+        const auto recovered = qvariant_cast<ControlPoseSnapshot>(received[2][0]);
+        QVERIFY(recovered.stateAgeMs < 150);
+        QVERIFY(recovered.validForControl);
+        QVERIFY(client.fresh());
+        QCOMPARE(recovered.position, old.position);
+        QCOMPARE(recovered.yaw, old.yaw);
+        client.stop();
+    }
+    void poseStreamInvalidOrRewoundSendTimeInvalidatesConnection_data() {
+        QTest::addColumn<int>("scenario");
+        QTest::addColumn<QString>("error");
+        QTest::newRow("missing-time") << 0 << QString("pose_stream_send_time_invalid");
+        QTest::newRow("non-numeric-time") << 1 << QString("pose_stream_send_time_invalid");
+        QTest::newRow("time-rewound") << 2 << QString("pose_stream_clock_rewound");
+    }
+    void poseStreamInvalidOrRewoundSendTimeInvalidatesConnection() {
+        QFETCH(int, scenario);
+        QFETCH(QString, error);
+        HttpFixture server;
+        QPointer<QTcpSocket> stream;
+        server.handler = [&](auto *socket, const QByteArray &, const QJsonObject &) {
+            stream = socket;
+            HttpFixture::streamHeaders(socket);
+            auto first = poseObject();
+            first["sendTime"] = 10000.0;
+            HttpFixture::chunk(socket, QJsonDocument(first).toJson(QJsonDocument::Compact) + '\n');
+        };
+        PoseClient client;
+        client.configure(server.url(), {}, 1000);
+        QSignalSpy received(&client, &PoseClient::poseChanged);
+        QSignalSpy errors(&client, &PoseClient::errorOccurred);
+        client.start();
+        QTRY_VERIFY(client.fresh());
+        auto invalid = poseObject("2");
+        if (scenario == 0)
+            invalid.remove("sendTime");
+        else if (scenario == 1)
+            invalid["sendTime"] = "10000.02";
+        else
+            invalid["sendTime"] = 9999.0;
+        HttpFixture::chunk(stream, QJsonDocument(invalid).toJson(QJsonDocument::Compact) + '\n');
+        QTRY_COMPARE(errors.size(), 1);
+        QCOMPARE(errors.first().first().toString(), error);
+        QCOMPARE(received.size(), 1);
+        QVERIFY(!client.fresh());
+        client.stop();
+    }
+    void poseStreamHandlesFragmentedAndCoalescedLinesWithoutLifetimeLimit() {
+        HttpFixture server;
+        QPointer<QTcpSocket> stream;
+        int requests = 0;
+        server.handler = [&](auto *socket, const QByteArray &path, const QJsonObject &) {
+            ++requests;
+            QCOMPARE(path, QByteArray("/api/v1/pose/stream"));
+            stream = socket;
+            HttpFixture::streamHeaders(socket);
+            const auto first = QJsonDocument(poseObject()).toJson(QJsonDocument::Compact) + "\r\n";
+            HttpFixture::chunk(socket, first.left(17));
+            QTimer::singleShot(10, socket, [socket, first] {
+                QByteArray batch = first.mid(17);
+                for (int seq = 2; seq <= 900; ++seq) {
+                    auto pose = poseObject(QString::number(seq));
+                    pose["diagnosticPadding"] = QString(2048, QLatin1Char('x'));
+                    batch += QJsonDocument(pose).toJson(QJsonDocument::Compact) + '\n';
+                }
+                QVERIFY(batch.size() > 1024 * 1024);
+                HttpFixture::chunk(socket, batch);
+            });
+        };
+        PoseClient client;
+        client.configure(server.url(), {}, 1000);
+        QSignalSpy received(&client, &PoseClient::poseChanged);
+        QSignalSpy errors(&client, &PoseClient::errorOccurred);
+        client.start();
+        QTRY_COMPARE_WITH_TIMEOUT(received.size(), 900, 5000);
+        QCOMPARE(client.snapshot().seq, quint64(900));
+        for (int index = 0; index < received.size(); ++index) {
+            const auto pose = qvariant_cast<ControlPoseSnapshot>(received[index][0]);
+            QCOMPARE(pose.seq, quint64(index + 1));
+            QCOMPARE(pose.position, QPointF());
+            QCOMPARE(pose.yaw, 0.0);
+        }
+        QCOMPARE(errors.size(), 0);
+        QCOMPARE(requests, 1);
+        QVERIFY(stream);
+        // Parsing the large queued batch can exceed freshness on a slow host.
+        // A newly produced sample must still arrive fresh on this same stream.
+        HttpFixture::chunk(stream, QJsonDocument(poseObject("901")).toJson(QJsonDocument::Compact) + '\n');
+        QTRY_COMPARE_WITH_TIMEOUT(received.size(), 901, 500);
+        QCOMPARE(client.snapshot().seq, quint64(901));
+        QVERIFY(client.fresh());
+        QCOMPARE(errors.size(), 0);
+        QCOMPARE(requests, 1);
+        client.stop();
+    }
+    void poseStreamRejectsInvalidResponsesWithoutPollingFallback_data() {
+        QTest::addColumn<int>("scenario");
+        QTest::addColumn<QString>("error");
+        QTest::newRow("unsupported-service") << 0 << QString("HTTP 404");
+        QTest::newRow("ordinary-json") << 1 << QString("pose_stream_content_type");
+        QTest::newRow("malformed-line") << 2 << QString("pose_stream_invalid_json");
+        QTest::newRow("oversized-line") << 3 << QString("pose_stream_line_too_large");
+    }
+    void poseStreamRejectsInvalidResponsesWithoutPollingFallback() {
+        QFETCH(int, scenario);
+        QFETCH(QString, error);
+        HttpFixture server;
+        int requests = 0;
+        server.handler = [&](auto *socket, const QByteArray &path, const QJsonObject &) {
+            ++requests;
+            QCOMPARE(path, QByteArray("/api/v1/pose/stream"));
+            if (scenario < 2)
+                HttpFixture::reply(socket, poseObject(), scenario == 0 ? 404 : 200);
+            else {
+                HttpFixture::streamHeaders(socket);
+                HttpFixture::chunk(socket, scenario == 2 ? QByteArray("{broken}\n")
+                                                        : QByteArray(64 * 1024 + 1, 'x'));
+            }
+        };
+        PoseClient client;
+        client.configure(server.url(), {}, 500);
+        QSignalSpy errors(&client, &PoseClient::errorOccurred);
+        QSignalSpy received(&client, &PoseClient::poseChanged);
+        client.start();
+        QTRY_VERIFY(!errors.isEmpty());
+        QVERIFY2(errors.first().first().toString().contains(error), qPrintable(errors.first().first().toString()));
+        QVERIFY(!client.fresh());
+        QCOMPARE(received.size(), 0);
+        client.stop();
+        const auto stoppedRequests = requests;
+        QTest::qWait(250);
+        QCOMPARE(requests, stoppedRequests);
+    }
+    void poseStreamDisconnectReconnectDoesNotReplayAndStopCancels() {
+        HttpFixture server;
+        QPointer<QTcpSocket> stream;
+        quint64 seq = 10;
+        int requests = 0;
+        server.handler = [&](auto *socket, const QByteArray &path, const QJsonObject &) {
+            QCOMPARE(path, QByteArray("/api/v1/pose/stream"));
+            ++requests;
+            stream = socket;
+            HttpFixture::stream(socket, [&] { return poseObject(QString::number(seq)); });
+        };
+        PoseClient client;
+        client.configure(server.url(), {}, 1000);
+        QSignalSpy received(&client, &PoseClient::poseChanged);
+        client.start();
+        QTRY_VERIFY(client.fresh());
+        stream->abort();
+        QTRY_VERIFY(!client.fresh());
+        QTRY_COMPARE(requests, 2);
+        QTest::qWait(80);
+        QCOMPARE(received.size(), 1);
+        QVERIFY(!client.fresh());
+        seq = 11;
+        QTRY_VERIFY(client.fresh());
+        QCOMPARE(received.size(), 2);
+        client.stop();
+        seq = 12;
+        QTest::qWait(300);
+        QCOMPARE(received.size(), 2);
+        QCOMPARE(requests, 2);
+        QVERIFY(!client.fresh());
+    }
+    void poseStreamSourceStallBecomesStaleThenTimesOutAndBacksOff() {
+        HttpFixture server;
+        int requests = 0;
+        server.handler = [&](auto *socket, const QByteArray &, const QJsonObject &) {
+            ++requests;
+            HttpFixture::streamHeaders(socket);
+            HttpFixture::chunk(socket, QJsonDocument(poseObject()).toJson(QJsonDocument::Compact) + '\n');
+        };
+        PoseClient client;
+        client.configure(server.url(), {}, 600);
+        QSignalSpy errors(&client, &PoseClient::errorOccurred);
+        client.start();
+        QTRY_VERIFY(client.fresh());
+        QTest::qWait(390);
+        QVERIFY(!client.fresh());
+        QCOMPARE(errors.size(), 0);
+        QTRY_COMPARE(errors.size(), 1);
+        QCOMPARE(errors.first().first().toString(), QString("pose_stream_timeout"));
+        QCOMPARE(requests, 1);
+        QTest::qWait(100);
+        QCOMPARE(requests, 1);
+        QTRY_COMPARE(requests, 2);
+        QVERIFY(!client.fresh()); // Reconnecting to the same sample cannot refresh it.
         client.stop();
     }
     void manualPublishesToLegacySocketWithoutControlFeedback() {
@@ -297,8 +628,8 @@ class IpcClientsTest : public QObject {
         HttpFixture server;
         quint64 seq = 0;
         server.handler = [&](auto *socket, const QByteArray &path, const QJsonObject &) {
-            if (path.startsWith("/api/v1/pose"))
-                HttpFixture::reply(socket, poseObject(QString::number(++seq)));
+            if (path == "/api/v1/pose/stream")
+                HttpFixture::stream(socket, [&] { return poseObject(QString::number(++seq)); });
             else if (path == "/api/v1/captures")
                 HttpFixture::reply(socket,
                                    {{"apiVersion", 1},
@@ -417,6 +748,17 @@ class IpcClientsTest : public QObject {
         QTest::qWait(500);
         QCOMPARE(photos, 1);
         QCOMPARE(acks, 0);
+        // Operator resolution requires a current status and live session;
+        // the observation wait above does not synchronize either condition.
+        QTRY_VERIFY2(tracking.fresh() && tracking.hasSession() &&
+                         tracking.snapshot().waitingEventId == "execution/8" &&
+                         tracking.snapshot().state == "Waiting" &&
+                         tracking.snapshot().executionId == "execution" &&
+                         tracking.snapshot().stepId == "photo",
+                     qPrintable(QString("fresh=%1 session=%2 state=%3 event=%4 execution=%5 step=%6")
+                                    .arg(tracking.fresh()).arg(tracking.hasSession())
+                                    .arg(tracking.snapshot().state, tracking.snapshot().waitingEventId,
+                                         tracking.snapshot().executionId, tracking.snapshot().stepId)));
         QVERIFY(!recovered.resolveCurrent("execution/old", true));
         QVERIFY(recovered.resolveCurrent("execution/8", true));
         QTRY_COMPARE(acks, 1);
@@ -498,7 +840,7 @@ class IpcClientsTest : public QObject {
         HttpFixture server;
         auto response = poseObject();
         server.handler = [&](auto *socket, const auto &, const auto &) {
-            HttpFixture::reply(socket, response);
+            HttpFixture::stream(socket, [&] { return response; });
         };
         PoseClient client;
         client.configure(server.url(), {});
