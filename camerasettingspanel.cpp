@@ -1,4 +1,5 @@
 #include "camerasettingspanel.h"
+#include "parameterwheelguard.h"
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
@@ -6,39 +7,60 @@
 #include <QJsonArray>
 #include <QLabel>
 #include <QPushButton>
+#include <QSizePolicy>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <cmath>
 
 CameraSettingsPanel::CameraSettingsPanel(QWidget *parent) : QWidget(parent) {
     setObjectName("cameraSettingsPanel");
+    setAttribute(Qt::WA_StyledBackground, true);
     auto *layout = new QVBoxLayout(this);
+    layout->setContentsMargins(20, 18, 20, 18);
     layout->setAlignment(Qt::AlignTop); layout->setSpacing(12);
     auto *title = new QLabel(tr("工控机相机 · 采集与保存参数"), this);
-    title->setObjectName("maintenancePageTitle"); layout->addWidget(title);
-    auto *hint = new QLabel(tr("先读取相机参数，修改后点击“应用到工控机”。应用会短暂重连预览，录像期间请先停止录像。照片帧率表示照片源刷新频率，拍照仍由单次指令触发。"), this);
-    hint->setWordWrap(true); layout->addWidget(hint);
-    m_native = new QLabel(tr("尚未读取相机能力"), this); m_native->setWordWrap(true); layout->addWidget(m_native);
-    auto *form = new QFormLayout; layout->addLayout(form);
+    title->setObjectName("cameraSettingsTitle"); title->setProperty("supportSectionTitle", true); layout->addWidget(title);
+    auto *hint = new QLabel(tr("读取 → 修改 → 应用。录像时请先停止录像。"), this);
+    hint->setToolTip(tr("应用会短暂重连预览。照片帧率表示照片源刷新频率，拍照仍由单次指令触发。此处只修改工控机相机服务。"));
+    hint->setProperty("supportCaption", true); hint->setWordWrap(true); layout->addWidget(hint);
+    m_native = new QLabel(tr("尚未读取相机能力"), this); m_native->setProperty("supportCaption", true); m_native->setWordWrap(true); layout->addWidget(m_native);
+    auto *form = new QFormLayout;
+    form->setContentsMargins(0, 2, 0, 2); form->setHorizontalSpacing(16); form->setVerticalSpacing(10);
+    form->setLabelAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    form->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
+    form->setRowWrapPolicy(QFormLayout::WrapLongRows);
+    layout->addLayout(form);
+    auto fieldLabel = [this](const QString &text, QWidget *field) {
+        auto *label = new QLabel(text, this); label->setObjectName("maintenanceFieldLabel");
+        label->setFixedWidth(136); label->setBuddy(field); return label;
+    };
     m_sensorFps = new QDoubleSpinBox(this); m_sensorFps->setObjectName("cameraSensorFps");
+    m_sensorFps->setFixedWidth(132);
     m_sensorFps->setDecimals(2); m_sensorFps->setRange(1.42,30); m_sensorFps->setValue(30); m_sensorFps->setSuffix(" FPS");
-    form->addRow(tr("原生传感器帧率"), m_sensorFps);
+    form->addRow(fieldLabel(tr("原生传感器帧率"), m_sensorFps), m_sensorFps);
     const QStringList names{tr("预览"),tr("照片"),tr("录像")};
     const QStringList keys{"preview","photo","recording"};
     for (int i=0;i<3;++i) {
-        auto *row = new QWidget(this); auto *box = new QHBoxLayout(row); box->setContentsMargins(0,0,0,0);
+        auto *row = new QWidget(this); row->setMaximumWidth(480);
+        auto *box = new QHBoxLayout(row); box->setContentsMargins(0,0,0,0); box->setSpacing(10);
         m_size[i] = new QComboBox(row); m_size[i]->setObjectName("cameraSize_"+keys[i]);
+        m_size[i]->setMinimumWidth(160);
         m_fps[i] = new QDoubleSpinBox(row); m_fps[i]->setObjectName("cameraFps_"+keys[i]);
+        m_fps[i]->setFixedWidth(132);
         m_fps[i]->setDecimals(2); m_fps[i]->setRange(1,30); m_fps[i]->setSuffix(" FPS");
         box->addWidget(m_size[i],1); box->addWidget(m_fps[i]);
-        form->addRow(names[i]+tr("尺寸 / 帧率"),row);
+        form->addRow(fieldLabel(names[i]+tr("尺寸 / 帧率"), m_size[i]),row);
     }
-    auto *buttons = new QHBoxLayout;
+    auto *buttons = new QHBoxLayout; buttons->setSpacing(8);
     m_read = new QPushButton(tr("读取工控机参数"),this); m_read->setObjectName("cameraSettingsRead");
     m_apply = new QPushButton(tr("应用到工控机"),this); m_apply->setObjectName("cameraSettingsApply");
+    m_apply->setProperty("supportPrimary", true);
+    m_read->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed); m_apply->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
+    m_read->setCursor(Qt::PointingHandCursor); m_apply->setCursor(Qt::PointingHandCursor);
     buttons->addWidget(m_read); buttons->addWidget(m_apply); buttons->addStretch(); layout->addLayout(buttons);
-    m_result = new QLabel(tr("修改只在点击“应用到工控机”后生效；页面底部的本地配置保存按钮不下发相机参数。"),this);
-    m_result->setObjectName("cameraSettingsResult"); m_result->setWordWrap(true); layout->addWidget(m_result);
-    m_runtime = new QLabel(this); m_runtime->setObjectName("cameraSettingsRuntime"); m_runtime->setWordWrap(true); layout->addWidget(m_runtime);
+    m_result = new QLabel(tr("尚未读取参数"),this);
+    m_result->setObjectName("cameraSettingsResult"); m_result->setProperty("supportCaption", true); m_result->setWordWrap(true); layout->addWidget(m_result);
+    m_runtime = new QLabel(this); m_runtime->setObjectName("cameraSettingsRuntime"); m_runtime->setProperty("supportCaption", true); m_runtime->setWordWrap(true); layout->addWidget(m_runtime);
     connect(m_read,&QPushButton::clicked,this,[this] { if (prepareConnection()) m_client.read(); });
     connect(m_apply,&QPushButton::clicked,this,[this] {
         if (!prepareConnection()) return;
@@ -62,16 +84,30 @@ CameraSettingsPanel::CameraSettingsPanel(QWidget *parent) : QWidget(parent) {
             m_ready=false; m_result->setText(tr("工控机参数已变化，请重新读取后编辑。"));
         }
         const bool recording=status.value("recording").toBool(); m_config["recording"]=recording;
-        m_runtime->setText(status.isEmpty() ? tr("相机状态暂不可达，请检查连接。") :
-            tr("相机%1；%2；录像实测 %3 FPS，已写入 %4 帧，丢弃 %5 帧。")
-            .arg(m_ready?tr("在线"):tr("未就绪"),recording?tr("正在录像"):tr("未录像"))
-            .arg(status.value("recordingActualFps").toDouble(),0,'f',2)
-            .arg(status.value("recordingFrames").toDouble(),0,'f',0).arg(status.value("recordingDroppedFrames").toDouble(),0,'f',0));
+        const auto actualFps=status.value("recordingActualFps");
+        const bool knownFps=actualFps.isDouble() && std::isfinite(actualFps.toDouble()) && actualFps.toDouble()>=0;
+        const bool hasRecordingStatistics=knownFps && (recording || actualFps.toDouble()>0 || status.value("recordingFrames").toDouble()>0);
+        const QString fpsSummary=hasRecordingStatistics ? tr(" · %1 %2 FPS")
+            .arg(recording?tr("录像实测"):tr("最近录像"))
+            .arg(actualFps.toDouble(),0,'f',2) : QString();
+        const QString persistence = remote.value("persistenceState").toString();
+        const bool uncertainPersistence = !remote.isEmpty() && (remote.value("persisted") != QJsonValue(true) ||
+            (!persistence.isEmpty() && persistence != "confirmed"));
+        const QString persistenceSummary = !uncertainPersistence ? QString() : persistence == "memory_only" ?
+            tr(" · 仅内存生效") : tr(" · 保存状态未确认");
+        m_runtime->setText(status.isEmpty() ? tr("相机状态暂不可达") :
+            tr("相机%1 · %2%3%4").arg(m_ready?tr("在线"):tr("未就绪"),recording?tr("录像中"):tr("未录像"),
+                fpsSummary, persistenceSummary));
+        m_runtime->setToolTip((knownFps ? tr("录像实测 %1 FPS；").arg(actualFps.toDouble(),0,'f',2) : QString()) +
+            tr("已写入 %1 帧，丢弃 %2 帧。")
+            .arg(status.value("recordingFrames").toDouble(),0,'f',0).arg(status.value("recordingDroppedFrames").toDouble(),0,'f',0) +
+            (uncertainPersistence ? tr("\n保存确认异常：%1").arg(remote.value("persistenceError").toString()) : QString()));
         updateEnabled();
     });
     auto *monitor=new QTimer(this); monitor->setInterval(1000);
     connect(monitor,&QTimer::timeout,this,[this] { if(isVisible() && !m_config.isEmpty()) m_client.refreshStatus(); }); monitor->start();
     updateEnabled();
+    ParameterWheelGuard::install(this);
 }
 bool CameraSettingsPanel::prepareConnection() {
     if (!m_provider) { m_result->setText(tr("尚未配置相机地址")); return false; }
@@ -84,9 +120,10 @@ bool CameraSettingsPanel::prepareConnection() {
 void CameraSettingsPanel::load(const QJsonObject &config,const QJsonObject &caps) {
     m_config=config; m_ready=config.value("cameraConnected").toBool();
     const auto native=caps.value("native").toObject();
-    m_native->setText(tr("%1：原生 %2 × %3，%4～%5 FPS。尺寸比例不同时保留完整视野并补黑边；高分辨率会增加负载。")
+    m_native->setText(tr("%1 · 原生 %2 × %3 · %4～%5 FPS")
         .arg(caps.value("sensorName").toString()).arg(native.value("width").toInt()).arg(native.value("height").toInt())
         .arg(native.value("minFps").toDouble()).arg(native.value("maxFps").toDouble()));
+    m_native->setToolTip(tr("尺寸比例不同时保留完整视野并补黑边；高分辨率会增加负载。"));
     m_sensorFps->setRange(native.value("minFps").toDouble(1.42),native.value("maxFps").toDouble(30));
     const auto settings=config.value("settings").toObject(); m_sensorFps->setValue(settings.value("sensorFps").toDouble());
     const QStringList keys{"preview","photo","recording"};

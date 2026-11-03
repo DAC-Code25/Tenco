@@ -3,9 +3,9 @@
 #include "vehicleparameters.h"
 
 #include <QObject>
+#include <QByteArray>
 #include <QJsonObject>
 #include <QList>
-#include <QPointF>
 #include <QString>
 #include <QStringList>
 
@@ -14,36 +14,22 @@ class ConfigManager : public QObject
     Q_OBJECT
 
 public:
-    struct GeoConfig {
-        double baseLatitudeDeg = 0.0;
-        double baseLongitudeDeg = 0.0;
-    };
-
     struct ManualControlConfig {
         double maxLinearSpeed = VehicleParameters::maxOperatingSpeedMps;
         double maxAngularSpeed = 0.5;
         int manualMotionRepeatIntervalMs = 40;
     };
 
-    struct TaskDefaultsConfig {
-        double speedLimit = VehicleParameters::defaultTrackingSpeedMps;
-        double goalToleranceMeters = 0.03;
-        double angularSpeedLimit = 0.35;
-        double angleToleranceRad = 0.05;
-        QString safetyProfileId = {};
-        QString rotationZoneId = {};
-    };
-
     struct PoseSourceConfig {
         bool enabled = true;
         QString baseUrl = QStringLiteral("http://192.168.31.13:18131/api/v1");
-        int requestTimeoutMs = 3000;
+        int requestTimeoutMs = 5000;
     };
 
     struct TrackingConfig {
         bool enabled = true;
         QString baseUrl = QStringLiteral("http://192.168.31.13:18130/api/v1");
-        int requestTimeoutMs = 3000;
+        int requestTimeoutMs = 5000;
     };
 
     struct RoutePlanningConfig {
@@ -54,15 +40,9 @@ public:
 
 
     struct VideoConfig {
-        struct StreamOption {
-            QString name;
-            QString url;
-        };
-
         QString backend;
         QString streamUrl;
         QString controlBaseUrl;
-        QList<StreamOption> streamOptions;
         QString deviceId;
         int previewWidth = 1280;
         int previewHeight = 720;
@@ -147,9 +127,9 @@ public:
     };
 
     struct ConfigSnapshot {
-        GeoConfig geo;
+        QJsonObject sourceDocument; // Preserve fields this version does not edit.
+        QByteArray originalImportBytes; // Backup imported legacy fields before explicit migration.
         ManualControlConfig manualControl;
-        TaskDefaultsConfig taskDefaults;
         PoseSourceConfig poseSource;
         TrackingConfig tracking;
         RoutePlanningConfig routePlanning;
@@ -173,10 +153,13 @@ public:
     bool currentConfigMatchesLatestBackup() const;
     bool loadSnapshotFromFile(const QString &path, ConfigSnapshot *snapshot, QString *errorMessage = nullptr);
     bool restoreLatestBackup(QString *errorMessage = nullptr, bool applyAfterRestore = true);
+    bool createBackup(QString *errorMessage = nullptr, const QString &reason = QStringLiteral("manual"));
+    bool restoreBackup(const QString &path, QString *errorMessage = nullptr, bool applyAfterRestore = true);
+    QString diskRevision() const;
+    QString expectedDiskRevision() const;
+    QString runtimeRevision() const { return m_runtimeRevision; }
 
-    const GeoConfig &geo() const { return m_geo; }
     const ManualControlConfig &manualControl() const { return m_manualControl; }
-    const TaskDefaultsConfig &taskDefaults() const { return m_taskDefaults; }
     const PoseSourceConfig &poseSource() const { return m_poseSource; }
     const TrackingConfig &tracking() const { return m_tracking; }
     const RoutePlanningConfig &routePlanning() const { return m_routePlanning; }
@@ -185,9 +168,6 @@ public:
     const GimbalConfig &gimbal() const { return m_gimbal; }
     const LoggingConfig &logging() const { return m_logging; }
     const DatabaseConfig &database() const { return m_database; }
-
-    QPointF geoToLocal(double latitudeDeg, double longitudeDeg) const;
-    void localToGeo(const QPointF &localPoint, double &latitudeDeg, double &longitudeDeg) const;
 
     QString configFilePath() const { return m_configPath; }
     bool loadedFromFile() const { return m_loadedFromFile; }
@@ -205,16 +185,13 @@ private:
     QStringList validateJsonObject(const QJsonObject &root) const;
     void applyEnvironmentOverrides();
     bool saveToFile(const QString &path, QString *errorMessage = nullptr) const;
-    bool copyFileAtomically(const QString &sourcePath, const QString &targetPath, QString *errorMessage = nullptr) const;
-    void pruneBackups(int keepCount);
+    bool backupBytes(const QByteArray &bytes, const QString &reason, QString *errorMessage) const;
+    bool writeFileAtomically(const QByteArray &bytes, const QString &targetPath, QString *errorMessage = nullptr) const;
     void loadDefaults();
     void sanitizeConfig();
-    void updateCachedScales();
     QJsonObject toJsonObject() const;
 
-    GeoConfig m_geo;
     ManualControlConfig m_manualControl;
-    TaskDefaultsConfig m_taskDefaults;
     PoseSourceConfig m_poseSource;
     TrackingConfig m_tracking;
     RoutePlanningConfig m_routePlanning;
@@ -223,14 +200,16 @@ private:
     GimbalConfig m_gimbal;
     LoggingConfig m_logging;
     DatabaseConfig m_database;
-    double m_metersPerDegLat = 0.0;
-    double m_metersPerDegLon = 0.0;
     QString m_configPath;
     QString m_configPathOverride;
     QStringList m_validationWarnings;
     bool m_loaded = false;
     bool m_loadedFromFile = false;
     bool m_startupBackupCreated = false;
+    QJsonObject m_sourceDocument;
+    QByteArray m_diskBytes;
+    QString m_runtimeRevision;
+    bool m_writeBlocked = false;
 };
 
 #endif // CONFIGMANAGER_H

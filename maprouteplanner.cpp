@@ -2,7 +2,7 @@
 
 #include "routepathfinder.h"
 
-QList<int> MapRoutePlanner::findPathIds(int startId,
+QList<RoutePathTraversal> MapRoutePlanner::findRoute(int startId,
                                         int endId,
                                         const QList<Edge> &edges,
                                         const ConfigManager::RoutePlanningConfig &config)
@@ -16,6 +16,7 @@ QList<int> MapRoutePlanner::findPathIds(int startId,
         graphEdge.toId = edge.toId;
         graphEdge.lengthMeters = edge.lengthMeters;
         graphEdge.isArc = edge.isArc;
+        graphEdge.bidirectional = edge.bidirectional;
         graphEdges.append(graphEdge);
     }
 
@@ -23,5 +24,17 @@ QList<int> MapRoutePlanner::findPathIds(int startId,
     options.minEdgeCost = config.minEdgeCost;
     options.edgePenalty = config.edgePenalty;
     options.arcPenalty = config.arcPenalty;
-    return RoutePathFinder::findShortestPath(startId, endId, graphEdges, options);
+    return RoutePathFinder::findShortestRoute(startId, endId, graphEdges, options);
+}
+
+QList<int> MapRoutePlanner::findPathIds(int startId,
+                                      int endId,
+                                      const QList<Edge> &edges,
+                                      const ConfigManager::RoutePlanningConfig &config)
+{
+    QList<int> pathIds;
+    const auto route = findRoute(startId, endId, edges, config);
+    pathIds.reserve(route.size());
+    for (const RoutePathTraversal &traversal : route) pathIds.append(traversal.pathId);
+    return pathIds;
 }

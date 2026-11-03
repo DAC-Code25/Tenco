@@ -6,6 +6,7 @@
 #include <QStatusBar>
 #include "configmanager.h"
 #include "home.h" // 首页业务逻辑封装
+#include "home_status_presenter.h"
 #include "map.h" // 地图页业务逻辑封装
 #include "maintenance.h" // 维护页业务逻辑封装
 #include "help.h" // 帮助页业务逻辑封装
@@ -13,8 +14,7 @@
 
 #include <QIcon> //  按钮图标所需
 #include <QApplication>
-#include <QInputDialog>
-#include <QMessageBox>
+#include <QTimer>
 #include <QPoint> //
 #include <QRect> // 自定义拖动区域判断 右键菜单槽函数参数类型
 #include <QSize> // 控件尺寸定义
@@ -86,49 +86,65 @@ MainWindow::MainWindow(QWidget *parent) // 主窗口构造函数
 
     poseClient = new PoseClient(this);
     trackingClient = new TrackingClient(this);
+    maintenancePage->setTrackingClient(trackingClient);
+    connect(maintenancePage, &Maintenance::releaseTaskSessionRequested, this, [this] {
+        QString message;
+        const bool released = trackingClient->releaseSessionForMaintenance(&message);
+        maintenancePage->showIpcSessionReleaseResult(released, message);
+    });
     connect(trackingClient, &TrackingClient::configurationChanged, maintenancePage, &Maintenance::setIpcConfiguration);
+    connect(maintenancePage, &Maintenance::originSnapshotChanged, homePage, &Home::setSavedOriginSnapshot);
+    connect(trackingClient, &TrackingClient::configurationChanged, this, [this](const QJsonObject &config) {
+        homePage->setActiveOriginSnapshot(config.value("origin").toObject().value("active").toObject());
+        homePage->setNavigationStatusCurrent(trackingClient->fresh());
+        maintenancePage->setIpcMonitoringCurrent(trackingClient->fresh());
+    });
     connect(trackingClient, &TrackingClient::availabilityChanged, this, [this](bool ready, const QString&) {
-        maintenancePage->setIpcConfiguration(ready ? trackingClient->configuration() : QJsonObject{});
+        maintenancePage->setIpcConfiguration(trackingClient->configuration());
+        maintenancePage->setIpcMonitoringCurrent(ready);
+        homePage->setActiveOriginSnapshot(trackingClient->configuration().value("origin").toObject().value("active").toObject());
+        homePage->setNavigationStatusCurrent(ready);
+        homePage->setTaskStatus(trackingClient->snapshot(), ready);
+    });
+    connect(trackingClient, &TrackingClient::statusChanged, this, [this](const TrackingSnapshot &status) {
+        homePage->setTaskStatus(status, trackingClient->fresh());
     });
     controlCoordinator = new ControlSessionCoordinator(trackingClient, poseClient, this);
     mapPage->setControlCoordinator(controlCoordinator);
     externalEvents = new ExternalEventCoordinator(trackingClient, this);
+    connect(externalEvents, &ExternalEventCoordinator::manualConfirmationChanged,
+            mapPage, &Map::setExternalActionReviewEvent);
     connect(externalEvents, &ExternalEventCoordinator::message, this, [this](const QString& text) { statusBar()->showMessage(text, 15000); });
     connect(mapPage, &Map::externalActionResolved, this, [this](const QString &eventId, bool success) {
         if (!externalEvents->resolveCurrent(eventId, success)) statusBar()->showMessage(tr("当前检查点动作无法确认，请检查会话、事件及拍摄状态"), 5000);
     });
-    connect(homePage, &Home::originUpdateRequested, this, [this](double lat, double lon) {
-        const auto config = trackingClient->configuration();
-        const auto active = config["origin"].toObject()["active"].toObject();
-        if (!trackingClient->fresh() || !trackingClient->hasSession() || active.isEmpty()) {
-            QMessageBox::warning(this, tr("更新原点"), tr("请先连接任务服务并获取操作权")); return;
-        }
-        bool ok = false;
-        const double altitude = QInputDialog::getDouble(this, tr("更新融合原点"), tr("WGS84 海拔（m）"), active["altitude"].toDouble(), -1000, 10000, 3, &ok);
-        if (!ok) return;
-        QJsonObject origin{{"schemaVersion", 1}, {"originRevision", TrackingJson::newId()}, {"latitude", lat},
-            {"longitude", lon}, {"altitude", altitude}, {"datum", "WGS84"}, {"frameId", "map"}};
-        if (!trackingClient->updateOrigin(origin, active["originRevision"].toString()))
-            QMessageBox::warning(this, tr("更新原点"), tr("原点更新未提交，请确认停稳、任务状态和操作会话"));
-    });
-    connect(trackingClient, &TrackingClient::originChanged, this, [this](const QJsonObject& origin) {
-        QMessageBox::information(this, tr("更新原点"), origin["restartRequired"].toBool() ?
-            tr("新原点已保存为待生效；请在停机维护时重启融合服务并重新确认地图绑定") : tr("原点已生效"));
+    connect(homePage, &Home::ipcMaintenanceRequested, this, [this] {
+        if (switchToPage(2, maintenanceButton)) maintenancePage->openIpcMaintenancePage();
     });
     connect(poseClient, &PoseClient::poseChanged, this, [this](const ControlPoseSnapshot& pose) {
-        if (!pose.validForControl) {
-            ui->lineEdit_Position->setText(tr("定位不可用 · %1").arg(pose.reasons.join(", ")));
-            return;
-        }
-        ui->lineEdit_Position->setText(tr("ENU X=%1, Y=%2, yaw=%3 rad · %4 ms · %5")
-            .arg(pose.position.x(), 0, 'f', 3).arg(pose.position.y(), 0, 'f', 3)
-            .arg(pose.yaw, 0, 'f', 3).arg(pose.stateAgeMs, 0, 'f', 0).arg(pose.mode));
+        HomeStatusPresenter::showControlPose(ui->lineEdit_Position, pose);
+        homePage->setControlPoseStatus(pose);
     });
     connect(poseClient, &PoseClient::availabilityChanged, this, [this](bool valid, const QString& reason) {
-        if (!valid) ui->lineEdit_Position->setText(reason);
+        if (!valid) {
+            ui->lineEdit_Position->setText(reason);
+            ui->lineEdit_Position->setToolTip(reason);
+            ui->lineEdit_Position->setCursorPosition(0);
+        }
+    });
+    connect(poseClient, &PoseClient::monitoringAvailabilityChanged, this,
+            [this](bool current, const QString &reason) {
+        homePage->setControlPoseStatus(poseClient->snapshot());
+        homePage->setPoseMonitoringAvailability(current, reason);
     });
     connect(&ConfigManager::instance(), &ConfigManager::configChanged, this, &MainWindow::configureIpcClients);
     configureIpcClients();
+    auto *originRefresh = new QTimer(this);
+    originRefresh->setInterval(5000);
+    connect(originRefresh, &QTimer::timeout, maintenancePage, &Maintenance::refreshOriginSnapshot);
+    connect(&ConfigManager::instance(), &ConfigManager::configChanged, maintenancePage, &Maintenance::refreshOriginSnapshot);
+    QTimer::singleShot(0, maintenancePage, &Maintenance::refreshOriginSnapshot);
+    originRefresh->start();
 
     //四个界面控制按钮
     zhidingDefaultIcon = ui->zhiding->icon();
@@ -481,7 +497,8 @@ void MainWindow::configureIpcClients()
 {
     const auto& config = ConfigManager::instance();
     const auto& pose = config.poseSource(); const auto& tracking = config.tracking();
-    if (controlCoordinator) controlCoordinator->shutdown();
+    // Reconfigure only changed endpoints. Applying local display/logging settings
+    // must retain the task session, pending results and any in-flight photo.
     poseClient->configure(QUrl(pose.baseUrl), config.network().authToken, pose.requestTimeoutMs);
     trackingClient->configure(QUrl(tracking.baseUrl), config.network().authToken, tracking.requestTimeoutMs);
     if (pose.enabled) poseClient->start(); else poseClient->stop();

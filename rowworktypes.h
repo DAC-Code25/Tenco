@@ -5,6 +5,7 @@
 #include <QMetaType>
 #include <QPointF>
 #include <QString>
+#include <optional>
 #include "trackingtypes.h"
 #include "vehicleparameters.h"
 
@@ -29,15 +30,14 @@ struct RowCheckpoint
     bool triggerOnBackward = true;
     bool capturePhoto = false;
     int actionTimeoutMs = 30000;
+    // Unfinished teaching sample, before endpoint B has been chosen.
+    std::optional<QPointF> pendingMapPosition;
+    // Confirmed teaching sample. Progress is its A/B station, not a replacement for this XY.
+    std::optional<QPointF> recordedMapPosition;
 };
 
 struct RowWorkParams
 {
-    double baseLinearSpeed = VehicleParameters::defaultTrackingSpeedMps;
-    double maxLinearSpeed = VehicleParameters::defaultRowMaxSpeedMps;
-    double endpointArrivalDistance = 0.03;
-    double checkpointArrivalTolerance = 0.03;
-    double turnAngularSpeed = 0.45;
     bool loopEnabled = true;
 };
 
@@ -60,7 +60,9 @@ struct RowWorkPlan
 
 namespace RowWorkGeometry
 {
+bool hasUsableStart(const RowWorkPlan &plan);
 bool hasUsableLine(const RowWorkPlan &plan);
+bool hasUsablePath(const RowWorkPlan &plan);
 double lineLength(const RowWorkPlan &plan);
 double clampProgress(const RowWorkPlan &plan, double progress);
 double projectPointToProgress(const RowWorkPlan &plan,
@@ -68,6 +70,10 @@ double projectPointToProgress(const RowWorkPlan &plan,
                               double *outSignedLateralError = nullptr,
                               QPointF *outProjectedPoint = nullptr);
 QPointF pointAtProgress(const RowWorkPlan &plan, double progress);
+QList<QPointF> pathBetweenProgress(const RowWorkPlan &plan, double from, double to);
+bool setCheckpointPosition(const RowWorkPlan &plan, const QPointF &point, RowCheckpoint *checkpoint);
+bool finalizeCheckpoints(RowWorkPlan *plan);
+QPointF checkpointPosition(const RowWorkPlan &plan, const RowCheckpoint &checkpoint);
 }
 
 namespace RowWorkJson

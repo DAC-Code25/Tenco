@@ -6,6 +6,7 @@
 #include <QJsonDocument>
 #include <QNetworkRequest>
 #include <QNetworkProxy>
+#include <QPointer>
 #include <QTimer>
 #include <QWebSocket>
 #include <QWebSocketProtocol>
@@ -21,7 +22,13 @@ ChassisClient::ChassisClient(QObject *parent)
     : QObject(parent)
     , m_socket(new QWebSocket(QString(), QWebSocketProtocol::VersionLatest, this))
     , m_reconnectTimer(new QTimer(this))
+    , m_velocityTimer(new QTimer(this))
 {
+    m_velocityClock.start();
+    m_velocityTimer->setTimerType(Qt::PreciseTimer);
+    m_velocityTimer->setInterval(10);
+    connect(m_velocityTimer, &QTimer::timeout, this, &ChassisClient::serviceVelocityQueue);
+    connect(m_socket, &QWebSocket::bytesWritten, this, [this](qint64) { serviceVelocityQueue(); });
     m_socket->setProxy(QNetworkProxy::NoProxy);
     m_socket->setMaxAllowedIncomingMessageSize(65536);
     connect(m_socket, &QWebSocket::connected, this, &ChassisClient::handleConnected);
@@ -43,11 +50,15 @@ ChassisClient::ChassisClient(QObject *parent)
 
 ChassisClient::~ChassisClient()
 {
+    blockSignals(true);
+    m_manualDisconnect = true;
+    clearVelocityQueue();
     if (m_reconnectTimer) {
         m_reconnectTimer->stop();
     }
     if (m_socket) {
-        m_socket->close();
+        m_socket->disconnect(this);
+        m_socket->abort();
     }
 }
 
@@ -96,11 +107,13 @@ void ChassisClient::disconnectFromHost()
 {
     m_manualDisconnect = true;
     m_reconnectAttempt = 0;
+    clearVelocityQueue();
     if (m_reconnectTimer) {
         m_reconnectTimer->stop();
     }
     if (m_socket) {
-        m_socket->close();
+        // Do not flush locally queued motion while explicitly disconnecting.
+        m_socket->abort();
     }
 }
 
@@ -152,14 +165,55 @@ void ChassisClient::sendJson(const QJsonObject &packetObj, const QJsonObject &ms
 void ChassisClient::sendVelocityCommand(double xVel, double thetaVel)
 {
     if (!isConnected() || !std::isfinite(xVel) || !std::isfinite(thetaVel)) return;
-    if (m_socket->bytesToWrite() > 4096) {
-        m_socket->abort();
-        emit errorOccurred(tr("手动链路发送积压，已断开连接"));
+    applyVelocityAction(m_velocityQueue.submit(m_velocityClock.elapsed(), m_socket->bytesToWrite(), {xVel, thetaVel}));
+}
+
+void ChassisClient::clearVelocityQueue()
+{
+    m_velocityTimer->stop();
+    m_velocityQueue.clear();
+}
+
+void ChassisClient::failVelocityQueue(const QString &reason)
+{
+    clearVelocityQueue();
+    // abort discards local buffers; it cannot retract data already in TCP or
+    // confirm a chassis stop. disconnected clears Home's held manual inputs.
+    const QPointer<ChassisClient> guard(this);
+    m_socket->abort();
+    if (guard) emit errorOccurred(reason);
+}
+
+void ChassisClient::serviceVelocityQueue()
+{
+    if (!isConnected()) { clearVelocityQueue(); return; }
+    applyVelocityAction(m_velocityQueue.advance(m_velocityClock.elapsed(), m_socket->bytesToWrite()));
+}
+
+void ChassisClient::applyVelocityAction(const ChassisVelocityQueue::Action &action)
+{
+    if (action.kind == ChassisVelocityQueue::Kind::Disconnect) {
+        failVelocityQueue(action.failure == ChassisVelocityQueue::Failure::StopBlocked ?
+            tr("手动停止请求遇到发送积压，已断开连接；尚未确认底盘停稳") :
+            tr("手动链路发送积压或样本超期，已断开连接；尚未确认底盘停稳"));
         return;
     }
-    const QJsonObject packetObj{{"cmd", "region"}, {"region", "cmd_vel"}, {"index", 1}};
-    const QJsonObject msgObj{{"xvel", xVel}, {"yvel", 0.0}, {"thetavel", thetaVel}, {"isRemote", true}};
-    sendJson(packetObj, msgObj);
+    if (action.kind == ChassisVelocityQueue::Kind::Send) {
+        const QJsonObject packetObj{{"cmd", "region"}, {"region", "cmd_vel"}, {"index", 1}};
+        const QJsonObject msgObj{{"xvel", action.velocity.linear}, {"yvel", 0.0},
+                                {"thetavel", action.velocity.angular}, {"isRemote", true}};
+        const auto payload = QJsonDocument(QJsonObject{{"packet", packetObj}, {"msg", msgObj}})
+                                 .toJson(QJsonDocument::Compact);
+        const QPointer<ChassisClient> guard(this);
+        const auto written = m_socket->sendTextMessage(QString::fromUtf8(payload));
+        if (!guard) return;
+        if (written <= 0) {
+            failVelocityQueue(tr("手动速度发送失败，已断开连接；尚未确认底盘停稳"));
+            return;
+        }
+    }
+    if (m_velocityQueue.needsService()) m_velocityTimer->start();
+    else m_velocityTimer->stop();
 }
 
 void ChassisClient::sendRebootCommand()
@@ -171,6 +225,7 @@ void ChassisClient::sendRebootCommand()
 
 void ChassisClient::handleConnected()
 {
+    clearVelocityQueue();
     m_manualDisconnect = false;
     m_reconnectAttempt = 0;
     if (m_reconnectTimer && m_reconnectTimer->isActive()) {
@@ -182,8 +237,11 @@ void ChassisClient::handleConnected()
 
 void ChassisClient::handleDisconnected()
 {
+    clearVelocityQueue();
     qCWarning(lcChassisClient) << "WebSocket disconnected, manual?" << m_manualDisconnect;
+    const QPointer<ChassisClient> guard(this);
     emit disconnected();
+    if (!guard) return;
     if (!m_manualDisconnect && m_autoReconnect && m_reconnectTimer && m_url.isValid()) {
         if (!m_reconnectTimer->isActive()) {
             const int delayMs = currentReconnectDelayMs();

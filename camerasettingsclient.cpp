@@ -6,6 +6,18 @@ QString errorText(const JsonHttpResult &r) {
     const auto message = r.object.value("message").toString();
     return message.isEmpty() ? r.error : message;
 }
+bool persistenceConfirmed(const QJsonObject &configuration) {
+    return configuration.value("persisted") == QJsonValue(true) &&
+        (!configuration.contains("persistenceState") || configuration.value("persistenceState") == "confirmed");
+}
+QString persistenceNotice(const QJsonObject &configuration) {
+    QString notice = configuration.value("persistenceState") == "memory_only" ?
+        QObject::tr("参数仅在内存生效，重启后不会保留") :
+        QObject::tr("保存状态未确认，重启后能否保留尚不确定；请检查工控机存储后重新应用并读取确认");
+    const auto error = configuration.value("persistenceError").toString();
+    if (!error.isEmpty()) notice += QObject::tr("（%1）").arg(error);
+    return notice;
+}
 }
 CameraSettingsClient::CameraSettingsClient(QObject *parent) : QObject(parent) {
     m_poll.setSingleShot(true);
@@ -44,7 +56,8 @@ void CameraSettingsClient::read() {
             if (m_configuration.value("applyState") == "pending") {
                 m_elapsed.start(); m_poll.start(300);
             } else {
-                finish(true, tr("已读取工控机当前参数")); refreshStatus();
+                finish(true, tr("已读取工控机当前参数") + (persistenceConfirmed(m_configuration) ? QString() :
+                    tr("；%1").arg(persistenceNotice(m_configuration)))); refreshStatus();
             }
         }, 65536);
     }, 65536)) finish(false, tr("相机地址无效或请求尚未结束"));
@@ -82,10 +95,17 @@ void CameraSettingsClient::observe(const QJsonObject &v) {
         if (state == "applied" && revisionMatches) {
             emit loaded(v, m_capabilities);
             const bool matches = v.value("activeSettings").toObject() == m_target;
-            finish(matches, matches ? tr("参数已在工控机生效并保存") : tr("参数已被其他程序修改，请重新读取。")); return;
+            const bool confirmed = persistenceConfirmed(v);
+            finish(matches && confirmed, matches ? (confirmed ? tr("参数已在工控机生效并保存") :
+                tr("参数已在工控机生效；%1").arg(persistenceNotice(v))) :
+                tr("参数已被其他程序修改，请重新读取。")); return;
         }
     } else if (state != "pending") {
-        emit loaded(v, m_capabilities); finish(state == "applied", state == "applied" ? tr("参数已生效") : v.value("lastError").toString()); return;
+        emit loaded(v, m_capabilities);
+        const bool confirmed = persistenceConfirmed(v);
+        finish(state == "applied" && confirmed, state == "applied" ?
+            tr("参数已生效") + (confirmed ? QString() : tr("；%1").arg(persistenceNotice(v))) :
+            v.value("lastError").toString()); return;
     }
     if (m_elapsed.elapsed() >= 30000) {
         m_configuration = {}; finish(false, tr("生效结果尚未确认，请稍后重新读取；不会自动重发修改请求。")); return;
@@ -111,6 +131,8 @@ void CameraSettingsClient::refreshStatus() {
             if (config.value("revision") == m_configuration.value("revision")) {
                 m_configuration["cameraConnected"] = config.value("cameraConnected");
                 m_configuration["recording"] = config.value("recording");
+                for (const auto *key : {"persisted", "persistenceState", "persistenceError"})
+                    if (config.contains(key)) m_configuration[key] = config.value(key);
             }
             emit statusReceived(r.object);
         } else emit statusReceived({});

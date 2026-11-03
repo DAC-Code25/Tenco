@@ -1,6 +1,8 @@
 #ifndef CHASSISCLIENT_H
 #define CHASSISCLIENT_H
 
+#include "chassisvelocityqueue.h"
+#include <QElapsedTimer>
 #include <QObject>
 #include <QJsonObject>
 #include <QString>
@@ -49,13 +51,21 @@ private slots:
     void attemptReconnect();
 
 private:
+    friend class ChassisQueueTest;
     void openIfPossible();
     void sendJson(const QJsonObject &packetObj, const QJsonObject &msgObj);
+    void serviceVelocityQueue();
+    void applyVelocityAction(const ChassisVelocityQueue::Action &action);
+    void clearVelocityQueue();
+    void failVelocityQueue(const QString &reason);
     int currentReconnectDelayMs() const;
 
     QUrl m_url;
     QWebSocket *m_socket = nullptr;
     QTimer *m_reconnectTimer = nullptr;
+    QTimer *m_velocityTimer = nullptr;
+    QElapsedTimer m_velocityClock;
+    ChassisVelocityQueue m_velocityQueue;
     bool m_autoReconnect = true;
     int m_reconnectIntervalMs = 1000;
     int m_reconnectMaxIntervalMs = 15000;

@@ -2,13 +2,11 @@
 #define MAPDOCUMENT_H
 
 #include "rowworktypes.h"
-#include "rowmissiontypes.h"
 #include "trackingtypes.h"
 
 #include <QList>
+#include <QJsonObject>
 #include <QString>
-
-class QJsonObject;
 
 struct MapDocumentPoint
 {
@@ -31,11 +29,12 @@ struct MapDocumentPath
     int endId = -1;
     MapDocumentPathType type = MapDocumentPathType::Line;
     double sagitta = 0.0;
+    bool bidirectional = false;
 };
 
 struct MapDocument
 {
-    int schemaVersion = 2;
+    int schemaVersion = 3;
     MapFrameBinding frameBinding;
     QString savedAtIsoUtc;
     int gridWidth = 0;
@@ -46,14 +45,14 @@ struct MapDocument
     QList<MapDocumentPath> paths;
     bool hasRowWorkPlan = false;
     RowWorkPlan rowWorkPlan;
-    bool hasRowMissionPlan = false;
-    RowMissionPlan rowMissionPlan;
+    bool hasLegacyRowMissionDocument = false;
+    QJsonObject legacyRowMissionDocument;
 };
 
 namespace MapDocumentCodec
 {
 QJsonObject toJson(const MapDocument &doc);
-bool fromJson(const QJsonObject &json, MapDocument *outDoc, QString *errorMessage = nullptr, int maxSupportedSchemaVersion = 2);
+bool fromJson(const QJsonObject &json, MapDocument *outDoc, QString *errorMessage = nullptr, int maxSupportedSchemaVersion = 3);
 } // namespace MapDocumentCodec
 
 #endif // MAPDOCUMENT_H

@@ -22,7 +22,14 @@ PoseClient::PoseClient(QObject *parent) : QObject(parent), m_http(this), m_strea
         const bool available = fresh();
         if (available != m_online) {
             m_online = available;
-            emit availabilityChanged(available, available ? QString() : tr("位姿过期或不可用于控制"));
+            emit availabilityChanged(available, available ? QString() :
+                tr("位姿显示延迟或暂不可用；导航由工控机本地位姿独立执行"));
+        }
+        const bool monitorCurrent = monitorFresh();
+        if (monitorCurrent != m_monitorOnline) {
+            m_monitorOnline = monitorCurrent;
+            emit monitoringAvailabilityChanged(monitorCurrent, monitorCurrent ? QString() :
+                tr("位姿监视更新延迟；定位状态待确认，导航由工控机独立执行"));
         }
         openStream();
         pollCapture();
@@ -33,6 +40,7 @@ PoseClient::~PoseClient() {
     stop();
 }
 void PoseClient::configure(const QUrl &url, const QString &token, int timeout) {
+    if (m_http.matchesConfiguration(url, token, timeout)) return;
     const bool restart = m_running;
     stop();
     m_http.configure(url, token, timeout);
@@ -61,6 +69,9 @@ void PoseClient::stop() {
     }
     m_streamBuffer.clear();
     m_lineAge.invalidate();
+    m_streamTimingStarted = false;
+    m_streamFreshnessBasis.clear();
+    m_streamTimingBootId.clear();
     m_http.cancelAll();
     m_pose = {};
     m_age.invalidate();
@@ -69,7 +80,10 @@ void PoseClient::stop() {
     m_nextPoll = 0;
     m_failures = 0;
     m_online = false;
+    m_monitorOnline = false;
+    m_transportAgeMs = 1e12;
     emit availabilityChanged(false, tr("位姿服务未连接"));
+    emit monitoringAvailabilityChanged(false, tr("位姿监视未连接"));
 }
 ControlPoseSnapshot PoseClient::snapshot() const {
     auto pose = m_pose;
@@ -77,12 +91,19 @@ ControlPoseSnapshot PoseClient::snapshot() const {
     pose.stateAgeMs += delay;
     pose.positionAgeMs += delay;
     pose.headingAgeMs += delay;
+    pose.monitorDelayed = !m_pose.bootId.isEmpty() && !monitorFresh();
     pose.validForControl = fresh();
     return pose;
 }
 bool PoseClient::fresh() const {
     return m_running && m_age.isValid() && m_pose.validForControl &&
            m_pose.stateAgeMs + m_age.elapsed() <= m_stateTimeoutMs;
+}
+bool PoseClient::monitorFresh() const {
+    // Monitoring answers whether a recent, ordered frame arrived. An up-to-date
+    // initialization or invalid estimate is still useful status information.
+    return m_running && m_age.isValid() && !m_pose.bootId.isEmpty() &&
+           m_transportAgeMs + m_age.elapsed() <= m_stateTimeoutMs;
 }
 void PoseClient::setStateTimeoutMs(int timeoutMs) {
     if (timeoutMs > 0 && timeoutMs <= 1000)
@@ -103,8 +124,15 @@ void PoseClient::openStream() {
     NetworkPolicy::applyBearerAuthorization(&request, m_streamToken);
     m_streamBuffer.clear();
     m_lineAge.invalidate();
-    m_firstStreamSendTime = m_lastStreamSendTime = 0;
-    m_firstStreamReceiveMs = 0;
+    // The producer's monotonic clock survives a transport reconnect. Keeping
+    // that baseline prevents previously unseen queued frames becoming young
+    // merely because a new TCP connection opened. Legacy wall clocks only
+    // have a within-connection contract.
+    if (m_streamFreshnessBasis != "http_receipt") {
+        m_streamTimingStarted = false;
+        m_streamFreshnessBasis.clear();
+        m_streamTimingBootId.clear();
+    }
     auto *reply = m_streamManager.get(request);
     m_streamReply = reply;
     reply->setReadBufferSize(MaxPoseLineBytes + 1);
@@ -142,6 +170,8 @@ void PoseClient::readStream() {
     auto *reply = m_streamReply.data();
     if (!reply || reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() != 200)
         return;
+    const auto previousBoot = m_pose.bootId;
+    const auto previousSequence = m_pose.seq;
     while (m_streamReply == reply && reply->bytesAvailable() > 0) {
         if (m_streamBuffer.isEmpty())
             m_lineAge.restart();
@@ -180,6 +210,12 @@ void PoseClient::readStream() {
             return;
         }
     }
+    // Validate every received frame and emit each coordinate identity change,
+    // but refresh the display once for a buffered burst. Capture observations
+    // are collected by the IPC and arrive through the independent capture API.
+    if (m_running && m_streamReply == reply &&
+        (m_pose.bootId != previousBoot || m_pose.seq != previousSequence))
+        emit poseChanged(snapshot());
 }
 void PoseClient::failStream(const QString &reason) {
     if (!m_running || !m_streamReply)
@@ -193,8 +229,10 @@ void PoseClient::failStream(const QString &reason) {
     m_streamBuffer.clear();
     m_age.invalidate();
     m_online = false;
+    m_monitorOnline = false;
     m_nextPoll = m_clock.elapsed() + qMin(5000, 100 * (1 << qMin(++m_failures, 6)));
     emit availabilityChanged(false, reason);
+    emit monitoringAvailabilityChanged(false, reason);
     emit errorOccurred(reason);
 }
 bool PoseClient::acceptPose(const QJsonObject &object, qint64 lineAgeMs) {
@@ -204,23 +242,38 @@ bool PoseClient::acceptPose(const QJsonObject &object, qint64 lineAgeMs) {
         failStream(error);
         return false;
     }
+    const bool receipt = pose.freshnessBasis == "http_receipt";
     const auto send = object.value("sendTime");
-    const double sendTime = send.toDouble();
-    if (!send.isDouble() || !std::isfinite(sendTime) || sendTime <= 0) {
+    const double sendTime = receipt ? pose.sendMonotonicSeconds.value_or(-1) : send.toDouble();
+    if ((!receipt && !send.isDouble()) || !std::isfinite(sendTime) || (receipt ? sendTime < 0 : sendTime <= 0)) {
         failStream(QStringLiteral("pose_stream_send_time_invalid"));
         return false;
     }
-    if (m_lastStreamSendTime > 0 && sendTime < m_lastStreamSendTime) {
+    // Replayed sequences neither alter the producer's timing baseline nor
+    // refresh its deadline, including a replay with an older valid send time.
+    if (pose.bootId == m_pose.bootId && pose.seq <= m_pose.seq)
+        return true;
+    const bool sameProducer = m_streamTimingStarted && pose.bootId == m_streamTimingBootId;
+    if (sameProducer && pose.freshnessBasis != m_streamFreshnessBasis) {
+        failStream(QStringLiteral("pose_stream_time_basis_changed"));
+        return false;
+    }
+    if (sameProducer && sendTime < m_lastStreamSendTime) {
         failStream(QStringLiteral("pose_stream_clock_rewound"));
         return false;
     }
     const qint64 localNow = m_clock.elapsed();
-    if (m_firstStreamSendTime == 0) {
+    if (!sameProducer) {
         m_firstStreamSendTime = sendTime;
         m_firstStreamReceiveMs = localNow - lineAgeMs;
+        m_streamTimingStarted = true;
+        m_streamFreshnessBasis = pose.freshnessBasis;
+        m_streamTimingBootId = pose.bootId;
     }
     m_lastStreamSendTime = sendTime;
-    // Relative progress needs no agreement between the hosts' wall clocks.
+    // Receipt mode uses server monotonic progress, so an NTP wall-clock
+    // adjustment is not mistaken for a transport failure. Only differences
+    // within one producer boot are used; clocks need no shared epoch.
     // A pause in delivery/Qt processing adds age to queued frames; current
     // frames recover as their send times catch up. Initial one-way delay is
     // unknown, and waiting for HTTP headers is not the age of later samples.
@@ -231,10 +284,6 @@ bool PoseClient::acceptPose(const QJsonObject &object, qint64 lineAgeMs) {
     }
     const double transportAgeMs = qMax(double(lineAgeMs),
         qMax(0.0, double(localNow - m_firstStreamReceiveMs) - sourceProgressMs));
-    // Replayed sequence numbers never refresh state age, including after a
-    // transport reconnect. Boot changes remain visible to coordinate consumers.
-    if (pose.bootId == m_pose.bootId && pose.seq <= m_pose.seq)
-        return true;
     m_failures = 0;
     m_streamDeadline.start(m_streamTimeoutMs);
     const bool changed = !m_pose.bootId.isEmpty() &&
@@ -244,11 +293,10 @@ bool PoseClient::acceptPose(const QJsonObject &object, qint64 lineAgeMs) {
     pose.positionAgeMs += transportAgeMs;
     pose.headingAgeMs += transportAgeMs;
     m_pose = pose;
+    m_transportAgeMs = transportAgeMs;
     m_age.restart();
     if (changed)
         emit frameChanged();
-    if (m_running)
-        emit poseChanged(snapshot());
     return true;
 }
 bool PoseClient::capture(const MapFrameBinding &binding, int duration) {

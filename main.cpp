@@ -2,6 +2,7 @@
 #include "databasemanager.h"
 #include "loggingmanager.h"
 #include "configmanager.h"
+#include "buttonfocusstyle.h"
 
 #include <QApplication>
 #include <QCommandLineOption>
@@ -48,6 +49,10 @@ int main(int argc, char *argv[])
 #endif
 
     QApplication a(argc, argv);
+    a.setStyle(new ButtonFocusStyle);
+    a.setStyleSheet(QStringLiteral(
+        "QToolTip { color:#30493d; background-color:#fffef8; border:1px solid #b8cbbf;"
+        " padding:6px 8px; font-family:'Microsoft YaHei'; font-size:13px; }"));
     QCoreApplication::setOrganizationName(QStringLiteral("Tenco"));
     QCoreApplication::setApplicationName(QStringLiteral("Tenco"));
 

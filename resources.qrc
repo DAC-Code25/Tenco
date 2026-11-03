@@ -1,5 +1,6 @@
 <RCC>
     <qresource prefix="/">
+        <file>image/camera-chevron-down.svg</file>
         <file>image/imagesnav/shouye.png</file>
         <file>image/imagesnav/ditu.png</file>
         <file>image/imagesnav/weihu.png</file>
@@ -25,6 +26,8 @@
         <file>image/imageswitch/btncheckon1.png</file>
         <file>image/imageswitch/btncheckon2.png</file>
         <file>image/car.jpg</file>
+        <file>image/support-chevron-down.svg</file>
+        <file>image/support-chevron-up.svg</file>
         <file>qml/AboutCarViewer.qml</file>
     </qresource>
 </RCC>

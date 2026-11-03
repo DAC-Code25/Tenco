@@ -5,6 +5,9 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QTemporaryDir>
+#include <QCryptographicHash>
+#include <QCoreApplication>
+#include <QDir>
 
 #include <QtTest>
 
@@ -15,10 +18,32 @@ class ConfigManagerTest : public QObject
 private slots:
     void drivingSpeedBoundsAndLegacyMigration();
     void loadCustomConfigAndSanitize();
+    void retiredVideoChoicesRemainOpaqueAndNeverOverrideThePreview();
     void envOverridesSecretsAndReportsSchemaWarnings();
-    void geoRoundTripKeepsPrecision();
+    void legacyNavigationFieldsRetireOnlyOnExplicitSave();
+    void importedLegacyFieldsAreBackedUpAndCannotRevive();
+    void restoredLegacyFieldsAreBackedUpAndCannotRevive();
+    void schemaOnePartialManualSettingsMatchLoadImportAndRestore();
     void unsupportedSchemaDoesNotMigrateOrEnableServices();
+    void savesPreserveCredentialsUnknownFieldsAndBackupExactOriginal();
+    void backupFailureAndExternalEditsCannotOverwriteConfiguration();
+    void restoreVerifiesDigestAndBacksUpCurrentBytes();
+    void importedUnknownFieldsSurviveAndDefaultPathIgnoresWorkingDirectory();
 };
+
+static void writeConfigBytes(const QString &path, const QByteArray &bytes)
+{
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    QCOMPARE(file.write(bytes), bytes.size());
+}
+
+static QByteArray readConfigBytes(const QString &path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) return {};
+    return file.readAll();
+}
 
 void ConfigManagerTest::drivingSpeedBoundsAndLegacyMigration()
 {
@@ -37,14 +62,14 @@ void ConfigManagerTest::drivingSpeedBoundsAndLegacyMigration()
         {{"schemaVersion", 2}, {"manualControl", QJsonObject{{"maxLinearSpeed", .05}}}}
     };
     const QList<double> expectedManual{1.50, 0.0, 1.50, .60, 1.50, .10};
-    const QList<double> expectedTask{.10, .20, 1.50, .10, .10, .10};
     for (qsizetype i = 0; i < inputs.size(); ++i) {
         QFile file(path);
         QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
         file.write(QJsonDocument(inputs[i]).toJson()); file.close();
         cfg.setConfigFilePath(path); cfg.reload(); QVERIFY(cfg.loadedFromFile());
         QCOMPARE(cfg.manualControl().maxLinearSpeed, expectedManual[i]);
-        QCOMPARE(cfg.taskDefaults().speedLimit, expectedTask[i]);
+        QCOMPARE(QJsonDocument::fromJson(readConfigBytes(path)).object(), inputs[i]);
+        QVERIFY(cfg.backupFilePaths().isEmpty());
     }
     cfg.setConfigFilePath(QString());
 }
@@ -111,12 +136,17 @@ void ConfigManagerTest::loadCustomConfigAndSanitize()
     cfg.setConfigFilePath(filePath);
 
     QVERIFY(cfg.loadedFromFile());
-    QVERIFY(QFile::exists(filePath + ".schema1.bak"));
+    QVERIFY(!QFile::exists(filePath + ".schema1.bak"));
+    QVERIFY(cfg.backupFilePaths().isEmpty());
+    QCOMPARE(QJsonDocument::fromJson(readConfigBytes(filePath)).object(), root);
+    QVERIFY(cfg.saveSnapshot(cfg.snapshot()));
+    QVERIFY(!cfg.backupFilePaths().isEmpty());
+    QCOMPARE(QJsonDocument::fromJson(readConfigBytes(cfg.latestBackupFilePath())).object(), root);
     QFile migrated(filePath); QVERIFY(migrated.open(QIODevice::ReadOnly));
     const auto current = QJsonDocument::fromJson(migrated.readAll()).object();
     QCOMPARE(current["schemaVersion"].toInt(), 2);
     QVERIFY(!current.contains("control")); QVERIFY(!current.contains("rowWork"));
-    QVERIFY(current.contains("taskDefaults")); migrated.close();
+    QVERIFY(!current.contains("taskDefaults")); QVERIFY(!current.contains("geo")); migrated.close();
     QCOMPARE(cfg.configFilePath(), filePath);
     QVERIFY(cfg.manualControl().maxLinearSpeed >= 0.0);
     QVERIFY(cfg.manualControl().maxAngularSpeed >= 0.0);
@@ -126,9 +156,7 @@ void ConfigManagerTest::loadCustomConfigAndSanitize()
     QVERIFY(cfg.video().reconnectIntervalMs >= 200);
     QCOMPARE(cfg.video().backend, QStringLiteral("mjpeg_http"));
     QCOMPARE(cfg.video().controlBaseUrl, QStringLiteral("http://192.168.31.7:18080/"));
-    QCOMPARE(cfg.video().streamOptions.size(), 1);
-    QCOMPARE(cfg.video().streamOptions.first().name, QStringLiteral("前置相机"));
-    QCOMPARE(cfg.video().streamOptions.first().url, QStringLiteral("http://192.168.31.13:18080/camera/stream.mjpeg"));
+    QCOMPARE(current["video"].toObject()["streamOptions"], root["video"].toObject()["streamOptions"]);
     QVERIFY(cfg.video().previewWidth >= 320);
     QVERIFY(cfg.video().previewHeight <= 3040);
     QVERIFY(cfg.video().previewFps <= 120);
@@ -145,6 +173,46 @@ void ConfigManagerTest::loadCustomConfigAndSanitize()
     QVERIFY(cfg.database().reconnectIntervalMs >= 500);
     QVERIFY(cfg.database().enableTelemetryTables);
 
+    cfg.setConfigFilePath(QString());
+}
+
+void ConfigManagerTest::retiredVideoChoicesRemainOpaqueAndNeverOverrideThePreview()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    auto &cfg = ConfigManager::instance();
+    const auto path = directory.filePath(QStringLiteral("config.json"));
+    const QJsonArray legacyChoices{
+        QJsonObject{{"name", "previous-camera"}, {"url", "http://127.0.0.1:2/old"},
+                    {"futureField", QJsonObject{{"preserve", true}}}},
+        QStringLiteral("old-unrecognized-entry")
+    };
+    const QJsonObject document{{"schemaVersion", 2},
+        {"video", QJsonObject{{"streamUrl", "http://127.0.0.1:1/color"},
+                               {"controlBaseUrl", "http://127.0.0.1:1"},
+                               {"streamOptions", legacyChoices}}}};
+    const auto bytes = QJsonDocument(document).toJson();
+    writeConfigBytes(path, bytes);
+    cfg.setConfigFilePath(path);
+    QCOMPARE(cfg.video().streamUrl, QStringLiteral("http://127.0.0.1:1/color"));
+    QCOMPARE(cfg.video().controlBaseUrl, QStringLiteral("http://127.0.0.1:1"));
+    QCOMPARE(readConfigBytes(path), bytes);
+
+    auto changed = cfg.snapshot();
+    changed.video.streamUrl = QStringLiteral("http://127.0.0.1:1/new-color");
+    QVERIFY(cfg.saveSnapshot(changed, nullptr, true));
+    const auto saved = QJsonDocument::fromJson(readConfigBytes(path)).object();
+    QCOMPARE(saved["video"].toObject()["streamOptions"].toArray(), legacyChoices);
+    QCOMPARE(cfg.video().streamUrl, changed.video.streamUrl);
+    QCOMPARE(readConfigBytes(cfg.latestBackupFilePath()), bytes);
+
+    // Fresh configurations do not generate the retired field.
+    const auto freshPath = directory.filePath(QStringLiteral("fresh.json"));
+    writeConfigBytes(freshPath, QJsonDocument(QJsonObject{{"schemaVersion", 2}}).toJson());
+    cfg.setConfigFilePath(freshPath);
+    QVERIFY(cfg.saveSnapshot(cfg.snapshot(), nullptr, true));
+    const auto fresh = QJsonDocument::fromJson(readConfigBytes(freshPath)).object();
+    QVERIFY(!fresh["video"].toObject().contains("streamOptions"));
     cfg.setConfigFilePath(QString());
 }
 
@@ -207,23 +275,286 @@ void ConfigManagerTest::unsupportedSchemaDoesNotMigrateOrEnableServices()
         ConfigManager::ConfigSnapshot snapshot;
         QVERIFY(!cfg.loadSnapshotFromFile(path, &snapshot));
         QVERIFY(!QFile::exists(path + ".schema1.bak"));
+        QVERIFY(!cfg.saveSnapshot(cfg.snapshot()));
         QVERIFY(file.open(QIODevice::ReadOnly));
         QCOMPARE(file.readAll(), bytes);
     }
     cfg.setConfigFilePath(QString());
 }
 
-void ConfigManagerTest::geoRoundTripKeepsPrecision()
+void ConfigManagerTest::savesPreserveCredentialsUnknownFieldsAndBackupExactOriginal()
 {
-    ConfigManager &cfg = ConfigManager::instance();
-    const QPointF local(12.345, -67.890);
-    double lat = 0.0;
-    double lon = 0.0;
-    cfg.localToGeo(local, lat, lon);
-    const QPointF reconstructed = cfg.geoToLocal(lat, lon);
+    QTemporaryDir dir;
+    auto &cfg = ConfigManager::instance();
+    const auto path = dir.filePath("config.json");
+    const QByteArray original = "{\r\n \"schemaVersion\":2,\"network\":{\"authToken\":\"test-secret\",\"futureAuth\":{\"mode\":7}},\"futureModule\":{\"enabled\":true}}\r\n";
+    writeConfigBytes(path, original);
+    cfg.setConfigFilePath(path);
+    QVERIFY(cfg.createStartupBackup());
+    const auto startupBackup = cfg.latestBackupFilePath();
+    QCOMPARE(readConfigBytes(startupBackup), original);
+    QVERIFY(cfg.backupDirectoryPath().endsWith("backups/config/local"));
+    auto snapshot = cfg.snapshot();
+    snapshot.manualControl.maxAngularSpeed = .2;
+    QString error;
+    QSignalSpy applied(&cfg, &ConfigManager::configChanged);
+    QVERIFY2(cfg.saveSnapshot(snapshot, &error, false), qPrintable(error));
+    QCOMPARE(applied.size(), 0);
+    QCOMPARE(cfg.manualControl().maxAngularSpeed, .5);
+    QVERIFY(cfg.diskRevision() != cfg.runtimeRevision());
+    QCOMPARE(cfg.diskRevision(), cfg.expectedDiskRevision());
+    const auto savedBytes = readConfigBytes(path);
+    const auto saved = QJsonDocument::fromJson(readConfigBytes(path)).object();
+    QCOMPARE(saved["network"].toObject()["authToken"].toString(), "test-secret");
+    QCOMPARE(saved["network"].toObject()["futureAuth"].toObject()["mode"].toInt(), 7);
+    QCOMPARE(saved["futureModule"].toObject()["enabled"].toBool(), true);
+    QCOMPARE(cfg.backupFilePaths().size(), 1); // Identical startup/save snapshots share verified bytes.
+    for (const auto &backup : cfg.backupFilePaths()) {
+        QCOMPARE(readConfigBytes(backup), original);
+        const auto manifest = QJsonDocument::fromJson(readConfigBytes(backup + ".manifest.json")).object();
+        QCOMPARE(manifest["sha256"].toString().toLatin1(), QCryptographicHash::hash(original, QCryptographicHash::Sha256).toHex());
+    }
+    QVERIFY2(cfg.saveSnapshot(snapshot, &error, true), qPrintable(error));
+    QCOMPARE(applied.size(), 1);
+    QCOMPARE(cfg.manualControl().maxAngularSpeed, .2);
+    QCOMPARE(cfg.diskRevision(), cfg.runtimeRevision());
+    QCOMPARE(readConfigBytes(path), savedBytes); // Applying saved values does not need another edit.
+    cfg.setConfigFilePath({});
+}
 
-    QVERIFY(qAbs(reconstructed.x() - local.x()) < 1e-6);
-    QVERIFY(qAbs(reconstructed.y() - local.y()) < 1e-6);
+void ConfigManagerTest::backupFailureAndExternalEditsCannotOverwriteConfiguration()
+{
+    QTemporaryDir dir;
+    auto &cfg = ConfigManager::instance();
+    const auto path = dir.filePath("config.json");
+    const QByteArray original = "{\"schemaVersion\":2,\"network\":{\"authToken\":\"keep-this-test-token\"}}\n";
+    writeConfigBytes(path, original);
+    cfg.setConfigFilePath(path);
+    writeConfigBytes(dir.filePath("backups"), "blocks-backup-directory");
+    auto snapshot = cfg.snapshot(); snapshot.manualControl.maxAngularSpeed = .2;
+    QString error;
+    QVERIFY(!cfg.saveSnapshot(snapshot, &error, true));
+    QCOMPARE(readConfigBytes(path), original);
+    QCOMPARE(cfg.manualControl().maxAngularSpeed, .5);
+    QVERIFY(QFile::remove(dir.filePath("backups")));
+    const QByteArray external = "{\"schemaVersion\":2,\"network\":{\"authToken\":\"external-test-token\"}}";
+    writeConfigBytes(path, external);
+    QVERIFY(!cfg.saveSnapshot(snapshot, &error, true));
+    QCOMPARE(readConfigBytes(path), external);
+    QVERIFY(cfg.backupFilePaths().isEmpty());
+    // A file edited after save-only must not be overwritten by a later apply.
+    writeConfigBytes(path, original);
+    QVERIFY(cfg.saveSnapshot(snapshot, &error, false));
+    QCOMPARE(cfg.diskRevision(), cfg.expectedDiskRevision());
+    const auto pendingRevision = cfg.expectedDiskRevision();
+    writeConfigBytes(path, external);
+    QVERIFY(cfg.diskRevision() != pendingRevision);
+    QVERIFY(!cfg.saveSnapshot(snapshot, &error, true));
+    QCOMPARE(readConfigBytes(path), external);
+    QCOMPARE(cfg.manualControl().maxAngularSpeed, .5);
+    cfg.setConfigFilePath({});
+}
+
+void ConfigManagerTest::restoreVerifiesDigestAndBacksUpCurrentBytes()
+{
+    QTemporaryDir dir;
+    auto &cfg = ConfigManager::instance();
+    const auto path = dir.filePath("config.json");
+    const QByteArray original = "{\"schemaVersion\":2,\"network\":{\"authToken\":\"original-test-token\"}}\r\n";
+    writeConfigBytes(path, original); cfg.setConfigFilePath(path);
+    QVERIFY(cfg.createBackup());
+    const auto backup = cfg.latestBackupFilePath();
+    const auto snapshot = cfg.snapshot();
+    auto changed = snapshot; changed.network.authToken = "changed-test-token";
+    QVERIFY(cfg.saveSnapshot(changed, nullptr, true));
+    const auto changedBytes = readConfigBytes(path);
+    writeConfigBytes(backup, "{\"schemaVersion\":2,\"tampered\":true}");
+    QString error;
+    QVERIFY(!cfg.restoreBackup(backup, &error, true));
+    QCOMPARE(readConfigBytes(path), changedBytes);
+    writeConfigBytes(backup, original);
+    QVERIFY2(cfg.restoreBackup(backup, &error, true), qPrintable(error));
+    QCOMPARE(readConfigBytes(path), original);
+    QCOMPARE(cfg.network().authToken, "original-test-token");
+    bool foundPreRestore = false;
+    for (const auto &candidate : cfg.backupFilePaths()) {
+        const auto manifest = QJsonDocument::fromJson(readConfigBytes(candidate + ".manifest.json")).object();
+        if (manifest["reason"].toString() == "before_restore") {
+            QCOMPARE(readConfigBytes(candidate), changedBytes); foundPreRestore = true;
+        }
+    }
+    QVERIFY(foundPreRestore);
+    cfg.setConfigFilePath({});
+}
+
+void ConfigManagerTest::importedUnknownFieldsSurviveAndDefaultPathIgnoresWorkingDirectory()
+{
+    QTemporaryDir dir;
+    auto &cfg = ConfigManager::instance();
+    const auto path = dir.filePath("config.json");
+    writeConfigBytes(path, "{\"schemaVersion\":2}"); cfg.setConfigFilePath(path);
+    const auto imported = dir.filePath("imported.json");
+    writeConfigBytes(imported, "{\"schemaVersion\":2,\"network\":{\"authToken\":\"imported-test-token\",\"future\":true},\"futureTop\":[1,2]}");
+    ConfigManager::ConfigSnapshot snapshot;
+    QVERIFY(cfg.loadSnapshotFromFile(imported, &snapshot));
+    QVERIFY(cfg.saveSnapshot(snapshot, nullptr, true));
+    const auto saved = QJsonDocument::fromJson(readConfigBytes(path)).object();
+    QCOMPARE(saved["network"].toObject()["authToken"].toString(), "imported-test-token");
+    QVERIFY(saved["network"].toObject()["future"].toBool());
+    QCOMPARE(saved["futureTop"].toArray(), QJsonArray({1,2}));
+    const auto oldCwd = QDir::currentPath();
+    QVERIFY(QDir::setCurrent(dir.path()));
+    cfg.setConfigFilePath({});
+    QCOMPARE(QFileInfo(cfg.configFilePath()).absoluteFilePath(), QDir(QCoreApplication::applicationDirPath()).filePath("config.json"));
+    QVERIFY(QDir::setCurrent(oldCwd));
+}
+
+static QJsonObject retiredConfiguration(int schema = 2)
+{
+    return {{"schemaVersion", schema},
+        {"geo", QJsonObject{{"baseLatitudeDeg", 30.25}, {"baseLongitudeDeg", 120.5}}},
+        {"taskDefaults", QJsonObject{{"speedLimit", 1.2}, {"goalToleranceMeters", .4}}},
+        {"control", QJsonObject{{"maxAngularSpeed", .37}, {"arrivalDistanceThreshold", .4}}},
+        {"rowWork", QJsonObject{{"gatewayBaseUrl", "http://retired.invalid"}}},
+        {"vehicle", QJsonObject{{"wheelTrack", .9}}},
+        {"network", QJsonObject{{"authToken", "preserved-legacy-test-token"}}},
+        {"futureModule", QJsonObject{{"keep", 19}}}};
+}
+
+static void verifyRetiredSettingsAbsent(const QJsonObject &document)
+{
+    for (const auto &key : {"geo", "taskDefaults", "control", "rowWork", "vehicle"})
+        QVERIFY2(!document.contains(key), key);
+}
+
+static bool hasExactBackup(const ConfigManager &config, const QByteArray &bytes)
+{
+    for (const auto &path : config.backupFilePaths())
+        if (readConfigBytes(path) == bytes) return true;
+    return false;
+}
+
+void ConfigManagerTest::legacyNavigationFieldsRetireOnlyOnExplicitSave()
+{
+    QTemporaryDir dir;
+    auto &cfg = ConfigManager::instance();
+    const auto path = dir.filePath("config.json");
+    const auto original = QJsonDocument(retiredConfiguration()).toJson();
+    writeConfigBytes(path, original);
+    cfg.setConfigFilePath(path);
+    cfg.reload();
+    QCOMPARE(readConfigBytes(path), original);
+    QVERIFY(cfg.backupFilePaths().isEmpty());
+    QVERIFY(cfg.validationWarnings().join(" ").contains(QStringLiteral("已停用")));
+    QCOMPARE(cfg.manualControl().maxAngularSpeed, .5); // Schema 2 control is retired too.
+    const auto token = cfg.network().authToken;
+    QVERIFY(cfg.saveSnapshot(cfg.snapshot(), nullptr, true));
+    const auto saved = QJsonDocument::fromJson(readConfigBytes(path)).object();
+    verifyRetiredSettingsAbsent(saved);
+    QCOMPARE(saved["network"].toObject()["authToken"].toString(), token);
+    QCOMPARE(saved["futureModule"].toObject()["keep"].toInt(), 19);
+    QVERIFY(hasExactBackup(cfg, original));
+    // Even a preserved/merged document cannot recreate a second authority.
+    auto stale = cfg.snapshot();
+    stale.sourceDocument = retiredConfiguration();
+    QVERIFY(cfg.saveSnapshot(stale, nullptr, true));
+    verifyRetiredSettingsAbsent(QJsonDocument::fromJson(readConfigBytes(path)).object());
+    cfg.setConfigFilePath({});
+}
+
+void ConfigManagerTest::importedLegacyFieldsAreBackedUpAndCannotRevive()
+{
+    QTemporaryDir dir;
+    auto &cfg = ConfigManager::instance();
+    const auto path = dir.filePath("config.json");
+    const QByteArray current = "{\"schemaVersion\":2,\"network\":{\"authToken\":\"current-test-token\"}}\r\n";
+    writeConfigBytes(path, current);
+    cfg.setConfigFilePath(path);
+    const auto inputPath = dir.filePath("import.json");
+    const auto importedBytes = QJsonDocument(retiredConfiguration(1)).toJson();
+    writeConfigBytes(inputPath, importedBytes);
+    ConfigManager::ConfigSnapshot imported;
+    QVERIFY(cfg.loadSnapshotFromFile(inputPath, &imported));
+    QCOMPARE(imported.originalImportBytes, importedBytes);
+    QCOMPARE(readConfigBytes(path), current);
+    QVERIFY(cfg.backupFilePaths().isEmpty());
+    QCOMPARE(cfg.network().authToken, QStringLiteral("current-test-token"));
+    QCOMPARE(imported.manualControl.maxAngularSpeed, .37);
+    QVERIFY(cfg.saveSnapshot(imported, nullptr, true));
+    const auto saved = QJsonDocument::fromJson(readConfigBytes(path)).object();
+    verifyRetiredSettingsAbsent(saved);
+    QCOMPARE(saved["schemaVersion"].toInt(), 2);
+    QCOMPARE(cfg.manualControl().maxAngularSpeed, .37);
+    QCOMPARE(cfg.network().authToken, QStringLiteral("preserved-legacy-test-token"));
+    QCOMPARE(saved["futureModule"].toObject()["keep"].toInt(), 19);
+    QVERIFY(hasExactBackup(cfg, current));
+    QVERIFY(hasExactBackup(cfg, importedBytes));
+    QCOMPARE(readConfigBytes(inputPath), importedBytes);
+    cfg.reload();
+    verifyRetiredSettingsAbsent(cfg.snapshot().sourceDocument);
+    cfg.setConfigFilePath({});
+}
+
+void ConfigManagerTest::restoredLegacyFieldsAreBackedUpAndCannotRevive()
+{
+    QTemporaryDir dir;
+    auto &cfg = ConfigManager::instance();
+    const auto path = dir.filePath("config.json");
+    const auto legacyBytes = QJsonDocument(retiredConfiguration(1)).toJson();
+    writeConfigBytes(path, legacyBytes);
+    cfg.setConfigFilePath(path);
+    QVERIFY(cfg.createBackup());
+    const auto legacyBackup = cfg.latestBackupFilePath();
+    auto changed = cfg.snapshot();
+    changed.network.authToken = "newer-test-token";
+    changed.manualControl.maxAngularSpeed = .6;
+    QVERIFY(cfg.saveSnapshot(changed, nullptr, true));
+    const auto beforeRestore = readConfigBytes(path);
+    QVERIFY(cfg.restoreBackup(legacyBackup, nullptr, true));
+    const auto restored = QJsonDocument::fromJson(readConfigBytes(path)).object();
+    verifyRetiredSettingsAbsent(restored);
+    QCOMPARE(restored["schemaVersion"].toInt(), 2);
+    QCOMPARE(cfg.network().authToken, QStringLiteral("preserved-legacy-test-token"));
+    QCOMPARE(cfg.manualControl().maxAngularSpeed, .37);
+    QCOMPARE(restored["futureModule"].toObject()["keep"].toInt(), 19);
+    QVERIFY(hasExactBackup(cfg, legacyBytes));
+    QVERIFY(hasExactBackup(cfg, beforeRestore));
+    QCOMPARE(readConfigBytes(legacyBackup), legacyBytes);
+    cfg.reload();
+    verifyRetiredSettingsAbsent(cfg.snapshot().sourceDocument);
+    cfg.setConfigFilePath({});
+}
+
+void ConfigManagerTest::schemaOnePartialManualSettingsMatchLoadImportAndRestore()
+{
+    QTemporaryDir dir;
+    auto &cfg = ConfigManager::instance();
+    const auto path = dir.filePath("config.json");
+    const QJsonObject legacy{{"schemaVersion", 1},
+        {"manualControl", QJsonObject{{"maxLinearSpeed", .3}, {"maxAngularSpeed", .6},
+                                      {"manualMotionRepeatIntervalMs", 80}}},
+        {"control", QJsonObject{{"maxLinearSpeed", .2}}}};
+    const auto bytes = QJsonDocument(legacy).toJson();
+    writeConfigBytes(path, bytes);
+    cfg.setConfigFilePath(path);
+    QCOMPARE(readConfigBytes(path), bytes);
+    QCOMPARE(cfg.manualControl().maxLinearSpeed, .2); // Existing schema 1 keys retain precedence.
+    QCOMPARE(cfg.manualControl().maxAngularSpeed, .6);
+    QCOMPARE(cfg.manualControl().manualMotionRepeatIntervalMs, 80);
+    ConfigManager::ConfigSnapshot imported;
+    QVERIFY(cfg.loadSnapshotFromFile(path, &imported));
+    QCOMPARE(imported.manualControl.manualMotionRepeatIntervalMs, 80);
+    QVERIFY(cfg.createBackup());
+    const auto backup = cfg.latestBackupFilePath();
+    QVERIFY(cfg.saveSnapshot(imported, nullptr, true));
+    QCOMPARE(cfg.manualControl().manualMotionRepeatIntervalMs, 80);
+    QVERIFY(cfg.restoreBackup(backup, nullptr, true));
+    QCOMPARE(cfg.manualControl().maxLinearSpeed, .2);
+    QCOMPARE(cfg.manualControl().maxAngularSpeed, .6);
+    QCOMPARE(cfg.manualControl().manualMotionRepeatIntervalMs, 80);
+    verifyRetiredSettingsAbsent(cfg.snapshot().sourceDocument);
+    QVERIFY(hasExactBackup(cfg, bytes));
+    cfg.setConfigFilePath({});
 }
 
 QTEST_MAIN(ConfigManagerTest)

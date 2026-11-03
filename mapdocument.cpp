@@ -53,6 +53,9 @@ QJsonObject MapDocumentCodec::toJson(const MapDocument &doc)
         pathObj.insert(QStringLiteral("type"), path.type == MapDocumentPathType::Arc ? QStringLiteral("arc")
                                                                                      : QStringLiteral("line"));
         pathObj.insert(QStringLiteral("sagitta"), path.sagitta);
+        if (doc.schemaVersion >= 3) {
+            pathObj.insert(QStringLiteral("bidirectional"), path.bidirectional);
+        }
         pathsArray.append(pathObj);
     }
     root.insert(QStringLiteral("paths"), pathsArray);
@@ -61,8 +64,8 @@ QJsonObject MapDocumentCodec::toJson(const MapDocument &doc)
         root.insert(QStringLiteral("rowWork"), RowWorkJson::planToJson(doc.rowWorkPlan));
     }
 
-    if (doc.hasRowMissionPlan) {
-        root.insert(QStringLiteral("rowMission"), RowMissionJson::planToJson(doc.rowMissionPlan));
+    if (doc.hasLegacyRowMissionDocument || !doc.legacyRowMissionDocument.isEmpty()) {
+        root.insert(QStringLiteral("rowMission"), doc.legacyRowMissionDocument);
     }
 
     return root;
@@ -144,6 +147,14 @@ bool MapDocumentCodec::fromJson(const QJsonObject &json,
         path.startId = pathObj.value(QStringLiteral("start")).toInt(-1);
         path.endId = pathObj.value(QStringLiteral("end")).toInt(-1);
         path.sagitta = pathObj.value(QStringLiteral("sagitta")).toDouble(0.0);
+        if (schemaVersion >= 3 && pathObj.contains(QStringLiteral("bidirectional"))) {
+            const QJsonValue direction = pathObj.value(QStringLiteral("bidirectional"));
+            if (!direction.isBool()) {
+                setError(errorMessage, QStringLiteral("paths 的 bidirectional 必须为布尔值"));
+                return false;
+            }
+            path.bidirectional = direction.toBool();
+        }
         const QString type = pathObj.value(QStringLiteral("type")).toString().trimmed().toLower();
         if (type == QStringLiteral("arc")) {
             path.type = MapDocumentPathType::Arc;
@@ -158,10 +169,10 @@ bool MapDocumentCodec::fromJson(const QJsonObject &json,
         doc.paths.append(path);
     }
 
-    const QJsonObject rowWorkObj = json.value(QStringLiteral("rowWork")).toObject();
-    if (!rowWorkObj.isEmpty()) {
+    if (json.contains(QStringLiteral("rowWork"))) {
+        const QJsonValue rowWorkValue = json.value(QStringLiteral("rowWork"));
         RowWorkPlan rowWorkPlan;
-        if (!RowWorkJson::planFromJson(rowWorkObj, &rowWorkPlan)) {
+        if (!rowWorkValue.isObject() || !RowWorkJson::planFromJson(rowWorkValue.toObject(), &rowWorkPlan)) {
             setError(errorMessage, QStringLiteral("rowWork 字段无效"));
             return false;
         }
@@ -169,15 +180,12 @@ bool MapDocumentCodec::fromJson(const QJsonObject &json,
         doc.rowWorkPlan = rowWorkPlan;
     }
 
-    const QJsonObject rowMissionObj = json.value(QStringLiteral("rowMission")).toObject();
-    if (!rowMissionObj.isEmpty()) {
-        RowMissionPlan rowMissionPlan;
-        if (!RowMissionJson::planFromJson(rowMissionObj, &rowMissionPlan)) {
-            setError(errorMessage, QStringLiteral("rowMission 字段无效"));
-            return false;
-        }
-        doc.hasRowMissionPlan = true;
-        doc.rowMissionPlan = rowMissionPlan;
+    const QJsonValue rowMissionValue = json.value(QStringLiteral("rowMission"));
+    if (rowMissionValue.isObject()) {
+        const QJsonObject rowMissionObj = rowMissionValue.toObject();
+        // Retired task data is opaque document content. It has no model or compiler.
+        doc.hasLegacyRowMissionDocument = true;
+        doc.legacyRowMissionDocument = rowMissionObj;
     }
 
     *outDoc = doc;

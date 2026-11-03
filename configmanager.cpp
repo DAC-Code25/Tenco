@@ -10,20 +10,18 @@
 #include <QJsonObject>
 #include <QLoggingCategory>
 #include <QDateTime>
+#include <QCryptographicHash>
+#include <QUuid>
 #include <QStringList>
 #include <QUrl>
 #include <QtGlobal>
-#include <QtMath>
 #include <utility>
+#include <algorithm>
 #include <cmath>
 
 Q_LOGGING_CATEGORY(lcConfigManager, "tenco.config")
 
 namespace {
-constexpr double kEarthRadiusMeters = 6378137.0; // WGS84 equatorial radius
-constexpr double kDefaultLatDeg = 0.0;
-constexpr double kDefaultLonDeg = 0.0;
-
 constexpr const char *kDefaultWebSocketUrl = "ws://192.168.31.7:1202";
 constexpr const char *kDefaultStatusReadUrl = "http://192.168.31.7:9999/table/reads";
 constexpr const char *kDefaultVideoBackend = "mjpeg_http";
@@ -59,7 +57,6 @@ constexpr int kDefaultDatabaseBusyTimeoutMs = 5000;
 constexpr int kDefaultDatabaseCacheSizePages = 2000;
 constexpr int kDefaultDatabaseConnectTimeoutMs = 5000;
 constexpr int kDefaultDatabaseReconnectIntervalMs = 3000;
-constexpr int kMaxConfigBackups = 10;
 
 int configurationSchema(const QJsonObject &root)
 {
@@ -72,28 +69,46 @@ int configurationSchema(const QJsonObject &root)
 
 QString defaultConfigPath()
 {
-    const QString appDir = QCoreApplication::applicationDirPath();
-    const QString exeConfig = QDir(appDir).filePath(QStringLiteral("config.json"));
-    if (QFile::exists(exeConfig)) {
-        return exeConfig;
-    }
+    return QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("config.json"));
+}
 
-    const QString cwdConfig = QDir::current().absoluteFilePath(QStringLiteral("config.json"));
-    if (QFile::exists(cwdConfig)) {
-        return cwdConfig;
-    }
+QString bytesRevision(const QByteArray &bytes)
+{
+    return QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
+}
 
-    const QString parentConfig = QDir(appDir).filePath(QStringLiteral("../config.json"));
-    if (QFile::exists(parentConfig)) {
-        return parentConfig;
-    }
+QJsonObject mergeDocuments(QJsonObject base, const QJsonObject &overlay)
+{
+    for (auto it = overlay.begin(); it != overlay.end(); ++it)
+        base.insert(it.key(), it->isObject() && base.value(it.key()).isObject() ?
+            QJsonValue(mergeDocuments(base.value(it.key()).toObject(), it->toObject())) : it.value());
+    return base;
+}
 
-    const QString grandParentConfig = QDir(appDir).filePath(QStringLiteral("../../config.json"));
-    if (QFile::exists(grandParentConfig)) {
-        return grandParentConfig;
-    }
+QStringList retiredLocalSections(const QJsonObject &root)
+{
+    QStringList sections;
+    for (const auto &key : {QStringLiteral("geo"), QStringLiteral("taskDefaults"),
+                            QStringLiteral("control"), QStringLiteral("rowWork"), QStringLiteral("vehicle")})
+        if (root.contains(key)) sections.append(key);
+    return sections;
+}
 
-    return exeConfig;
+QJsonObject retireLocalNavigationSettings(QJsonObject root)
+{
+    // Schema 1 stored the independent manual channel under control. Preserve
+    // those three settings, but never migrate automatic settings to the IPC.
+    if (configurationSchema(root) == 1) {
+        auto manual = root.value("manualControl").toObject();
+        const auto legacy = root.value("control").toObject();
+        for (const auto &key : {QStringLiteral("maxLinearSpeed"), QStringLiteral("maxAngularSpeed"),
+                                QStringLiteral("manualMotionRepeatIntervalMs")})
+            if (legacy.contains(key)) manual.insert(key, legacy.value(key));
+        if (!manual.isEmpty()) root.insert("manualControl", manual);
+        root.insert("schemaVersion", 2);
+    }
+    for (const auto &key : retiredLocalSections(root)) root.remove(key);
+    return root;
 }
 }
 
@@ -113,6 +128,7 @@ void ConfigManager::reload()
 
 void ConfigManager::setConfigFilePath(const QString &path)
 {
+    if (m_configPathOverride != path.trimmed()) m_startupBackupCreated = false;
     m_configPathOverride = path.trimmed();
     reload();
 }
@@ -120,9 +136,8 @@ void ConfigManager::setConfigFilePath(const QString &path)
 ConfigManager::ConfigSnapshot ConfigManager::snapshot() const
 {
     ConfigSnapshot snap;
-    snap.geo = m_geo;
+    snap.sourceDocument = m_sourceDocument;
     snap.manualControl = m_manualControl;
-    snap.taskDefaults = m_taskDefaults;
     snap.poseSource = m_poseSource;
     snap.tracking = m_tracking;
     snap.routePlanning = m_routePlanning;
@@ -136,16 +151,38 @@ ConfigManager::ConfigSnapshot ConfigManager::snapshot() const
 
 bool ConfigManager::saveSnapshot(const ConfigSnapshot &snapshot, QString *errorMessage, bool applyAfterSave)
 {
+    if (m_writeBlocked || (!snapshot.sourceDocument.isEmpty() && configurationSchema(snapshot.sourceDocument) == 0)) {
+        if (errorMessage) *errorMessage = tr("当前配置损坏或版本不受支持，禁止用默认值覆盖；请先选择有效备份恢复");
+        return false;
+    }
+    if (!snapshot.originalImportBytes.isEmpty() && !retiredLocalSections(snapshot.sourceDocument).isEmpty()) {
+        const auto imported = QJsonDocument::fromJson(snapshot.originalImportBytes);
+        if (!imported.isObject() || imported.object() != snapshot.sourceDocument) {
+            if (errorMessage) *errorMessage = tr("导入配置与预览来源不一致，未保存；请重新导入");
+            return false;
+        }
+        if (!backupBytes(snapshot.originalImportBytes, QStringLiteral("before_import_migration"), errorMessage)) return false;
+    }
+    QFile current(m_configPath);
+    QByteArray original;
+    if (current.exists()) {
+        if (!current.open(QIODevice::ReadOnly)) { if (errorMessage) *errorMessage = tr("无法读取现有配置，未覆盖"); return false; }
+        original = current.readAll();
+        current.close();
+        const auto doc = QJsonDocument::fromJson(original);
+        if (!doc.isObject() || configurationSchema(doc.object()) == 0 || original != m_diskBytes) {
+            if (errorMessage) *errorMessage = tr("磁盘配置已变化、损坏或版本不支持，请先重新读取；未覆盖文件");
+            return false;
+        }
+        if (!backupBytes(original, QStringLiteral("before_save"), errorMessage)) return false;
+    }
     const ConfigSnapshot oldSnapshot = this->snapshot();
     const QString oldPath = m_configPath;
     const bool oldLoaded = m_loaded;
     const bool oldLoadedFromFile = m_loadedFromFile;
-    const double oldMetersPerDegLat = m_metersPerDegLat;
-    const double oldMetersPerDegLon = m_metersPerDegLon;
+    m_sourceDocument = mergeDocuments(m_sourceDocument, snapshot.sourceDocument);
 
-    m_geo = snapshot.geo;
     m_manualControl = snapshot.manualControl;
-    m_taskDefaults = snapshot.taskDefaults;
     m_poseSource = snapshot.poseSource;
     m_tracking = snapshot.tracking;
     m_routePlanning = snapshot.routePlanning;
@@ -155,15 +192,18 @@ bool ConfigManager::saveSnapshot(const ConfigSnapshot &snapshot, QString *errorM
     m_logging = snapshot.logging;
     m_database = snapshot.database;
     sanitizeConfig();
-    updateCachedScales();
 
     const QString targetPath = m_configPath.isEmpty()
                                    ? (m_configPathOverride.isEmpty() ? defaultConfigPath() : m_configPathOverride)
                                    : m_configPath;
-    if (!saveToFile(targetPath, errorMessage)) {
-        m_geo = oldSnapshot.geo;
+    QFile recheck(targetPath);
+    const bool unchanged = original.isEmpty() ? !recheck.exists() :
+        (recheck.open(QIODevice::ReadOnly) && recheck.readAll() == original);
+    recheck.close();
+    if (!unchanged && errorMessage) *errorMessage = tr("备份期间磁盘配置已变化，未覆盖文件");
+    if (!unchanged || !saveToFile(targetPath, errorMessage)) {
+        m_sourceDocument = oldSnapshot.sourceDocument;
         m_manualControl = oldSnapshot.manualControl;
-        m_taskDefaults = oldSnapshot.taskDefaults;
         m_poseSource = oldSnapshot.poseSource;
         m_tracking = oldSnapshot.tracking;
         m_routePlanning = oldSnapshot.routePlanning;
@@ -175,20 +215,21 @@ bool ConfigManager::saveSnapshot(const ConfigSnapshot &snapshot, QString *errorM
         m_configPath = oldPath;
         m_loaded = oldLoaded;
         m_loadedFromFile = oldLoadedFromFile;
-        m_metersPerDegLat = oldMetersPerDegLat;
-        m_metersPerDegLon = oldMetersPerDegLon;
         return false;
     }
+
+    QFile saved(targetPath);
+    if (saved.open(QIODevice::ReadOnly)) m_diskBytes = saved.readAll();
+    m_sourceDocument = QJsonDocument::fromJson(m_diskBytes).object();
 
     if (applyAfterSave) {
         m_configPath = targetPath;
         m_loaded = true;
         m_loadedFromFile = true;
+        m_runtimeRevision = bytesRevision(m_diskBytes);
         emit configChanged();
     } else {
-        m_geo = oldSnapshot.geo;
         m_manualControl = oldSnapshot.manualControl;
-        m_taskDefaults = oldSnapshot.taskDefaults;
         m_poseSource = oldSnapshot.poseSource;
         m_tracking = oldSnapshot.tracking;
         m_routePlanning = oldSnapshot.routePlanning;
@@ -200,8 +241,6 @@ bool ConfigManager::saveSnapshot(const ConfigSnapshot &snapshot, QString *errorM
         m_configPath = oldPath;
         m_loaded = oldLoaded;
         m_loadedFromFile = oldLoadedFromFile;
-        m_metersPerDegLat = oldMetersPerDegLat;
-        m_metersPerDegLon = oldMetersPerDegLon;
     }
 
     return true;
@@ -218,39 +257,86 @@ bool ConfigManager::createStartupBackup(QString *errorMessage)
         return true;
     }
 
-    const QDir backupDir(backupDirectoryPath());
-    if (!backupDir.exists() && !QDir().mkpath(backupDir.absolutePath())) {
-        if (errorMessage) {
-            *errorMessage = tr("无法创建配置备份目录：%1").arg(backupDir.absolutePath());
-        }
-        return false;
-    }
-
-    pruneBackups(kMaxConfigBackups - 1);
-
-    const QString timestamp = QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_HHmmss_zzz"));
-    const QString targetPath = backupDir.filePath(QStringLiteral("config_%1.json").arg(timestamp));
-    if (!copyFileAtomically(m_configPath, targetPath, errorMessage)) {
-        return false;
-    }
+    if (!createBackup(errorMessage, QStringLiteral("startup"))) return false;
 
     m_startupBackupCreated = true;
-    pruneBackups(kMaxConfigBackups);
     return true;
+}
+
+bool ConfigManager::backupBytes(const QByteArray &bytes, const QString &reason, QString *errorMessage) const
+{
+    const QDir dir(backupDirectoryPath());
+    if (!QDir().mkpath(dir.absolutePath())) { if (errorMessage) *errorMessage = tr("无法创建本机配置备份目录，未覆盖配置"); return false; }
+    const auto revision = bytesRevision(bytes);
+    const auto document = QJsonDocument::fromJson(bytes);
+    const auto schema = document.isObject() ? configurationSchema(document.object()) : 0;
+    // Reuse only a verified, byte-identical snapshot in the new directory.
+    // Repeated starts must not create an unbounded pile of identical secrets.
+    for (const auto &entry : dir.entryInfoList({"config_*.json"}, QDir::Files)) {
+        if (entry.fileName().endsWith(".manifest.json")) continue;
+        QFile metadata(entry.absoluteFilePath() + ".manifest.json");
+        if (!metadata.open(QIODevice::ReadOnly)) continue;
+        const auto manifest = QJsonDocument::fromJson(metadata.readAll()).object();
+        if (manifest.value("schemaVersion") != QJsonValue(1) || manifest.value("sha256").toString() != revision ||
+            manifest.value("file").toString() != entry.fileName() ||
+            manifest.value("configurationSchemaVersion").toInt(-1) != schema) continue;
+        QFile candidate(entry.absoluteFilePath());
+        if (candidate.open(QIODevice::ReadOnly) && candidate.readAll() == bytes) return true;
+    }
+    const QString name = QStringLiteral("config_%1_%2.json")
+        .arg(QDateTime::currentDateTimeUtc().toString("yyyyMMdd_HHmmss_zzz"), QUuid::createUuid().toString(QUuid::Id128));
+    const QString target = dir.filePath(name);
+    QSaveFile file(target);
+    if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit()) {
+        if (errorMessage) *errorMessage = tr("本机配置原字节备份失败，未覆盖配置");
+        return false;
+    }
+    const QJsonObject manifest{{"schemaVersion", 1}, {"configurationSchemaVersion", schema},
+        {"sha256", revision}, {"file", name}, {"reason", reason},
+        {"createdAtUtc", QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)}};
+    QSaveFile metadata(target + ".manifest.json");
+    const auto content = QJsonDocument(manifest).toJson();
+    if (!metadata.open(QIODevice::WriteOnly) || metadata.write(content) != content.size() || !metadata.commit()) {
+        QFile::remove(target);
+        if (errorMessage) *errorMessage = tr("配置备份摘要写入失败，未覆盖配置");
+        return false;
+    }
+    return true;
+}
+
+bool ConfigManager::createBackup(QString *errorMessage, const QString &reason)
+{
+    QFile file(m_configPath);
+    if (!file.open(QIODevice::ReadOnly)) { if (errorMessage) *errorMessage = tr("无法读取本机配置以创建备份"); return false; }
+    return backupBytes(file.readAll(), reason, errorMessage);
+}
+
+QString ConfigManager::diskRevision() const {
+    QFile file(m_configPath);
+    return file.open(QIODevice::ReadOnly) ? bytesRevision(file.readAll()) : QString();
+}
+
+QString ConfigManager::expectedDiskRevision() const
+{
+    return m_diskBytes.isEmpty() && !m_loadedFromFile && !m_writeBlocked ? QString() : bytesRevision(m_diskBytes);
 }
 
 QString ConfigManager::backupDirectoryPath() const
 {
     const QFileInfo configInfo(m_configPath.isEmpty() ? defaultConfigPath() : m_configPath);
-    return configInfo.absoluteDir().filePath(QStringLiteral("config_backups"));
+    return configInfo.absoluteDir().filePath(QStringLiteral("backups/config/local"));
 }
 
 QStringList ConfigManager::backupFilePaths() const
 {
-    const QDir dir(backupDirectoryPath());
-    const QFileInfoList entries = dir.entryInfoList(QStringList{QStringLiteral("config_*.json")},
-                                                    QDir::Files,
-                                                    QDir::Time);
+    QFileInfoList entries;
+    const auto parent = QFileInfo(m_configPath).absoluteDir();
+    for (const auto &directory : {backupDirectoryPath(), parent.filePath("config_backups")})
+        for (const auto &entry : QDir(directory).entryInfoList({"config_*.json"}, QDir::Files))
+            if (!entry.fileName().endsWith(".manifest.json")) entries.append(entry);
+    std::sort(entries.begin(), entries.end(), [](const QFileInfo &a, const QFileInfo &b) {
+        return a.lastModified() == b.lastModified() ? a.fileName() > b.fileName() : a.lastModified() > b.lastModified();
+    });
     QStringList paths;
     for (const QFileInfo &info : entries) {
         paths.push_back(info.absoluteFilePath());
@@ -294,7 +380,8 @@ bool ConfigManager::loadSnapshotFromFile(const QString &path, ConfigSnapshot *sn
         return false;
     }
 
-    const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+    const auto importedBytes = file.readAll();
+    const QJsonDocument doc = QJsonDocument::fromJson(importedBytes);
     if (!doc.isObject()) {
         if (errorMessage) {
             *errorMessage = tr("配置文件不是合法 JSON 对象：%1").arg(path);
@@ -309,18 +396,15 @@ bool ConfigManager::loadSnapshotFromFile(const QString &path, ConfigSnapshot *sn
     }
 
     const ConfigSnapshot oldSnapshot = this->snapshot();
-    const double oldMetersPerDegLat = m_metersPerDegLat;
-    const double oldMetersPerDegLon = m_metersPerDegLon;
 
     loadDefaults();
+    m_sourceDocument = doc.object();
     applyJsonObjectToCurrentConfig(doc.object());
     sanitizeConfig();
-    updateCachedScales();
     *snapshot = this->snapshot();
+    snapshot->originalImportBytes = importedBytes;
 
-    m_geo = oldSnapshot.geo;
     m_manualControl = oldSnapshot.manualControl;
-    m_taskDefaults = oldSnapshot.taskDefaults;
     m_poseSource = oldSnapshot.poseSource;
     m_tracking = oldSnapshot.tracking;
     m_routePlanning = oldSnapshot.routePlanning;
@@ -329,8 +413,7 @@ bool ConfigManager::loadSnapshotFromFile(const QString &path, ConfigSnapshot *sn
     m_gimbal = oldSnapshot.gimbal;
     m_logging = oldSnapshot.logging;
     m_database = oldSnapshot.database;
-    m_metersPerDegLat = oldMetersPerDegLat;
-    m_metersPerDegLon = oldMetersPerDegLon;
+    m_sourceDocument = oldSnapshot.sourceDocument;
     return true;
 }
 
@@ -345,13 +428,44 @@ bool ConfigManager::restoreLatestBackup(QString *errorMessage, bool applyAfterRe
         return false;
     }
 
-    if (!copyFileAtomically(latestPath, m_configPath, errorMessage)) {
+    return restoreBackup(latestPath, errorMessage, applyAfterRestore);
+}
+
+bool ConfigManager::restoreBackup(const QString &path, QString *errorMessage, bool applyAfterRestore)
+{
+    ensureLoaded();
+    QFile source(path);
+    if (!source.open(QIODevice::ReadOnly)) { if (errorMessage) *errorMessage = tr("无法读取所选备份"); return false; }
+    const auto bytes = source.readAll();
+    const auto document = QJsonDocument::fromJson(bytes);
+    if (!document.isObject() || configurationSchema(document.object()) == 0) {
+        if (errorMessage) *errorMessage = tr("备份配置损坏或版本不受支持，未恢复配置");
         return false;
     }
-
-    if (applyAfterRestore) {
-        reload();
+    const auto manifestPath = path + ".manifest.json";
+    const bool legacy = QFileInfo(path).absoluteDir().absolutePath() ==
+        QFileInfo(m_configPath).absoluteDir().filePath("config_backups");
+    QFile manifestFile(manifestPath);
+    if (!manifestFile.open(QIODevice::ReadOnly)) {
+        if (!legacy) { if (errorMessage) *errorMessage = tr("备份缺少摘要清单，拒绝恢复；普通配置文件请通过导入预览"); return false; }
+    } else {
+        const auto manifest = QJsonDocument::fromJson(manifestFile.readAll()).object();
+        if (manifest.value("schemaVersion") != QJsonValue(1) || manifest.value("file").toString() != QFileInfo(path).fileName() ||
+            manifest.value("sha256").toString() != bytesRevision(bytes) ||
+            manifest.value("configurationSchemaVersion").toInt() != configurationSchema(document.object())) {
+            if (errorMessage) *errorMessage = tr("备份摘要或版本校验失败，未恢复配置");
+            return false;
+        }
     }
+    const auto restoredDocument = retireLocalNavigationSettings(document.object());
+    const auto restoredBytes = restoredDocument == document.object() ? bytes : QJsonDocument(restoredDocument).toJson();
+    if (restoredBytes != bytes && !backupBytes(bytes, QStringLiteral("before_restore_migration"), errorMessage)) return false;
+    if (QFile::exists(m_configPath) && !createBackup(errorMessage, QStringLiteral("before_restore"))) return false;
+    if (!writeFileAtomically(restoredBytes, m_configPath, errorMessage)) return false;
+    m_diskBytes = restoredBytes;
+    m_sourceDocument = restoredDocument;
+    m_writeBlocked = false;
+    if (applyAfterRestore) reload();
     return true;
 }
 
@@ -373,6 +487,9 @@ void ConfigManager::load()
     const QString path = m_configPathOverride.isEmpty() ? defaultConfigPath() : m_configPathOverride;
     m_configPath = path;
     m_loadedFromFile = false;
+    m_sourceDocument = {};
+    m_diskBytes.clear();
+    m_writeBlocked = false;
     loadDefaults();
     if (QFile::exists(path)) {
         loadFromFile(path);
@@ -383,7 +500,7 @@ void ConfigManager::load()
     applyEnvironmentOverrides();
     sanitizeConfig();
     m_loaded = true;
-    updateCachedScales();
+    m_runtimeRevision = bytesRevision(m_diskBytes);
     qCInfo(lcConfigManager) << "Config loaded from" << m_configPath << ", from file?" << m_loadedFromFile;
 }
 
@@ -391,11 +508,13 @@ void ConfigManager::loadFromFile(const QString &path)
 {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
+        m_writeBlocked = true;
         loadDefaults();
         return;
     }
 
     const QByteArray raw = file.readAll();
+    m_diskBytes = raw;
     file.close();
 
     const QJsonDocument doc = QJsonDocument::fromJson(raw);
@@ -403,6 +522,7 @@ void ConfigManager::loadFromFile(const QString &path)
         m_validationWarnings = {tr("配置文件不是合法 JSON 对象：%1").arg(path)};
         qCWarning(lcConfigManager) << "Invalid JSON object in config:" << path;
         m_poseSource.enabled = m_tracking.enabled = false;
+        m_writeBlocked = true;
         return;
     }
 
@@ -412,40 +532,23 @@ void ConfigManager::loadFromFile(const QString &path)
         qCWarning(lcConfigManager) << warning;
     }
     const int schema = configurationSchema(root);
-    if (schema > 2 || schema < 1) { m_validationWarnings << tr("不支持的配置版本"); m_loadedFromFile = false; m_poseSource.enabled = m_tracking.enabled = false; return; }
+    if (schema > 2 || schema < 1) { m_validationWarnings << tr("不支持的配置版本，禁止保存覆盖"); m_loadedFromFile = false; m_poseSource.enabled = m_tracking.enabled = false; m_writeBlocked = true; return; }
+    m_sourceDocument = root;
     applyJsonObjectToCurrentConfig(root);
     m_loadedFromFile = true;
     sanitizeConfig();
-    if (schema < 2) {
-        const QString backup = path + QStringLiteral(".schema1.bak");
-        QString migrationError;
-        if ((!QFile::exists(backup) && !copyFileAtomically(path, backup, &migrationError)) ||
-            !saveToFile(path, &migrationError)) m_validationWarnings << tr("配置迁移保存失败：%1").arg(migrationError);
-        else m_validationWarnings << tr("配置已迁移到版本2，旧到点容差保留为任务请求值，请核对现场精度要求");
-    }
+    // Loading never rewrites operator-owned configuration. An explicit save or
+    // restore retires duplicate navigation/origin fields after an exact backup.
+    if (schema < 2)
+        m_validationWarnings << tr("旧版本机配置已兼容读取；仅手动控制设置继续使用，自动导航参数与原点以工控机为准。显式保存时先备份再迁移，不会在启动时改写文件。");
 }
 
 void ConfigManager::applyJsonObjectToCurrentConfig(const QJsonObject &root)
 {
-    if (const QJsonObject geoObj = root.value(QStringLiteral("geo")).toObject(); !geoObj.isEmpty()) {
-        m_geo.baseLatitudeDeg = geoObj.value(QStringLiteral("baseLatitudeDeg")).toDouble(kDefaultLatDeg);
-        m_geo.baseLongitudeDeg = geoObj.value(QStringLiteral("baseLongitudeDeg")).toDouble(kDefaultLonDeg);
-    } else {
-        m_geo = GeoConfig{};
-    }
-
     if (const auto object = root.value("manualControl").toObject(); !object.isEmpty()) {
         m_manualControl.maxLinearSpeed = object.value("maxLinearSpeed").toDouble(m_manualControl.maxLinearSpeed);
         m_manualControl.maxAngularSpeed = object.value("maxAngularSpeed").toDouble(m_manualControl.maxAngularSpeed);
         m_manualControl.manualMotionRepeatIntervalMs = object.value("manualMotionRepeatIntervalMs").toInt(m_manualControl.manualMotionRepeatIntervalMs);
-    }
-    if (const auto object = root.value("taskDefaults").toObject(); !object.isEmpty()) {
-        m_taskDefaults.speedLimit = object.value("speedLimit").toDouble(m_taskDefaults.speedLimit);
-        m_taskDefaults.goalToleranceMeters = object.value("goalToleranceMeters").toDouble(m_taskDefaults.goalToleranceMeters);
-        m_taskDefaults.angularSpeedLimit = object.value("angularSpeedLimit").toDouble(m_taskDefaults.angularSpeedLimit);
-        m_taskDefaults.angleToleranceRad = object.value("angleToleranceRad").toDouble(m_taskDefaults.angleToleranceRad);
-        m_taskDefaults.safetyProfileId = object.value("safetyProfileId").toString(m_taskDefaults.safetyProfileId);
-        m_taskDefaults.rotationZoneId = object.value("rotationZoneId").toString(m_taskDefaults.rotationZoneId);
     }
     if (const auto object = root.value("poseSource").toObject(); !object.isEmpty()) {
         m_poseSource.enabled = object.value("enabled").toBool(m_poseSource.enabled);
@@ -461,11 +564,7 @@ void ConfigManager::applyJsonObjectToCurrentConfig(const QJsonObject &root)
         const auto legacy = root.value("control").toObject();
         m_manualControl.maxLinearSpeed = legacy.value("maxLinearSpeed").toDouble(m_manualControl.maxLinearSpeed);
         m_manualControl.maxAngularSpeed = legacy.value("maxAngularSpeed").toDouble(m_manualControl.maxAngularSpeed);
-        m_manualControl.manualMotionRepeatIntervalMs = legacy.value("manualMotionRepeatIntervalMs").toInt(40);
-        // A manual ceiling is not a nominal automatic work speed.
-        m_taskDefaults.speedLimit = VehicleParameters::defaultTrackingSpeedMps;
-        m_taskDefaults.goalToleranceMeters = legacy.value("arrivalDistanceThreshold").toDouble(m_taskDefaults.goalToleranceMeters);
-        m_taskDefaults.angleToleranceRad = qDegreesToRadians(legacy.value("arrivalAngleThresholdDeg").toDouble(3.0));
+        m_manualControl.manualMotionRepeatIntervalMs = legacy.value("manualMotionRepeatIntervalMs").toInt(m_manualControl.manualMotionRepeatIntervalMs);
     }
 
     if (const QJsonObject routeObj = root.value(QStringLiteral("routePlanning")).toObject(); !routeObj.isEmpty()) {
@@ -482,18 +581,6 @@ void ConfigManager::applyJsonObjectToCurrentConfig(const QJsonObject &root)
         m_video.backend = videoObj.value(QStringLiteral("backend")).toString(m_video.backend).trimmed();
         m_video.streamUrl = videoObj.value(QStringLiteral("streamUrl")).toString(m_video.streamUrl);
         m_video.controlBaseUrl = videoObj.value(QStringLiteral("controlBaseUrl")).toString(m_video.controlBaseUrl).trimmed();
-        m_video.streamOptions.clear();
-        const QJsonArray streamOptions = videoObj.value(QStringLiteral("streamOptions")).toArray();
-        for (const QJsonValue &value : streamOptions) {
-            const QJsonObject optionObj = value.toObject();
-            if (optionObj.isEmpty()) {
-                continue;
-            }
-            VideoConfig::StreamOption option;
-            option.name = optionObj.value(QStringLiteral("name")).toString().trimmed();
-            option.url = optionObj.value(QStringLiteral("url")).toString().trimmed();
-            m_video.streamOptions.push_back(option);
-        }
         m_video.deviceId = videoObj.value(QStringLiteral("deviceId")).toString(m_video.deviceId).trimmed();
         m_video.previewWidth = videoObj.value(QStringLiteral("previewWidth")).toInt(m_video.previewWidth);
         m_video.previewHeight = videoObj.value(QStringLiteral("previewHeight")).toInt(m_video.previewHeight);
@@ -619,6 +706,9 @@ void ConfigManager::applyJsonObjectToCurrentConfig(const QJsonObject &root)
 QStringList ConfigManager::validateJsonObject(const QJsonObject &root) const
 {
     QStringList warnings;
+    const auto retired = retiredLocalSections(root);
+    if (!retired.isEmpty())
+        warnings << tr("旧本机配置段 %1 已停用，不参与原点或自动导航计算。原点、融合及导航参数仅在工控机维护；显式保存时先保留原字节备份，再清除这些旧字段。").arg(retired.join(QStringLiteral("、")));
     const QStringList knownSections{
         QStringLiteral("geo"),
         QStringLiteral("schemaVersion"),
@@ -697,10 +787,6 @@ QStringList ConfigManager::validateJsonObject(const QJsonObject &root) const
     warnIfNotNumber(sectionObject("manualControl"), "manualControl", "maxLinearSpeed");
     warnIfNotNumber(sectionObject("manualControl"), "manualControl", "maxAngularSpeed");
     warnIfNotNumber(sectionObject("manualControl"), "manualControl", "manualMotionRepeatIntervalMs");
-    warnIfNotNumber(sectionObject("taskDefaults"), "taskDefaults", "speedLimit");
-    warnIfNotNumber(sectionObject("taskDefaults"), "taskDefaults", "goalToleranceMeters");
-    warnIfNotNumber(sectionObject("taskDefaults"), "taskDefaults", "angularSpeedLimit");
-    warnIfNotNumber(sectionObject("taskDefaults"), "taskDefaults", "angleToleranceRad");
     warnIfNotNumber(sectionObject("poseSource"), "poseSource", "requestTimeoutMs");
     warnIfNotNumber(sectionObject("tracking"), "tracking", "requestTimeoutMs");
     for (const auto &section : {QStringLiteral("poseSource"), QStringLiteral("tracking")}) {
@@ -781,7 +867,8 @@ bool ConfigManager::saveToFile(const QString &path, QString *errorMessage) const
     }
 
     const QJsonDocument doc(toJsonObject());
-    file.write(doc.toJson(QJsonDocument::Indented));
+    const auto bytes = doc.toJson(QJsonDocument::Indented);
+    if (file.write(bytes) != bytes.size()) { if (errorMessage) *errorMessage = tr("配置写入不完整，原文件保留"); return false; }
     if (!file.commit()) {
         if (errorMessage) {
             *errorMessage = tr("保存配置文件失败：%1").arg(file.errorString());
@@ -792,16 +879,8 @@ bool ConfigManager::saveToFile(const QString &path, QString *errorMessage) const
     return true;
 }
 
-bool ConfigManager::copyFileAtomically(const QString &sourcePath, const QString &targetPath, QString *errorMessage) const
+bool ConfigManager::writeFileAtomically(const QByteArray &bytes, const QString &targetPath, QString *errorMessage) const
 {
-    QFile source(sourcePath);
-    if (!source.open(QIODevice::ReadOnly)) {
-        if (errorMessage) {
-            *errorMessage = tr("无法读取源配置文件：%1").arg(source.errorString());
-        }
-        return false;
-    }
-
     const QFileInfo targetInfo(targetPath);
     const QDir targetDir = targetInfo.absoluteDir();
     if (!targetDir.exists() && !QDir().mkpath(targetDir.absolutePath())) {
@@ -818,7 +897,7 @@ bool ConfigManager::copyFileAtomically(const QString &sourcePath, const QString 
         }
         return false;
     }
-    target.write(source.readAll());
+    if (target.write(bytes) != bytes.size()) { if (errorMessage) *errorMessage = tr("配置复制不完整，原文件保留"); return false; }
     if (!target.commit()) {
         if (errorMessage) {
             *errorMessage = tr("保存目标配置文件失败：%1").arg(target.errorString());
@@ -828,28 +907,11 @@ bool ConfigManager::copyFileAtomically(const QString &sourcePath, const QString 
     return true;
 }
 
-void ConfigManager::pruneBackups(int keepCount)
-{
-    const QDir dir(backupDirectoryPath());
-    const QFileInfoList entries = dir.entryInfoList(QStringList{QStringLiteral("config_*.json")},
-                                                    QDir::Files,
-                                                    QDir::Time);
-    for (int i = qMax(keepCount, 0); i < entries.size(); ++i) {
-        QFile::remove(entries.at(i).absoluteFilePath());
-    }
-}
-
 QJsonObject ConfigManager::toJsonObject() const
 {
     QJsonObject root;
-    root.insert(QStringLiteral("geo"), QJsonObject{
-                                           {QStringLiteral("baseLatitudeDeg"), m_geo.baseLatitudeDeg},
-                                           {QStringLiteral("baseLongitudeDeg"), m_geo.baseLongitudeDeg},
-                                       });
-
     root.insert("schemaVersion", 2);
     root.insert("manualControl", QJsonObject{{"maxLinearSpeed", m_manualControl.maxLinearSpeed},{"maxAngularSpeed", m_manualControl.maxAngularSpeed},{"manualMotionRepeatIntervalMs", m_manualControl.manualMotionRepeatIntervalMs}});
-    root.insert("taskDefaults", QJsonObject{{"speedLimit", m_taskDefaults.speedLimit},{"goalToleranceMeters", m_taskDefaults.goalToleranceMeters},{"angularSpeedLimit", m_taskDefaults.angularSpeedLimit},{"angleToleranceRad", m_taskDefaults.angleToleranceRad},{"safetyProfileId", m_taskDefaults.safetyProfileId},{"rotationZoneId", m_taskDefaults.rotationZoneId}});
     root.insert("poseSource", QJsonObject{{"enabled", m_poseSource.enabled},{"baseUrl", m_poseSource.baseUrl},{"requestTimeoutMs", m_poseSource.requestTimeoutMs}});
     root.insert("tracking", QJsonObject{{"enabled", m_tracking.enabled},{"baseUrl", m_tracking.baseUrl},{"requestTimeoutMs", m_tracking.requestTimeoutMs}});
 
@@ -862,19 +924,11 @@ QJsonObject ConfigManager::toJsonObject() const
 
 
 
-    QJsonArray streamOptions;
-    for (const VideoConfig::StreamOption &option : m_video.streamOptions) {
-        streamOptions.append(QJsonObject{
-            {QStringLiteral("name"), option.name},
-            {QStringLiteral("url"), option.url},
-        });
-    }
     root.insert(QStringLiteral("video"),
                 QJsonObject{
                     {QStringLiteral("backend"), m_video.backend},
                     {QStringLiteral("streamUrl"), m_video.streamUrl},
                     {QStringLiteral("controlBaseUrl"), m_video.controlBaseUrl},
-                    {QStringLiteral("streamOptions"), streamOptions},
                     {QStringLiteral("deviceId"), m_video.deviceId},
                     {QStringLiteral("previewWidth"), m_video.previewWidth},
                     {QStringLiteral("previewHeight"), m_video.previewHeight},
@@ -966,15 +1020,12 @@ QJsonObject ConfigManager::toJsonObject() const
                     {QStringLiteral("enableAuditSync"), m_database.enableAuditSync},
                 });
 
-    return root;
+    return retireLocalNavigationSettings(mergeDocuments(m_sourceDocument, root));
 }
 
 void ConfigManager::loadDefaults()
 {
-    m_geo.baseLatitudeDeg = kDefaultLatDeg;
-    m_geo.baseLongitudeDeg = kDefaultLonDeg;
     m_manualControl = ManualControlConfig{};
-    m_taskDefaults = TaskDefaultsConfig{};
     m_poseSource = PoseSourceConfig{};
     m_tracking = TrackingConfig{};
     m_routePlanning = RoutePlanningConfig{};
@@ -1043,13 +1094,7 @@ void ConfigManager::sanitizeConfig()
         m_manualControl.maxLinearSpeed = VehicleParameters::minOperatingSpeedMps;
     m_manualControl.maxAngularSpeed = qBound(0.0, m_manualControl.maxAngularSpeed, 5.0);
     m_manualControl.manualMotionRepeatIntervalMs = qBound(20, m_manualControl.manualMotionRepeatIntervalMs, 100);
-    m_taskDefaults.speedLimit = std::isfinite(m_taskDefaults.speedLimit)
-        ? qBound(VehicleParameters::minOperatingSpeedMps, m_taskDefaults.speedLimit,
-                 VehicleParameters::maxOperatingSpeedMps)
-        : VehicleParameters::defaultTrackingSpeedMps;
-    m_taskDefaults.goalToleranceMeters = qBound(0.01, m_taskDefaults.goalToleranceMeters, 1.0);
-    m_taskDefaults.angularSpeedLimit = qBound(0.01, m_taskDefaults.angularSpeedLimit, 3.0);
-    m_taskDefaults.angleToleranceRad = qBound(0.01, m_taskDefaults.angleToleranceRad, 0.5);
+
     m_poseSource.requestTimeoutMs = qBound(500, m_poseSource.requestTimeoutMs, 10000);
     m_tracking.requestTimeoutMs = qBound(500, m_tracking.requestTimeoutMs, 10000);
 
@@ -1071,25 +1116,6 @@ void ConfigManager::sanitizeConfig()
     m_video.previewWidth = qBound(320, m_video.previewWidth, 4096);
     m_video.previewHeight = qBound(240, m_video.previewHeight, 3040);
     m_video.previewFps = qBound(1, m_video.previewFps, 120);
-    QList<VideoConfig::StreamOption> sanitizedStreamOptions;
-    for (const VideoConfig::StreamOption &option : std::as_const(m_video.streamOptions)) {
-        VideoConfig::StreamOption sanitizedOption = option;
-        sanitizedOption.name = sanitizedOption.name.trimmed();
-        sanitizedOption.url = sanitizedOption.url.trimmed();
-        if (sanitizedOption.url.isEmpty()) {
-            continue;
-        }
-        const QUrl optionUrl(sanitizedOption.url);
-        if (!optionUrl.isValid()) {
-            qCWarning(lcConfigManager) << "Ignoring invalid video stream option URL:" << sanitizedOption.url;
-            continue;
-        }
-        if (sanitizedOption.name.isEmpty()) {
-            sanitizedOption.name = sanitizedOption.url;
-        }
-        sanitizedStreamOptions.push_back(sanitizedOption);
-    }
-    m_video.streamOptions = sanitizedStreamOptions;
     m_video.controlBaseUrl = m_video.controlBaseUrl.trimmed();
     if (m_video.recordMode.isEmpty()) {
         m_video.recordMode = QString::fromUtf8(kDefaultVideoRecordMode);
@@ -1189,29 +1215,4 @@ void ConfigManager::sanitizeConfig()
     m_database.cacheSizePages = qBound(64, m_database.cacheSizePages, 262144);
     m_database.connectTimeoutMs = qBound(500, m_database.connectTimeoutMs, 30000);
     m_database.reconnectIntervalMs = qBound(500, m_database.reconnectIntervalMs, 60000);
-}
-
-void ConfigManager::updateCachedScales()
-{
-    const double latRad = qDegreesToRadians(m_geo.baseLatitudeDeg);
-    m_metersPerDegLat = (M_PI / 180.0) * kEarthRadiusMeters;
-    m_metersPerDegLon = m_metersPerDegLat * qCos(latRad);
-    if (qFuzzyIsNull(m_metersPerDegLon)) {
-        m_metersPerDegLon = m_metersPerDegLat * 1e-6;
-    }
-}
-
-QPointF ConfigManager::geoToLocal(double latitudeDeg, double longitudeDeg) const
-{
-    const double dLat = latitudeDeg - m_geo.baseLatitudeDeg;
-    const double dLon = longitudeDeg - m_geo.baseLongitudeDeg;
-    const double x = dLon * m_metersPerDegLon;
-    const double y = dLat * m_metersPerDegLat;
-    return QPointF(x, y);
-}
-
-void ConfigManager::localToGeo(const QPointF &localPoint, double &latitudeDeg, double &longitudeDeg) const
-{
-    latitudeDeg = m_geo.baseLatitudeDeg + (localPoint.y() / m_metersPerDegLat);
-    longitudeDeg = m_geo.baseLongitudeDeg + (localPoint.x() / m_metersPerDegLon);
 }

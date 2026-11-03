@@ -32,6 +32,7 @@ public:
     static void reconfigure(const Settings &settings);
     static void shutdown();
     static Settings currentSettings();
+    // Always <executable directory>/logs, independent of the launcher's CWD.
     static QString logDirectoryPath();
     static QString currentLogFilePath();
     static QString sessionLogFilePath();

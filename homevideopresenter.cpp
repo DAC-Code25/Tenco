@@ -34,6 +34,7 @@ void HomeVideoPresenter::setScaleContents(bool enabled)
 
 void HomeVideoPresenter::showPlaceholder(const QString &message)
 {
+    m_lastFrame = {};
     if (!m_label) {
         return;
     }
