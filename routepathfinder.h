@@ -10,6 +10,15 @@ struct RouteGraphEdge
     int toId = -1;
     double lengthMeters = 0.0;
     bool isArc = false;
+    bool bidirectional = false;
+};
+
+struct RoutePathTraversal
+{
+    int pathId = -1;
+    int fromId = -1;
+    int toId = -1;
+    bool reversed = false;
 };
 
 struct RoutePathFinderOptions
@@ -22,6 +31,13 @@ struct RoutePathFinderOptions
 class RoutePathFinder
 {
 public:
+    // Traversal direction belongs to a route, while pathId identifies one map relation.
+    static QList<RoutePathTraversal> findShortestRoute(
+        int startId,
+        int endId,
+        const QList<RouteGraphEdge> &edges,
+        const RoutePathFinderOptions &options = RoutePathFinderOptions{});
+
     static QList<int> findShortestPath(
         int startId,
         int endId,

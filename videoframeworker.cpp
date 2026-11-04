@@ -125,7 +125,7 @@ VideoFrameWorker::Metrics VideoFrameWorker::metrics() const
     return m_metrics;
 }
 
-void VideoFrameWorker::enqueueBytes(const QByteArray &chunk)
+void VideoFrameWorker::enqueueBytes(const QByteArray &chunk, quint64 streamEpoch)
 {
     if (chunk.isEmpty()) {
         return;
@@ -133,6 +133,7 @@ void VideoFrameWorker::enqueueBytes(const QByteArray &chunk)
 
     {
         QMutexLocker locker(&m_mutex);
+        if (streamEpoch != m_streamEpoch) return;
         m_buffer.append(chunk);
         m_metrics.bytesReceived += static_cast<quint64>(chunk.size());
         if (m_buffer.size() > m_settings.maxBufferBytes) {
@@ -140,30 +141,37 @@ void VideoFrameWorker::enqueueBytes(const QByteArray &chunk)
         }
     }
 
-    processBuffer();
+    processBuffer(streamEpoch);
 }
 
 void VideoFrameWorker::reset()
 {
     stopRecording();
-    resetStream();
+    quint64 nextEpoch;
+    {
+        QMutexLocker locker(&m_mutex);
+        nextEpoch = m_streamEpoch + 1;
+    }
+    resetStream(nextEpoch);
 }
 
-void VideoFrameWorker::resetStream()
+void VideoFrameWorker::resetStream(quint64 streamEpoch)
 {
     QMutexLocker locker(&m_mutex);
+    m_streamEpoch = streamEpoch;
     m_buffer.clear();
     m_lastFrame = QImage();
     m_metrics = Metrics{};
     m_lastDisplayMs = 0;
 }
 
-void VideoFrameWorker::processBuffer()
+void VideoFrameWorker::processBuffer(quint64 streamEpoch)
 {
     while (true) {
         QByteArray frameData;
         {
             QMutexLocker locker(&m_mutex);
+            if (streamEpoch != m_streamEpoch) return;
             int startIndex = m_buffer.indexOf(kJpegStart);
             if (startIndex < 0) {
                 if (m_buffer.size() > m_settings.maxBufferBytes / 2) {
@@ -187,11 +195,11 @@ void VideoFrameWorker::processBuffer()
             ++m_metrics.framesReceived;
         }
 
-        handleJpegFrame(frameData);
+        handleJpegFrame(frameData, streamEpoch);
     }
 }
 
-void VideoFrameWorker::handleJpegFrame(const QByteArray &frameData)
+void VideoFrameWorker::handleJpegFrame(const QByteArray &frameData, quint64 streamEpoch)
 {
     QElapsedTimer decodeTimer;
     decodeTimer.start();
@@ -200,6 +208,7 @@ void VideoFrameWorker::handleJpegFrame(const QByteArray &frameData)
     if (!image.loadFromData(frameData, "JPG")) {
         {
             QMutexLocker locker(&m_mutex);
+            if (streamEpoch != m_streamEpoch) return;
             ++m_metrics.decodeFailures;
         }
         emitMetrics();
@@ -215,6 +224,7 @@ void VideoFrameWorker::handleJpegFrame(const QByteArray &frameData)
     bool displayFrame = false;
     {
         QMutexLocker locker(&m_mutex);
+        if (streamEpoch != m_streamEpoch) return;
         ++m_metrics.framesDecoded;
         m_metrics.averageDecodeMs +=
             (decodeMs - m_metrics.averageDecodeMs) / static_cast<double>(m_metrics.framesDecoded);
@@ -229,11 +239,11 @@ void VideoFrameWorker::handleJpegFrame(const QByteArray &frameData)
         }
     }
 
-    writeRecordingFrame(frameData);
+    writeRecordingFrame(frameData, streamEpoch);
     emitMetrics();
 
     if (displayFrame) {
-        emit frameReady(image);
+        emit frameReady(image, streamEpoch);
     }
 }
 
@@ -246,12 +256,12 @@ bool VideoFrameWorker::shouldDisplayFrame(qint64 nowMs) const
     return nowMs - m_lastDisplayMs >= intervalMs;
 }
 
-void VideoFrameWorker::writeRecordingFrame(const QByteArray &frameData)
+void VideoFrameWorker::writeRecordingFrame(const QByteArray &frameData, quint64 streamEpoch)
 {
     QFile *file = nullptr;
     {
         QMutexLocker locker(&m_mutex);
-        if (!m_recording || !m_recordFile) {
+        if (streamEpoch != m_streamEpoch || !m_recording || !m_recordFile) {
             return;
         }
         file = m_recordFile;
@@ -260,7 +270,7 @@ void VideoFrameWorker::writeRecordingFrame(const QByteArray &frameData)
     if (!file->isOpen() || file->write(frameData) != frameData.size()) {
         const QString message = tr("录像写入失败，已停止录像");
         stopRecording();
-        emit workerError(message);
+        emit workerError(message, streamEpoch);
         return;
     }
 

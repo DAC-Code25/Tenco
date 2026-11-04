@@ -32,11 +32,6 @@ public:
     explicit VideoClient(QObject *parent = nullptr);
     ~VideoClient() override;
 
-    void setStreamUrlTemplate(const QString &templateUrl);
-    QString streamUrlTemplate() const { return m_streamTemplate; }
-
-    QString buildUrlForTopic(const QString &topic) const;
-
     void setStreamUrl(const QUrl &url);
     QUrl streamUrl() const { return m_url; }
 
@@ -86,15 +81,16 @@ private:
     VideoFrameWorker *m_frameWorker = nullptr;
     VideoFrameWorker::Settings m_workerSettings;
 
-    QString m_streamTemplate;
     QUrl m_url;
 
     int m_reconnectIntervalMs = 2000;
     int m_reconnectMaxIntervalMs = 30000;
     int m_reconnectAttempt = 0;
+    int m_transferTimeoutMs = 5000; // Idle receive timeout, never a live-stream duration limit.
     bool m_autoReconnect = true;
     State m_state = State::Stopped;
     bool m_seenFirstFrame = false;
+    quint64 m_streamEpoch = 0;
 
     QString m_recordFilePath;
     bool m_isRecording = false;

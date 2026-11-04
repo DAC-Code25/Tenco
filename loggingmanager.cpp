@@ -5,17 +5,18 @@
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QHash>
 #include <QMutex>
 #include <QMutexLocker>
 #include <QQueue>
 #include <QRegularExpression>
 #include <QSaveFile>
-#include <QStandardPaths>
 #include <QTextStream>
 #include <QLoggingCategory>
 #include <QThread>
@@ -38,6 +39,8 @@ QString g_sessionLogPath;
 QString g_auditPath;
 QDateTime g_startTime;
 bool g_initialized = false;
+QElapsedTimer g_messageClock;
+QHash<QString, QPair<qint64, quint64>> g_recentMessages;
 
 struct QueuedLogLine {
     enum class Kind {
@@ -60,6 +63,9 @@ QMutex g_logQueueMutex;
 QWaitCondition g_logQueueReady;
 QWaitCondition g_logQueueDrained;
 QQueue<QueuedLogLine> g_logQueue;
+constexpr int MaxQueuedLines = 2048;
+constexpr int MaxLineCharacters = 4096;
+quint64 g_droppedLines = 0;
 LogWriterThread *g_logWriterThread = nullptr;
 bool g_logWriterStop = false;
 bool g_logWriterBusy = false;
@@ -116,23 +122,22 @@ QString messageLevel(QtMsgType type)
 {
     switch (type) {
     case QtDebugMsg:
-        return QStringLiteral("DEBUG");
+        return QStringLiteral("调试");
     case QtInfoMsg:
-        return QStringLiteral("INFO");
+        return QStringLiteral("信息");
     case QtWarningMsg:
-        return QStringLiteral("WARN");
+        return QStringLiteral("警告");
     case QtCriticalMsg:
-        return QStringLiteral("ERROR");
+        return QStringLiteral("错误");
     case QtFatalMsg:
-        return QStringLiteral("FATAL");
+        return QStringLiteral("致命");
     }
     return QStringLiteral("UNK");
 }
 
 QString defaultLogDirectory()
 {
-    const QString appDataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    return QDir(appDataDir).filePath(QStringLiteral("logs"));
+    return QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("logs"));
 }
 
 QString formatThreadId()
@@ -161,10 +166,8 @@ QString uptimeText()
 QStringList effectiveFilterRules(const LoggingManager::Settings &settings)
 {
     QStringList rules = settings.categoryRules;
-    const QString normalizedLevel = normalizeLevel(settings.level);
-    if (normalizedLevel != QStringLiteral("debug")) {
-        rules << QStringLiteral("*.debug=false");
-    }
+    // Runtime logs contain key state changes only, even with an old debug config.
+    rules << QStringLiteral("*.debug=false");
     return rules;
 }
 
@@ -294,30 +297,8 @@ void writeLine(QFile &file, const QString &line)
     if (!file.isOpen()) {
         return;
     }
-    QTextStream out(&file);
-    out << line << '\n';
-    out.flush();
-    file.flush();
-}
-
-void rotateIfNeeded(QFile &file, const QString &path, int maxFiles, qint64 maxBytes)
-{
-    if (path.isEmpty() || maxBytes <= 0 || maxFiles <= 0) {
-        return;
-    }
-    if (file.isOpen() && file.size() < maxBytes) {
-        return;
-    }
-    if (!QFile::exists(path) || QFileInfo(path).size() < maxBytes) {
-        return;
-    }
-
-    const bool wasOpen = file.isOpen();
-    closeFile(file);
-    rotateFileSet(path, maxFiles, maxBytes);
-    if (wasOpen) {
-        openAppendFile(file, path);
-    }
+    file.write(line.toUtf8());
+    file.write("\n", 1);
 }
 
 void writeConsole(QtMsgType type, const QString &line)
@@ -337,24 +318,34 @@ void writeConsole(QtMsgType type, const QString &line)
 
 void writeQueuedLogLineLocked(const QueuedLogLine &entry)
 {
-    if (entry.kind == QueuedLogLine::Kind::Audit) {
-        if (!g_settings.auditEnabled || !g_auditFile.isOpen()) {
-            return;
+    if (!g_settings.fileEnabled || !g_logFile.isOpen()) {
+        return;
+    }
+    // Keep a single bounded file for this process run. At the limit retain the
+    // newest half in the same file, including a visible truncation marker.
+    const auto bytes = entry.line.toUtf8().size() + 1;
+    if (g_logFile.size() + bytes > g_settings.maxFileBytes) {
+        g_logFile.flush();
+        QFile source(g_logPath);
+        QByteArray tail;
+        if (source.open(QIODevice::ReadOnly)) {
+            source.seek(qMax<qint64>(0, source.size() - g_settings.maxFileBytes / 2));
+            tail = source.readAll();
+            const int newline = tail.indexOf('\n');
+            if (newline >= 0) tail.remove(0, newline + 1);
         }
-        rotateIfNeeded(g_auditFile, g_auditPath, g_settings.auditMaxBackupFiles, g_settings.auditMaxFileBytes);
-        writeLine(g_auditFile, entry.line);
-        return;
+        source.close();
+        closeFile(g_logFile);
+        QSaveFile compact(g_logPath);
+        if (compact.open(QIODevice::WriteOnly)) {
+            compact.write(QStringLiteral("[运行 %1] 日志达到容量上限，保留本次运行的最新记录。\n").arg(g_sessionId).toUtf8());
+            compact.write(tail);
+            compact.commit();
+        }
+        openAppendFile(g_logFile, g_logPath);
+        if (g_logFile.size() + bytes > g_settings.maxFileBytes) return;
     }
-
-    if (!g_settings.fileEnabled) {
-        return;
-    }
-    rotateIfNeeded(g_logFile, g_logPath, g_settings.maxBackupFiles, g_settings.maxFileBytes);
-    rotateIfNeeded(g_sessionLogFile, g_sessionLogPath, g_settings.maxBackupFiles, g_settings.maxFileBytes);
     writeLine(g_logFile, entry.line);
-    if (g_settings.perSessionFile) {
-        writeLine(g_sessionLogFile, entry.line);
-    }
 }
 
 void LogWriterThread::run()
@@ -379,6 +370,7 @@ void LogWriterThread::run()
             while (!batch.isEmpty()) {
                 writeQueuedLogLineLocked(batch.dequeue());
             }
+            if (g_logFile.isOpen()) g_logFile.flush();
         }
 
         {
@@ -401,7 +393,20 @@ void enqueueLogLine(const QueuedLogLine &entry)
             writeQueuedLogLineLocked(entry);
             return;
         }
-        g_logQueue.enqueue(entry);
+        if (g_logQueue.size() >= MaxQueuedLines) {
+            ++g_droppedLines;
+            if (entry.type == QtCriticalMsg || entry.type == QtFatalMsg) g_logQueue.dequeue();
+            else return;
+        }
+        if (g_droppedLines && g_logQueue.size() < MaxQueuedLines - 1) {
+            g_logQueue.enqueue({QueuedLogLine::Kind::Message, QtWarningMsg,
+                QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss.zzz") +
+                QStringLiteral(" [警告] 日志队列繁忙，已省略 %1 条重复或过量记录。").arg(g_droppedLines)});
+            g_droppedLines = 0;
+        }
+        auto boundedEntry = entry;
+        boundedEntry.line = boundedEntry.line.left(MaxLineCharacters);
+        g_logQueue.enqueue(boundedEntry);
         g_logQueueReady.wakeOne();
     }
 }
@@ -440,10 +445,8 @@ void stopLogWriterThread()
         g_logQueueReady.wakeAll();
     }
 
-    if (!thread->wait(3000)) {
-        thread->terminate();
-        thread->wait(1000);
-    }
+    // No forced thread termination while holding a logging mutex or file.
+    thread->wait();
 
     {
         QMutexLocker queueLocker(&g_logQueueMutex);
@@ -462,11 +465,24 @@ void tencoMessageHandler(QtMsgType type, const QMessageLogContext &context, cons
     bool shouldWriteFile = false;
     {
         QMutexLocker locker(&g_logMutex);
+        if (type == QtDebugMsg) return;
         if (messageRank(type) < levelRank(g_settings.level) && type != QtFatalMsg) {
             return;
         }
 
-        line = formatMessageLine(type, context, message);
+        QString boundedMessage = message.left(MaxLineCharacters);
+        if (type != QtFatalMsg && g_messageClock.isValid()) {
+            const QString key = QString::number(int(type)) + QLatin1Char(':') +
+                QString::fromUtf8(context.category ? context.category : "default") + QLatin1Char(':') + boundedMessage.left(512);
+            const qint64 now = g_messageClock.elapsed();
+            auto it = g_recentMessages.find(key);
+            if (it != g_recentMessages.end() && now - it.value().first < 5000) { ++it.value().second; return; }
+            if (it != g_recentMessages.end() && it.value().second > 0)
+                boundedMessage += QStringLiteral("（5 秒内相同记录已省略 %1 次）").arg(it.value().second);
+            if (g_recentMessages.size() >= 256) g_recentMessages.clear();
+            g_recentMessages.insert(key, {now, 0});
+        }
+        line = formatMessageLine(type, context, boundedMessage);
         writeConsole(type, line);
         shouldWriteFile = g_settings.fileEnabled;
     }
@@ -578,30 +594,33 @@ void LoggingManager::initialize(const Settings &settings)
 
     g_settings = settings;
     g_settings.level = normalizeLevel(g_settings.level);
-    g_settings.maxFileBytes = qBound<qint64>(qint64(256 * 1024), g_settings.maxFileBytes, qint64(256 * 1024 * 1024));
+    g_settings.maxFileBytes = qBound<qint64>(qint64(256 * 1024), g_settings.maxFileBytes, qint64(16 * 1024 * 1024));
     g_settings.maxBackupFiles = qBound(1, g_settings.maxBackupFiles, 99);
     g_settings.auditMaxFileBytes = qBound<qint64>(qint64(256 * 1024), g_settings.auditMaxFileBytes, qint64(256 * 1024 * 1024));
     g_settings.auditMaxBackupFiles = qBound(1, g_settings.auditMaxBackupFiles, 99);
 
     g_startTime = QDateTime::currentDateTime();
-    g_sessionId = g_startTime.toString(QStringLiteral("yyyyMMdd_hhmmss_zzz"));
+    g_messageClock.start();
+    g_recentMessages.clear();
+    g_sessionId = g_startTime.toString(QStringLiteral("yyyyMMdd_hhmmss_zzz")) + "_" + QString::number(QCoreApplication::applicationPid());
     g_logDir = defaultLogDirectory();
     ensureDirectory(g_logDir);
-    g_logPath = QDir(g_logDir).filePath(QStringLiteral("tenco.log"));
-    g_sessionLogPath = QDir(g_logDir).filePath(QStringLiteral("tenco_%1.log").arg(g_sessionId));
-    g_auditPath = QDir(g_logDir).filePath(QStringLiteral("audit.log"));
-
-    rotateLogs(g_logPath, g_settings.maxBackupFiles, g_settings.maxFileBytes);
-    rotateLogs(g_auditPath, g_settings.auditMaxBackupFiles, g_settings.auditMaxFileBytes);
-
+    g_logPath = QDir(g_logDir).filePath(QStringLiteral("tenco_%1.log").arg(g_sessionId));
+    g_sessionLogPath = g_logPath;
+    g_auditPath.clear();
+    g_settings.perSessionFile = true;
     if (g_settings.fileEnabled) {
-        openAppendFile(g_logFile, g_logPath);
-        if (g_settings.perSessionFile) {
-            openAppendFile(g_sessionLogFile, g_sessionLogPath);
+        g_logFile.setFileName(g_logPath);
+        // NewOnly prevents appending a new run even after a clock rollback.
+        int collision = 0;
+        while (!g_logFile.open(QIODevice::WriteOnly | QIODevice::NewOnly)) {
+            if (!QFile::exists(g_logFile.fileName()) || ++collision > 100) break;
+            g_logPath = QDir(g_logDir).filePath(QStringLiteral("tenco_%1_%2.log").arg(g_sessionId).arg(collision));
+            g_logFile.setFileName(g_logPath);
         }
-    }
-    if (g_settings.auditEnabled) {
-        openAppendFile(g_auditFile, g_auditPath);
+        g_sessionLogPath = g_logPath;
+        writeLine(g_logFile, QStringLiteral("[%1] 上位机启动，关键操作与状态变更统一记录于本文件。容量上限 %2 MiB。")
+            .arg(g_startTime.toString(Qt::ISODateWithMs)).arg(g_settings.maxFileBytes / (1024.0 * 1024.0), 0, 'f', 1));
     }
 
     startLogWriterThread();
@@ -621,7 +640,8 @@ void LoggingManager::reconfigure(const Settings &settings)
 
     g_settings = settings;
     g_settings.level = normalizeLevel(g_settings.level);
-    g_settings.maxFileBytes = qBound<qint64>(qint64(256 * 1024), g_settings.maxFileBytes, qint64(256 * 1024 * 1024));
+    g_settings.maxFileBytes = qBound<qint64>(qint64(256 * 1024), g_settings.maxFileBytes, qint64(16 * 1024 * 1024));
+    g_settings.perSessionFile = true;
     g_settings.maxBackupFiles = qBound(1, g_settings.maxBackupFiles, 99);
     g_settings.auditMaxFileBytes = qBound<qint64>(qint64(256 * 1024), g_settings.auditMaxFileBytes, qint64(256 * 1024 * 1024));
     g_settings.auditMaxBackupFiles = qBound(1, g_settings.auditMaxBackupFiles, 99);
@@ -631,15 +651,7 @@ void LoggingManager::reconfigure(const Settings &settings)
     closeFile(g_auditFile);
 
     if (g_settings.fileEnabled) {
-        rotateLogs(g_logPath, g_settings.maxBackupFiles, g_settings.maxFileBytes);
         openAppendFile(g_logFile, g_logPath);
-        if (g_settings.perSessionFile) {
-            openAppendFile(g_sessionLogFile, g_sessionLogPath);
-        }
-    }
-    if (g_settings.auditEnabled) {
-        rotateLogs(g_auditPath, g_settings.auditMaxBackupFiles, g_settings.auditMaxFileBytes);
-        openAppendFile(g_auditFile, g_auditPath);
     }
 
     applyFilterRules(g_settings);
@@ -663,6 +675,8 @@ void LoggingManager::shutdown()
 
     {
         QMutexLocker locker(&g_logMutex);
+        if (g_logFile.isOpen()) writeQueuedLogLineLocked({QueuedLogLine::Kind::Message, QtInfoMsg,
+            QDateTime::currentDateTime().toString(Qt::ISODateWithMs) + QStringLiteral(" 上位机本次运行结束。")});
         closeFile(g_logFile);
         closeFile(g_sessionLogFile);
         closeFile(g_auditFile);
@@ -710,16 +724,24 @@ void LoggingManager::audit(const QString &action, const QString &result, const Q
     bool shouldQueue = false;
     {
         QMutexLocker locker(&g_logMutex);
-        if (!g_settings.auditEnabled) {
+        // Compatibility entry point: all operations share the runtime file.
+        // Repeated motion samples and jog commands are deliberately omitted.
+        if (!g_settings.fileEnabled || action == "chassis.manual_move" || action == "gimbal.jog" || action == "gimbal.stop") {
             return;
         }
 
         QStringList parts;
         parts << QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd hh:mm:ss.zzz"));
-        parts << QStringLiteral("[AUDIT]");
-        parts << QStringLiteral("action=%1").arg(action.trimmed());
-        parts << QStringLiteral("result=%1").arg(result.trimmed());
-        parts << QStringLiteral("sid=%1").arg(g_sessionId);
+        parts << QStringLiteral("[操作]");
+        static const QMap<QString, QString> actions{{"config.save", "保存配置"}, {"config.reload", "应用配置"},
+            {"config.load", "读取配置"}, {"config.restore_latest", "恢复配置"}, {"diagnostics.export", "导出诊断"},
+            {"safety.estop", "紧急停车"}, {"safety.motion_stop", "安全停止"}, {"map.load", "加载地图"},
+            {"map.save", "保存地图"}, {"map.new", "新建地图"}, {"ipc.operation", "工控机维护"}};
+        static const QMap<QString, QString> results{{"success", "成功"}, {"failed", "失败"}, {"rejected", "拒绝"},
+            {"accepted", "已受理"}, {"applied", "已应用"}, {"saved", "已保存"}, {"preview", "预览"},
+            {"submitted", "已提交"}, {"cancelled", "已取消"}};
+        parts << actions.value(action, action.trimmed());
+        parts << QStringLiteral("结果=%1").arg(results.value(result, result.trimmed()));
         for (auto it = fields.cbegin(); it != fields.cend(); ++it) {
             QString value = it.value();
             if (value.contains(QLatin1Char(' '))) {
@@ -727,7 +749,7 @@ void LoggingManager::audit(const QString &action, const QString &result, const Q
             }
             parts << QStringLiteral("%1=%2").arg(it.key(), value);
         }
-        line = parts.join(QLatin1Char(' '));
+        line = parts.join(QLatin1Char(' ')).left(MaxLineCharacters);
         if (g_settings.redactSensitiveData) {
             line = redactSensitiveText(line);
         }
@@ -767,16 +789,8 @@ QString LoggingManager::exportDiagnostics(const QString &targetDirectory, QStrin
         closeFile(g_sessionLogFile);
         closeFile(g_auditFile);
         copyFileIfExists(g_logPath, QDir(logsDir).filePath(QFileInfo(g_logPath).fileName()), errorMessage);
-        copyFileIfExists(g_sessionLogPath, QDir(logsDir).filePath(QFileInfo(g_sessionLogPath).fileName()), errorMessage);
-        copyFileIfExists(g_auditPath, QDir(logsDir).filePath(QFileInfo(g_auditPath).fileName()), errorMessage);
         if (g_settings.fileEnabled) {
             openAppendFile(g_logFile, g_logPath);
-            if (g_settings.perSessionFile) {
-                openAppendFile(g_sessionLogFile, g_sessionLogPath);
-            }
-        }
-        if (g_settings.auditEnabled) {
-            openAppendFile(g_auditFile, g_auditPath);
         }
     }
 

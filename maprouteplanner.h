@@ -2,6 +2,7 @@
 #define MAPROUTEPLANNER_H
 
 #include "configmanager.h"
+#include "routepathfinder.h"
 
 #include <QList>
 
@@ -14,7 +15,13 @@ public:
         int toId = -1;
         double lengthMeters = 0.0;
         bool isArc = false;
+        bool bidirectional = false;
     };
+
+    static QList<RoutePathTraversal> findRoute(int startId,
+                                               int endId,
+                                               const QList<Edge> &edges,
+                                               const ConfigManager::RoutePlanningConfig &config);
 
     static QList<int> findPathIds(int startId,
                                   int endId,

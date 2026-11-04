@@ -23,9 +23,10 @@ async def main(args):
             shutil.copy(file, root / file.name)
         config = (source / "tracking.yaml").read_text(encoding="utf-8")
         config = config.replace("../../../build/simulation-store", str(root / "store").replace("\\", "/"))
+        # This test's sole motion configuration lives on its simulated IPC.
+        config = config.replace("max_linear_speed_mps: 1.50", "max_linear_speed_mps: 0.10")
         (root / "tracking.yaml").write_text(config, encoding="utf-8")
         qt_config = json.loads((Path(__file__).resolve().parents[1] / "config.json").read_text(encoding="utf-8"))
-        qt_config["taskDefaults"].update(safetyProfileId="open", rotationZoneId="open")
         (root / "qt-config.json").write_text(json.dumps(qt_config), encoding="utf-8")
         plant = ipc.Plant(19130)
         photos = []

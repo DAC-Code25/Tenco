@@ -15,7 +15,20 @@ ExternalEventCoordinator::ExternalEventCoordinator(TrackingClient *tracking, QOb
             m_events.clear();
         m_events.insert(event["eventId"].toString(), event);
     });
-    connect(tracking, &TrackingClient::serverRestarted, this, [this] { m_events.clear(); });
+    connect(tracking, &TrackingClient::serverRestarted, this, [this] {
+        m_events.clear();
+        setManualConfirmation({});
+    });
+    connect(tracking, &TrackingClient::statusChanged, this, [this] {
+        if (!m_manualConfirmation.isEmpty() && manualConfirmationEventId().isEmpty())
+            setManualConfirmation({});
+    });
+    connect(tracking, &TrackingClient::availabilityChanged, this, [this](bool available) {
+        if (!available) setManualConfirmation({});
+    });
+    connect(tracking, &TrackingClient::pendingChanged, this, [this](bool pending) {
+        if (pending) setManualConfirmation({});
+    });
     connect(tracking, &TrackingClient::commandUncertain, this, [this](const QString &op, const QString &) {
         if (op == "ack")
             m_ackSent.clear();
@@ -31,11 +44,27 @@ ExternalEventCoordinator::ExternalEventCoordinator(TrackingClient *tracking, QOb
 }
 void ExternalEventCoordinator::configure(const QUrl &url, const QString &token, const QString &directory,
                                          int timeout) {
+    if (m_directory == directory && m_camera.matchesConfiguration(url, token, timeout)) return;
     // Cancelling a photo leaves a durable intent. It must be resolved by the operator, never replayed.
     m_camera.configure(url, token, timeout);
     m_active.clear();
     m_directory = directory;
-    QDir().mkpath(m_directory);
+    setManualConfirmation({});
+    if (!m_directory.isEmpty()) QDir().mkpath(m_directory);
+}
+QString ExternalEventCoordinator::manualConfirmationEventId() const {
+    const auto status = m_tracking->snapshot();
+    if (m_directory.isEmpty() || !m_tracking->fresh() || m_tracking->busy() ||
+        !m_active.isEmpty() || m_ackSent == status.waitingEventId ||
+        (status.state != "Waiting" && status.state != "Paused") ||
+        m_manualConfirmation != status.waitingEventId)
+        return {};
+    return m_manualConfirmation;
+}
+void ExternalEventCoordinator::setManualConfirmation(const QString &eventId) {
+    if (m_manualConfirmation == eventId) return;
+    m_manualConfirmation = eventId;
+    emit manualConfirmationChanged(eventId);
 }
 QString ExternalEventCoordinator::recordPath(const QString &id) const {
     return QDir(m_directory)
@@ -72,6 +101,7 @@ bool ExternalEventCoordinator::resolveCurrent(const QString &expectedEventId, bo
     const auto status = m_tracking->snapshot();
     if (!m_tracking->fresh() || !m_tracking->hasSession() || status.waitingEventId.isEmpty() ||
         status.waitingEventId != expectedEventId || !m_active.isEmpty() ||
+        manualConfirmationEventId() != expectedEventId ||
         (status.state != "Waiting" && status.state != "Paused"))
         return false;
     const auto savedState = readRecord(expectedEventId).value("state").toString();
@@ -83,35 +113,45 @@ bool ExternalEventCoordinator::resolveCurrent(const QString &expectedEventId, bo
                        {"state", success ? "succeeded" : "failed"},
                        {"resolution", "operator"}};
     m_ackSent.clear();
-    return writeRecord(record);
+    if (!writeRecord(record)) return false;
+    setManualConfirmation({});
+    return true;
 }
 void ExternalEventCoordinator::tick() {
     const auto status = m_tracking->snapshot();
     const auto id = status.waitingEventId;
-    if (m_directory.isEmpty() || id.isEmpty() || !m_tracking->fresh() || !m_tracking->hasSession() ||
-        m_tracking->busy() || (status.state != "Waiting" && status.state != "Paused"))
+    if (m_directory.isEmpty() || id.isEmpty() || !m_tracking->fresh() ||
+        m_tracking->busy() || (status.state != "Waiting" && status.state != "Paused")) {
+        setManualConfirmation({});
         return;
+    }
     auto record = readRecord(id);
     const auto state = record.value("state").toString();
     QJsonObject event{{"eventId", id}, {"executionId", status.executionId}, {"stepId", status.stepId}};
     if (state == "succeeded" || state == "failed") {
-        if (m_ackSent != id && m_tracking->acknowledge(event, state == "succeeded"))
+        setManualConfirmation({});
+        if (m_tracking->hasSession() && m_ackSent != id && m_tracking->acknowledge(event, state == "succeeded"))
             m_ackSent = id;
         return;
     }
-    if (!m_active.isEmpty())
+    if (!m_active.isEmpty()) {
+        setManualConfirmation({});
         return;
+    }
     const auto received = m_events.value(id);
     const bool ownsPreparedTask = m_tracking->preparedPlan()["taskId"].toString() == status.taskId &&
                                   m_tracking->preparedPlan()["revision"].toInt() == status.taskRevision;
     if (!record.isEmpty() || received.isEmpty() || !ownsPreparedTask ||
         received["reason"].toString() != "capture") {
+        setManualConfirmation(id);
         if (m_reported != id) {
             m_reported = id;
             emit message(tr("检查点动作待核对：%1。请核查拍摄结果后明确确认成功或失败").arg(id));
         }
         return;
     }
+    setManualConfirmation({});
+    if (!m_tracking->hasSession()) return;
     if (status.state != "Waiting" || std::abs(status.measuredV) > .02 || std::abs(status.measuredOmega) > .03)
         return;
     record = event;

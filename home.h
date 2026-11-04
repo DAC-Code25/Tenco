@@ -6,7 +6,6 @@
 #include <QProgressDialog>
 #include <QTimer>
 #include <QList>
-#include <QHash>
 #include <QPointF>
 #include <QImage>
 
@@ -24,6 +23,8 @@ class ChassisClient;
 class MotionCommandArbiter;
 class HomeStatusPresenter;
 class HomeVideoPresenter;
+struct ControlPoseSnapshot;
+struct TrackingSnapshot;
 
 namespace Ui {
 class MainWindow;
@@ -41,7 +42,7 @@ public:
     bool handleKeyRelease(int key, Qt::KeyboardModifiers modifiers, bool isAutoRepeat);
 
 signals:
-    void originUpdateRequested(double latitude, double longitude);
+    void ipcMaintenanceRequested();
 
 public:
     ChassisClient* chassisClient() const { return m_chassisClient; }
@@ -49,6 +50,12 @@ public:
 
 public slots:
     void stopMotionForSafety(const QString &reason);
+    void setSavedOriginSnapshot(const QJsonObject &origin);
+    void setActiveOriginSnapshot(const QJsonObject &origin);
+    void setNavigationStatusCurrent(bool current);
+    void setControlPoseStatus(const ControlPoseSnapshot &pose);
+    void setPoseMonitoringAvailability(bool current, const QString &reason);
+    void setTaskStatus(const TrackingSnapshot &status, bool current);
 
 private slots:
     void applyManualControlConfig();
@@ -57,14 +64,12 @@ private slots:
     void handleNetworkFailure(int httpStatus, const QString &errorString, const QByteArray &responseBody);
     void checkConnectionRestored();
 
-    void handleVideoTopicChanged(int index);
-    void handleSavePathButtonClicked();
+    void handlePreviewSelectionChanged(int index);
+    void handlePreviewToggled(bool enabled);
     void handleImageSwitchToggled(bool checked);
     void record();
     void photo();
     void restartControl();
-    void submitOriginCommand();
-    void submitModeCommand();
     void handleForwardButtonPressed();
     void handleForwardButtonReleased();
     void handleBackwardButtonPressed();
@@ -91,6 +96,7 @@ private:
     Ui::MainWindow *ui;
 
     void initialize();
+    void updateOriginDisplay();
     void setupImageSwitches();
     void initializeMotionControl();
     void applyStatusClientConfig();
@@ -101,7 +107,8 @@ private:
     void initializeVideoDisplay();
     void initializeCameraStatusPolling();
     void populateVideoStreamSelector();
-    bool applyConfiguredVideoStreamSelection();
+    void resetPreviewSource();
+    void updatePreviewButton();
 
     bool isManualControlEnabledForButtons() const;
     bool isManualControlEnabledForKeys() const;
@@ -115,7 +122,7 @@ private:
     void sendVelocityCommand(double xVel, double thetaVel);
     void startRecording();
     void stopRecordingAndSave();
-    bool ensureSaveDirectorySelected(QWidget *parentForDialog);
+    QString localCaptureDirectory() const;
     void logMessage(const QString &text);
     void updateRebootProgress();
     void updateVideoPlaceholder(const QString &message);
@@ -155,8 +162,12 @@ private:
     std::unique_ptr<HomeVideoPresenter> m_videoPresenter;
 
     QString m_recordFilePath;
-    QString m_saveDirectory;
-    QString m_activeVideoTopic;
+    QString m_previewKind = QStringLiteral("rgb");
+    QString m_previewMessage;
+    quint64 m_previewGeneration = 0;
+    bool m_previewEnabled = false;
+    bool m_previewConfigured = false;
+    bool m_previewHasFrame = false;
     bool m_remoteCameraServiceAvailable = false;
     bool m_remoteCameraConnected = false;
     bool m_remoteCameraRecording = false;
@@ -164,8 +175,10 @@ private:
     bool m_lastLoggedRemoteCameraConnected = false;
     bool m_lastLoggedRemoteCameraRecording = false;
     bool m_hasLoggedRemoteCameraStatus = false;
-    QHash<QString, QString> m_videoStreamOptions;
     QString m_lastHomeLogMessage;
+    QJsonObject m_savedOriginSnapshot;
+    QJsonObject m_activeOriginSnapshot;
+    bool m_navigationStatusCurrent = true;
     GimbalStatus m_lastGimbalStatus;
     bool m_hasGimbalStatus = false;
     bool m_gimbalMoving = false;

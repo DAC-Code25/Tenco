@@ -10,13 +10,13 @@
 #include <utility>
 #include <vector>
 
-QList<int> RoutePathFinder::findShortestPath(
+QList<RoutePathTraversal> RoutePathFinder::findShortestRoute(
     int startId,
     int endId,
     const QList<RouteGraphEdge> &edges,
     const RoutePathFinderOptions &options)
 {
-    QList<int> result;
+    QList<RoutePathTraversal> result;
     if (startId == endId) {
         return result;
     }
@@ -24,13 +24,21 @@ QList<int> RoutePathFinder::findShortestPath(
         return result;
     }
 
-    QHash<int, QList<int>> adjacency;
+    struct OutgoingEdge {
+        int index = -1;
+        int toId = -1;
+        bool reversed = false;
+    };
+    QHash<int, QList<OutgoingEdge>> adjacency;
     for (int i = 0; i < edges.size(); ++i) {
         const RouteGraphEdge &edge = edges.at(i);
         if (edge.pathId < 0 || edge.fromId < 0 || edge.toId < 0) {
             continue;
         }
-        adjacency[edge.fromId].append(i);
+        adjacency[edge.fromId].append({i, edge.toId, false});
+        if (edge.bidirectional && edge.fromId != edge.toId) {
+            adjacency[edge.toId].append({i, edge.fromId, true});
+        }
     }
     if (!adjacency.contains(startId)) {
         return result;
@@ -40,6 +48,7 @@ QList<int> RoutePathFinder::findShortestPath(
         double cost = std::numeric_limits<double>::infinity();
         int prevNode = -1;
         int prevPathId = -1;
+        bool prevReversed = false;
         bool settled = false;
     };
 
@@ -66,22 +75,21 @@ QList<int> RoutePathFinder::findShortestPath(
             break;
         }
 
-        const QList<int> outgoing = adjacency.value(nodeId);
-        for (int edgeIndex : outgoing) {
-            if (edgeIndex < 0 || edgeIndex >= edges.size()) {
-                continue;
-            }
-            const RouteGraphEdge &edge = edges.at(edgeIndex);
+        const double nodeCost = node.cost;
+        const QList<OutgoingEdge> outgoing = adjacency.value(nodeId);
+        for (const OutgoingEdge &traversal : outgoing) {
+            const RouteGraphEdge &edge = edges.at(traversal.index);
             const double edgeLength = std::max(options.minEdgeCost, edge.lengthMeters);
             const double edgeCost = edgeLength + options.edgePenalty + (edge.isArc ? options.arcPenalty : 0.0);
-            const double nextCost = node.cost + edgeCost;
+            const double nextCost = nodeCost + edgeCost;
 
-            NodeState &nextState = states[edge.toId];
+            NodeState &nextState = states[traversal.toId];
             if (nextCost + 1e-12 < nextState.cost) {
                 nextState.cost = nextCost;
                 nextState.prevNode = nodeId;
                 nextState.prevPathId = edge.pathId;
-                queue.emplace(nextCost, edge.toId);
+                nextState.prevReversed = traversal.reversed;
+                queue.emplace(nextCost, traversal.toId);
             }
         }
     }
@@ -101,9 +109,22 @@ QList<int> RoutePathFinder::findShortestPath(
             result.clear();
             return result;
         }
-        result.prepend(state.prevPathId);
+        result.prepend({state.prevPathId, state.prevNode, current, state.prevReversed});
         current = state.prevNode;
     }
 
     return result;
+}
+
+QList<int> RoutePathFinder::findShortestPath(
+    int startId,
+    int endId,
+    const QList<RouteGraphEdge> &edges,
+    const RoutePathFinderOptions &options)
+{
+    QList<int> pathIds;
+    const auto traversals = findShortestRoute(startId, endId, edges, options);
+    pathIds.reserve(traversals.size());
+    for (const RoutePathTraversal &traversal : traversals) pathIds.append(traversal.pathId);
+    return pathIds;
 }

@@ -11,7 +11,6 @@
 class QCheckBox;
 class QComboBox;
 class QDoubleSpinBox;
-class QEvent;
 class QFormLayout;
 class QLineEdit;
 class QPlainTextEdit;
@@ -19,6 +18,9 @@ class QPushButton;
 class QSpinBox;
 class QLabel;
 class QWidget;
+class IpcManagementPanel;
+class NavigationDiagnosticsPanel;
+class TrackingClient;
 
 namespace Ui {
 class MainWindow;
@@ -33,15 +35,24 @@ public:
     bool confirmLeaveIfDirty(QWidget *parentWidget = nullptr);
     bool hasUnsavedChanges() const;
     void setIpcConfiguration(const QJsonObject& configuration);
+    void setIpcMonitoringCurrent(bool current);
+    void showIpcSessionReleaseResult(bool released, const QString &message);
+    void openIpcMaintenancePage();
+    void refreshOriginSnapshot();
+    void setTrackingClient(TrackingClient *client);
+
+signals:
+    void releaseTaskSessionRequested();
+    void originSnapshotChanged(const QJsonObject &origin);
 
 private:
-    bool eventFilter(QObject *watched, QEvent *event) override;
     void buildUi();
     void loadFromConfig();
     bool saveConfig(bool applyAfterSave);
     void loadSnapshotToForm(const ConfigManager::ConfigSnapshot &snapshot);
     void loadConfigFile();
     void restoreLatestBackup();
+    void createManualBackup();
     void runConfigSelfCheck();
     void updateActionState();
     void markDirty();
@@ -84,7 +95,10 @@ private:
 
     Ui::MainWindow *ui;
     QLabel *m_statusLabel = nullptr;
+    QLabel *m_dirtyLabel = nullptr;
     QLabel *m_ipcConfiguration = nullptr;
+    QJsonObject m_ipcConfigurationSnapshot;
+    bool m_ipcMonitoringCurrent = true;
     QPushButton *m_loadConfigButton = nullptr;
     QPushButton *m_restoreBackupButton = nullptr;
     QPushButton *m_saveButton = nullptr;
@@ -96,6 +110,12 @@ private:
     QLabel *m_runtimeDirValue = nullptr;
     QLabel *m_loadedFromFileValue = nullptr;
     QJsonObject m_cleanFingerprint;
+    QString m_savedFormRevision;
+    QJsonObject m_formSourceDocument;
+    ConfigManager::ConfigSnapshot m_formSnapshotBase;
+    QLabel *m_configurationVersions = nullptr;
+    QLabel *m_configDiskRevisionValue = nullptr;
+    QLabel *m_configRuntimeRevisionValue = nullptr;
     bool m_loading = false;
     QHash<QString, QLineEdit *> m_lineEdits;
     QHash<QString, QSpinBox *> m_spinBoxes;
@@ -106,6 +126,8 @@ private:
     QLabel *m_loggingCurrentLevelValue = nullptr;
     QLabel *m_loggingCurrentFileValue = nullptr;
     QLabel *m_loggingAuditFileValue = nullptr;
+    IpcManagementPanel *m_ipcManagement = nullptr;
+    NavigationDiagnosticsPanel *m_navigationDiagnostics = nullptr;
 };
 
 #endif // MAINTENANCE_H

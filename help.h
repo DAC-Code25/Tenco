@@ -7,6 +7,7 @@
 #include <QVector>
 
 class QLabel;
+class QLineEdit;
 class QListWidget;
 class QListWidgetItem;
 class QStackedWidget;
@@ -51,13 +52,18 @@ private:
     QWidget *createStepCard(const QString &title, const QStringList &steps, QWidget *parent = nullptr) const;
     QWidget *createInfoRow(const QString &label, const QString &value, QWidget *parent = nullptr) const;
     void addTopic(const QString &title, QWidget *page);
+    void filterTopics(const QString &query);
+    void selectTopic(const QString &title);
     void openPath(const QString &path, const QString &errorTitle) const;
     QString appDataPath(const QString &child) const;
     QString repositoryPath(const QString &relativePath = QString()) const;
 
     Ui::MainWindow *ui;
     QListWidget *m_navList = nullptr;
+    QLineEdit *m_searchEdit = nullptr;
     QStackedWidget *m_stack = nullptr;
+    QWidget *m_emptyPage = nullptr;
+    QStringList m_topicSearchText;
     QVector<DocumentLink> m_documents;
 };
 

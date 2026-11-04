@@ -44,8 +44,8 @@ private:
     QUrl m_url;
     QJsonArray m_requests;
     QNetworkReply *m_currentReply = nullptr;
-    bool m_fetchPending = false;
     bool m_running = false;
+    quint64 m_generation = 0;
     int m_intervalMs = 100;
     QString m_authToken;
     int m_failureCount = 0;

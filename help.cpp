@@ -2,6 +2,7 @@
 
 #include "configmanager.h"
 #include "loggingmanager.h"
+#include "supportpagestyle.h"
 #include "ui_mainwindow.h"
 
 #include <QCoreApplication>
@@ -9,13 +10,16 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QFrame>
+#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QLineEdit>
 #include <QListWidget>
 #include <QListWidgetItem>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QSize>
 #include <QSizePolicy>
 #include <QStackedWidget>
@@ -25,116 +29,54 @@
 
 namespace {
 const char *kHelpStyle = R"(
-QWidget#helpRoot {
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #f5f7f2, stop:0.55 #eef3eb, stop:1 #e5ece3);
-}
-QFrame#helpHero, QFrame#helpCard, QFrame#helpNavCard {
-    background: rgba(255, 255, 255, 0.97);
-    border: 1px solid rgba(124, 143, 126, 0.22);
-    border-radius: 16px;
+QFrame#helpHero, QFrame#helpPageHeader { background: transparent; border: none; }
+QFrame#helpCard, QFrame#helpNavCard {
+    background: #ffffff;
+    border: 1px solid #dfe7e3;
+    border-radius: 14px;
 }
 QLabel#helpTitle {
-    color: #132019;
-    font-size: 28px;
-    font-weight: 800;
+    color: #183a2c;
+    font-size: 26px;
+    font-weight: 700;
 }
 QLabel#helpSubtitle {
-    color: #4d5d54;
-    font-size: 14px;
-    font-weight: 500;
+    color: #718178;
+    font-size: 13px;
 }
 QLabel#helpPageTitle {
-    color: #17211b;
+    color: #183a2c;
     font-size: 24px;
-    font-weight: 800;
+    font-weight: 700;
 }
 QLabel#helpPageDesc {
-    color: #526259;
-    font-size: 14px;
-    font-weight: 500;
+    color: #718178;
+    font-size: 13px;
 }
 QLabel#helpCardTitle {
-    color: #1f3128;
-    font-size: 17px;
-    font-weight: 800;
-}
-QLabel#helpBody {
-    color: #34483c;
-    font-size: 14px;
-    line-height: 170%;
-}
-QLabel#helpInfoLabel {
-    color: #617267;
-    font-size: 13px;
-    font-weight: 700;
-}
-QLabel#helpInfoValue {
-    color: #1f3128;
-    font-size: 14px;
+    color: #183a2c;
+    font-size: 15px;
     font-weight: 600;
 }
-QListWidget#helpNavList {
-    background: transparent;
-    border: none;
-    outline: none;
-    color: #33493d;
+QLabel#helpBody {
+    color: #42564b;
     font-size: 14px;
-    font-weight: 700;
+}
+QLabel#helpStepNumber { color:#24775c; background:#eaf3ee; border-radius:10px; font-size:12px; font-weight:600; }
+QLabel#helpPath { color:#718178; font-size:12px; }
+QLabel#helpInfoLabel {
+    color: #718178;
+    font-size: 13px;
+}
+QLabel#helpInfoValue {
+    color: #42564b;
+    font-size: 13px;
 }
 QListWidget#helpNavList::item {
-    padding: 12px 14px;
-    margin: 3px 0;
-    border-radius: 10px;
-}
-QListWidget#helpNavList::item:selected {
-    background: #2f7d64;
-    color: white;
-}
-QListWidget#helpNavList::item:selected:hover {
-    background: #2f7d64;
-    color: white;
-}
-QListWidget#helpNavList::item:hover {
-    background: rgba(47, 125, 100, 0.12);
-    color: #123026;
-}
-QPushButton#helpSecondaryButton {
-    background: white;
-    color: #3e5146;
-    border: 1px solid #bdcbbb;
-    border-radius: 11px;
-    padding: 10px 18px;
-    min-height: 36px;
-    font-size: 13px;
-    font-weight: 700;
-}
-QPushButton#helpSecondaryButton:hover {
-    background: #f6faf4;
-}
-QPushButton#helpPrimaryButton {
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #2f7d64, stop:1 #1f5f4b);
-    color: white;
-    border: none;
-    border-radius: 11px;
-    padding: 10px 18px;
-    min-height: 36px;
-    font-size: 13px;
-    font-weight: 800;
-}
-QPushButton#helpPrimaryButton:hover {
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #3b9274, stop:1 #287257);
+    padding: 9px 12px;
+    margin: 2px 0;
 }
 )";
-
-QString bulletText(const QStringList &lines)
-{
-    QStringList normalized;
-    normalized.reserve(lines.size());
-    for (const QString &line : lines) {
-        normalized << QStringLiteral("• %1").arg(line);
-    }
-    return normalized.join(QStringLiteral("\n\n"));
-}
 }
 
 Help::Help(Ui::MainWindow *ui, QObject *parent)
@@ -179,33 +121,37 @@ void Help::buildUi()
         delete item;
     }
 
-    rootLayout->setContentsMargins(20, 20, 20, 20);
-    rootLayout->setSpacing(16);
+    rootLayout->setContentsMargins(24, 22, 24, 22);
+    rootLayout->setSpacing(18);
     ui->helpPage->setObjectName(QStringLiteral("helpRoot"));
-    ui->helpPage->setStyleSheet(QString::fromUtf8(kHelpStyle));
+    SupportPageStyle::apply(ui->helpPage, QString::fromUtf8(kHelpStyle));
 
     auto *hero = new QFrame(ui->helpPage);
     hero->setObjectName(QStringLiteral("helpHero"));
     auto *heroLayout = new QHBoxLayout(hero);
-    heroLayout->setContentsMargins(22, 18, 22, 18);
-    heroLayout->setSpacing(18);
+    heroLayout->setContentsMargins(0, 0, 0, 0);
+    heroLayout->setSpacing(20);
 
     auto *titleBlock = new QVBoxLayout();
-    titleBlock->setSpacing(8);
-    auto *title = new QLabel(tr("使用帮助与现场排障"), hero);
+    titleBlock->setSpacing(5);
+    auto *title = new QLabel(tr("帮助中心"), hero);
     title->setObjectName(QStringLiteral("helpTitle"));
-    auto *subtitle = new QLabel(tr("提供操作流程、常见故障排查、快捷键、开发文档和运行目录入口；参数修改仍在维护页完成。"), hero);
+    auto *subtitle = new QLabel(tr("操作指南、故障排查与本地资料"), hero);
     subtitle->setObjectName(QStringLiteral("helpSubtitle"));
     subtitle->setWordWrap(true);
     titleBlock->addWidget(title);
     titleBlock->addWidget(subtitle);
     heroLayout->addLayout(titleBlock, 1);
 
-    auto *safety = new QLabel(tr("执行路径、云台或底盘操作前，请先确认急停、遥控器和现场人员安全。"), hero);
-    safety->setObjectName(QStringLiteral("helpSubtitle"));
-    safety->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    safety->setWordWrap(true);
-    heroLayout->addWidget(safety);
+    for (const auto &entry : {qMakePair(tr("故障排查"), QStringLiteral("helpTroubleshootingShortcut")),
+                              qMakePair(tr("快捷键"), QStringLiteral("helpKeyboardShortcut")),
+                              qMakePair(tr("文档资料"), QStringLiteral("helpDocumentsShortcut"))}) {
+        auto *button = new QPushButton(entry.first, hero);
+        button->setObjectName(QStringLiteral("helpSecondaryButton"));
+        button->setProperty("helpShortcut", entry.second);
+        connect(button, &QPushButton::clicked, this, [this, topic = entry.first] { selectTopic(topic); });
+        heroLayout->addWidget(button);
+    }
     rootLayout->addWidget(hero);
 
     auto *contentLayout = new QHBoxLayout();
@@ -213,22 +159,32 @@ void Help::buildUi()
 
     auto *navCard = new QFrame(ui->helpPage);
     navCard->setObjectName(QStringLiteral("helpNavCard"));
-    navCard->setMinimumWidth(190);
-    navCard->setMaximumWidth(240);
+    navCard->setMinimumWidth(202);
+    navCard->setMaximumWidth(224);
     auto *navLayout = new QVBoxLayout(navCard);
-    navLayout->setContentsMargins(12, 12, 12, 12);
-    navLayout->setSpacing(8);
-    auto *navTitle = new QLabel(tr("帮助分类"), navCard);
+    navLayout->setContentsMargins(12, 16, 12, 12);
+    navLayout->setSpacing(12);
+    auto *navTitle = new QLabel(tr("浏览指南"), navCard);
     navTitle->setObjectName(QStringLiteral("helpCardTitle"));
     navLayout->addWidget(navTitle);
+    m_searchEdit = new QLineEdit(navCard);
+    m_searchEdit->setObjectName(QStringLiteral("helpSearchEdit"));
+    m_searchEdit->setPlaceholderText(tr("搜索帮助内容"));
+    m_searchEdit->setAccessibleName(tr("搜索帮助内容"));
+    m_searchEdit->setClearButtonEnabled(true);
+    navLayout->addWidget(m_searchEdit);
     m_navList = new QListWidget(navCard);
     m_navList->setObjectName(QStringLiteral("helpNavList"));
+    m_navList->setProperty("supportNavigation", true);
     m_navList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    m_navList->setFocusPolicy(Qt::NoFocus);
+    m_navList->setFocusPolicy(Qt::StrongFocus);
+    m_navList->setSpacing(0);
+    m_navList->setAccessibleName(tr("帮助主题"));
     navLayout->addWidget(m_navList, 1);
     contentLayout->addWidget(navCard);
 
     m_stack = new QStackedWidget(ui->helpPage);
+    m_stack->setObjectName(QStringLiteral("helpTopicStack"));
     contentLayout->addWidget(m_stack, 1);
     rootLayout->addLayout(contentLayout, 1);
 
@@ -247,7 +203,32 @@ void Help::buildUi()
     addTopic(tr("数据与日志"), createDataLogPage());
     addTopic(tr("运行信息"), createRuntimePage());
 
-    connect(m_navList, &QListWidget::currentRowChanged, m_stack, &QStackedWidget::setCurrentIndex);
+    m_emptyPage = new QFrame(m_stack);
+    m_emptyPage->setObjectName(QStringLiteral("helpCard"));
+    auto *emptyLayout = new QVBoxLayout(m_emptyPage);
+    emptyLayout->setContentsMargins(30, 30, 30, 30);
+    emptyLayout->addStretch();
+    auto *emptyTitle = new QLabel(tr("未找到匹配内容"), m_emptyPage);
+    emptyTitle->setObjectName(QStringLiteral("helpPageTitle"));
+    emptyTitle->setAlignment(Qt::AlignCenter);
+    emptyLayout->addWidget(emptyTitle);
+    auto *emptyHint = new QLabel(tr("试试“相机”“定位”“日志”等关键词，或清除搜索浏览全部指南。"), m_emptyPage);
+    emptyHint->setObjectName(QStringLiteral("helpPageDesc"));
+    emptyHint->setWordWrap(true);
+    emptyHint->setAlignment(Qt::AlignCenter);
+    emptyLayout->addWidget(emptyHint);
+    auto *clearSearch = new QPushButton(tr("清除搜索"), m_emptyPage);
+    clearSearch->setObjectName(QStringLiteral("helpSecondaryButton"));
+    connect(clearSearch, &QPushButton::clicked, m_searchEdit, &QLineEdit::clear);
+    emptyLayout->addWidget(clearSearch, 0, Qt::AlignHCenter);
+    emptyLayout->addStretch();
+    m_stack->addWidget(m_emptyPage);
+
+    connect(m_navList, &QListWidget::currentRowChanged, this, [this](int row) {
+        if (row >= 0 && !m_navList->item(row)->isHidden())
+            m_stack->setCurrentIndex(row);
+    });
+    connect(m_searchEdit, &QLineEdit::textChanged, this, &Help::filterTopics);
     if (m_navList->count() > 0) {
         m_navList->setCurrentRow(0);
     }
@@ -261,21 +242,24 @@ QWidget *Help::createThemePage(const QString &title, const QString &description)
     pageLayout->setSpacing(0);
 
     auto *scroll = new QScrollArea(page);
+    scroll->setObjectName(QStringLiteral("helpTopicScroll"));
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
 
     auto *content = new QWidget(scroll);
+    content->setObjectName(QStringLiteral("helpTopicContent"));
     auto *contentLayout = new QVBoxLayout(content);
-    contentLayout->setContentsMargins(0, 0, 0, 0);
-    contentLayout->setSpacing(18);
+    contentLayout->setContentsMargins(0, 0, 4, 0);
+    contentLayout->setSpacing(14);
 
     auto *header = new QFrame(content);
-    header->setObjectName(QStringLiteral("helpCard"));
+    header->setObjectName(QStringLiteral("helpPageHeader"));
     auto *headerLayout = new QVBoxLayout(header);
-    headerLayout->setContentsMargins(22, 20, 22, 20);
-    headerLayout->setSpacing(10);
+    headerLayout->setContentsMargins(2, 0, 2, 5);
+    headerLayout->setSpacing(6);
     auto *titleLabel = new QLabel(title, header);
     titleLabel->setObjectName(QStringLiteral("helpPageTitle"));
+    titleLabel->setWordWrap(true);
     auto *descLabel = new QLabel(description, header);
     descLabel->setObjectName(QStringLiteral("helpPageDesc"));
     descLabel->setWordWrap(true);
@@ -293,28 +277,57 @@ QWidget *Help::createCard(const QString &title, const QStringList &lines, QWidge
     auto *card = new QFrame(parent);
     card->setObjectName(QStringLiteral("helpCard"));
     auto *layout = new QVBoxLayout(card);
-    layout->setContentsMargins(22, 20, 22, 20);
-    layout->setSpacing(14);
+    layout->setContentsMargins(20, 18, 20, 18);
+    layout->setSpacing(11);
     auto *titleLabel = new QLabel(title, card);
     titleLabel->setObjectName(QStringLiteral("helpCardTitle"));
-    auto *body = new QLabel(bulletText(lines), card);
-    body->setObjectName(QStringLiteral("helpBody"));
-    body->setWordWrap(true);
-    body->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    body->setMargin(2);
+    titleLabel->setWordWrap(true);
     layout->addWidget(titleLabel);
-    layout->addWidget(body);
+    for (const auto &line : lines) {
+        auto *row = new QHBoxLayout;
+        row->setSpacing(9);
+        auto *bullet = new QLabel(QStringLiteral("•"), card);
+        bullet->setObjectName(QStringLiteral("helpSubtitle"));
+        row->addWidget(bullet, 0, Qt::AlignTop);
+        auto *body = new QLabel(line, card);
+        body->setObjectName(QStringLiteral("helpBody"));
+        body->setWordWrap(true);
+        body->setMinimumWidth(0);
+        body->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        row->addWidget(body, 1);
+        layout->addLayout(row);
+    }
     return card;
 }
 
 QWidget *Help::createStepCard(const QString &title, const QStringList &steps, QWidget *parent) const
 {
-    QStringList numbered;
-    numbered.reserve(steps.size());
+    auto *card = new QFrame(parent);
+    card->setObjectName(QStringLiteral("helpCard"));
+    auto *layout = new QVBoxLayout(card);
+    layout->setContentsMargins(20, 18, 20, 18);
+    layout->setSpacing(12);
+    auto *titleLabel = new QLabel(title, card);
+    titleLabel->setObjectName(QStringLiteral("helpCardTitle"));
+    titleLabel->setWordWrap(true);
+    layout->addWidget(titleLabel);
     for (int i = 0; i < steps.size(); ++i) {
-        numbered << QStringLiteral("%1. %2").arg(i + 1).arg(steps.at(i));
+        auto *row = new QHBoxLayout;
+        row->setSpacing(10);
+        auto *number = new QLabel(QString::number(i + 1), card);
+        number->setObjectName(QStringLiteral("helpStepNumber"));
+        number->setFixedSize(22, 22);
+        number->setAlignment(Qt::AlignCenter);
+        row->addWidget(number, 0, Qt::AlignTop);
+        auto *body = new QLabel(steps.at(i), card);
+        body->setObjectName(QStringLiteral("helpBody"));
+        body->setWordWrap(true);
+        body->setMinimumWidth(0);
+        body->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        row->addWidget(body, 1);
+        layout->addLayout(row);
     }
-    return createCard(title, numbered, parent);
+    return card;
 }
 
 QWidget *Help::createQuickStartPage()
@@ -423,11 +436,11 @@ QWidget *Help::createSopPage()
                                      content));
     layout->addWidget(createStepCard(tr("配置变更 SOP"),
                                      {tr("先在运行信息或维护页确认当前配置文件路径。"),
-                                      tr("修改前确认已有启动备份，必要时手动复制当前 config.json。"),
+                                      tr("在“本机 · 配置备份与日志”确认快照，必要时点击“立即备份本机配置”。"),
                                       tr("只修改明确需要调整的参数，避免一次修改多个无关项。"),
-                                      tr("点击保存并应用后观察首页、地图或云台日志是否提示配置已应用。"),
+                                      tr("本机参数点击“保存并应用到本机”；工控机参数在“工控机 · 服务与参数”内保存/应用并核对回读。"),
                                       tr("用小范围动作验证配置效果，确认正常后再进入作业。"),
-                                      tr("如果结果不符合预期，使用恢复上次配置回退。")},
+                                      tr("本机配置异常时选择已校验的本机备份恢复；工控机配置由独立远程维护流程处理。")},
                                      content));
     layout->addWidget(createCard(tr("交接记录建议"),
                                  {tr("记录日期、操作者、车辆编号、作业区域和使用的地图/路径文件。"),
@@ -445,6 +458,12 @@ QWidget *Help::createHomePage()
                                  tr("首页负责设备状态、视频预览、云台控制、拍照录像和手动控制。"));
     auto *content = qobject_cast<QScrollArea *>(page->layout()->itemAt(0)->widget())->widget();
     auto *layout = qobject_cast<QVBoxLayout *>(content->layout());
+    layout->addWidget(createCard(tr("定位与自动任务概览"),
+                                 {tr("首页定位状态与自动任务概览只读显示工控机反馈，不提供手动/自动模式切换。启动、暂停、继续和结束任务请进入地图页的“任务执行”区域。"),
+                                  tr("“本段进度”表示当前路径段的完成情况，不是整项任务的总进度；进入下一段时会重新计算。"),
+                                  tr("状态更新及时才表示当前反馈；显示“延迟”或“离线”时，保留内容属于上次数据，不能据此判断车辆当前位置、任务进展或已经停稳。"),
+                                  tr("底盘电池与数字速度独立显示，底盘在线不等于融合定位或自动任务状态已经确认。")},
+                                 content));
     layout->addWidget(createCard(tr("视频与相机"),
                                  {tr("默认视频流来自维护页配置的预览流 URL。"),
                                   tr("视频流选项可在维护页的视频/相机分组中维护，用于切换不同相机或处理后画面。"),
@@ -471,26 +490,32 @@ QWidget *Help::createHomePage()
 QWidget *Help::createMapWorkPage()
 {
     auto *page = createThemePage(tr("地图与作业"),
-                                 tr("地图页负责地图编辑、路径规划、路径跟踪和直线/多垄作业任务。"));
+                                 tr("地图页提供常规任务和直线任务，规划、下发与执行反馈集中展示。"));
     auto *content = qobject_cast<QScrollArea *>(page->layout()->itemAt(0)->widget())->widget();
     auto *layout = qobject_cast<QVBoxLayout *>(content->layout());
     layout->addWidget(createCard(tr("地图基础操作"),
                                  {tr("可加载、新建和保存地图文件。"),
-                                  tr("地图基准经纬度由维护页维护，影响后续坐标换算。"),
+                                  tr("原点由工控机统一管理，在启动或重启融合前确认本次基准站坐标；首页只读显示，旧地图不会静默换原点。"),
                                   tr("实时位姿直接来自工控机融合服务；显示过期时检查源观测年龄、原点和地图绑定。"),
                                   tr("如果地图上的车辆位置与现场位置偏差明显，应暂停自动任务，先确认定位源和地图基准。")},
                                  content));
-    layout->addWidget(createCard(tr("路径与任务执行"),
-                                 {tr("路径规划适合通用场景，直线/多垄作业适合垄间来回作业场景。"),
-                                  tr("路径执行前应确认起点、终点、方向和现场障碍物。"),
-                                  tr("大幅调整路径跟踪参数后，建议先低速测试，再进入实际作业。"),
-                                  tr("定位抖动、地面颠簸和轮胎打滑都会影响轨迹效果，现场应结合速度、加速度和控制增益综合调整。")},
+    layout->addWidget(createCard(tr("常规任务 · 按点与路径编排"),
+                                 {tr("常规任务按地图点与路径关系组合路线；添加关系时可选择单向或双向，新建默认双向。"),
+                                  tr("双向关系可沿同一条直线或圆弧往返，无需重复创建；旧地图的单向关系保持原方向。"),
+                                  tr("依次加入要经过的目标点。需要返回起点时，把起点也加入任务队列；双向路径本身不会自动增加回程。"),
+                                  tr("规划完成后点击“下发并执行”，固定的“任务执行”区域统一显示状态、进度及操作结果。"),
+                                  tr("暂停、继续和结束也在该区域操作；任务执行前确认路线与现场障碍物。")},
                                  content));
-    layout->addWidget(createCard(tr("直线/多垄作业"),
-                                 {tr("作业计划下发依赖工控机作业服务地址。"),
-                                  tr("单垄往返、多垄切换和端点掉头等逻辑由上位机规划，工控机侧负责实时控制执行。"),
-                                  tr("如果状态不刷新，检查任务与位姿服务地址。重新连接不会自动启动，需重新获取操作权。"),
-                                  tr("多垄切换任务应在地图上明确垄间间距、出垄距离、原地旋转方向和下一垄对准方向。")},
+    layout->addWidget(createCard(tr("直线任务 · A/B 作业与检查点"),
+                                 {tr("记录或设置作业线 A/B，沿线添加检查点，可分别设置去程/返程触发、停留和拍照。示教检查点保留实际记录的位置。"),
+                                  tr("先沿作业路线回到 A 点并停稳，再开始正式往返。关闭循环时完成一次 A→B→A，开启时重复往返；每轮循环不重复准备步骤。"),
+                                  tr("直线任务按作业线与检查点自动组织回程和动作，适合沿固定作业线重复巡检；它与常规任务的差别包括任务编排和动作，并非只有建图方式。")},
+                                 content));
+    layout->addWidget(createCard(tr("两类任务共用的执行规则"),
+                                 {tr("两类任务都由工控机执行跟踪、减速、停车和转向，共用已生效的导航参数与保护逻辑。切换任务类型不会自动改变纠偏效果。"),
+                                  tr("速度、前视距离、停车和转向容差在“维护 → 工控机 · 服务与参数 → 融合与导航参数”中选择“导航参数”维护。"),
+                                  tr("普通任务下发后可脱离上位机运行；拍照检查点需要上位机协调相机并确认完成，拍照等待期间请保持上位机连接。"),
+                                  tr("重新连接不会自动启动或重放运动。")},
                                  content));
     layout->addStretch(1);
     return page;
@@ -499,14 +524,23 @@ QWidget *Help::createMapWorkPage()
 QWidget *Help::createMaintenancePage()
 {
     auto *page = createThemePage(tr("维护配置"),
-                                 tr("维护页用于生产现场修改运行参数，并提供保存、热加载、备份和恢复能力。"));
+                                 tr("维护页按目标区分工控机服务参数与上位机本地配置，避免把本地保存误认为远端已生效。"));
     auto *content = qobject_cast<QScrollArea *>(page->layout()->itemAt(0)->widget())->widget();
     auto *layout = qobject_cast<QVBoxLayout *>(content->layout());
-    layout->addWidget(createCard(tr("按钮含义"),
-                                 {tr("保存：只写入 config.json，不影响当前运行模块。"),
-                                  tr("保存并应用：写入 config.json，并立即通知首页、地图、云台、相机和底盘等模块热加载。"),
-                                  tr("恢复上次配置：恢复最近一次启动备份，并立即应用。"),
-                                  tr("加载配置文件：只把所选 JSON 读入表单，不直接写盘，也不直接应用。")},
+    layout->addWidget(createCard(tr("选择维护目标"),
+                                 {tr("状态总览：分别显示融合、导航、底盘、传感器和工控机资源；导航未启动不等于整台工控机离线。"),
+                                  tr("工控机 · 服务与参数：远程启停融合、导航和相机，维护工控机参数与相机采集设置，折叠区显示只读原点/标定。"),
+                                  tr("本机 · 连接与手动：只修改上位机使用的地址、认证和独立手动通道。自动任务的速度、转向速度和到达容差统一在工控机导航参数中修改。"),
+                                  tr("本机 · 相机与云台：只修改上位机预览连接、PLC 连接及本地控制设置。"),
+                                  tr("本机 · 备份与日志：查看程序目录 config.json、磁盘/运行版本、选择恢复及上位机运行日志。"),
+                                  tr("各组按功能分页。滚轮用于翻页浏览，不修改数值或收起下拉框的值；详细说明可悬停查看。")},
+                                 content));
+    layout->addWidget(createCard(tr("本机按钮与配置保护"),
+                                 {tr("保存本机：先保留原文件快照，仅写入本机 config.json，当前模块继续使用原值。"),
+                                  tr("保存并应用到本机：写盘后更新上位机连接与偏好，不会替工控机重启或应用融合/导航参数。"),
+                                  tr("选择本机备份恢复：核验版本和摘要，备份当前原文件，再恢复并应用所选配置。"),
+                                  tr("导入本机配置：只预览 JSON；其中连接凭据可能覆盖或清空现有令牌，保存前必须核对。"),
+                                  tr("启动和覆盖前的原字节快照位于 backups/config/local，包含 SHA-256 清单；同内容复用已校验快照，备份失败不覆盖。未知字段保留，损坏或不支持的版本禁止用默认模板覆盖。")},
                                  content));
     layout->addWidget(createCard(tr("修改建议"),
                                  {tr("通信地址、PLC 地址、工控机服务地址修改前，应先确认目标设备在线。"),
@@ -534,7 +568,7 @@ QWidget *Help::createConnectionPage()
                                  {tr("底盘控制器：WebSocket 用于独立手动速度和本通道停止，HTTP 保留设备状态读取。"),
                                   tr("工控机相机服务：HTTP 用于视频流、拍照、录像和相机状态。"),
                                   tr("云台 PLC：Modbus TCP 用于升降、水平旋转和俯仰控制。"),
-                                  tr("作业服务：HTTP 用于直线/多垄作业计划下发、启动、停止和状态查询。"),
+                                  tr("导航服务：HTTP 用于常规任务和直线任务下发、启动、停止和状态查询。"),
                                   tr("所有设备应使用固定 IP 或可控的 DHCP 绑定，避免重启后地址变化导致服务不可用。")},
                                  content));
     layout->addWidget(createCard(tr("配置位置"),
@@ -656,12 +690,12 @@ QWidget *Help::createShortcutPage()
                                  {tr("Ctrl + 鼠标左键拖拽地图点：移动该地图点，并自动刷新关联路径。"),
                                   tr("Alt + 鼠标左键拖拽地图点：旋转该地图点朝向，并自动刷新关联路径。"),
                                   tr("Ctrl + Alt + 鼠标左键点击一个地图点：选择路径起点。"),
-                                  tr("再次 Ctrl + Alt + 鼠标左键点击另一个地图点：按当前路径类型创建起点到终点的路径。"),
+                                  tr("再次 Ctrl + Alt + 鼠标左键点击另一个地图点：按当前路径类型和单向/双向选项创建路径关系。"),
                                   tr("Ctrl + A：切换地图路径显示/隐藏。")},
                                  content));
     layout->addWidget(createCard(tr("地图作业快捷操作"),
                                  {tr("启用“从地图添加点”后，鼠标左键点击地图位置可新增地图点。"),
-                                  tr("启用“添加中间点”后，鼠标左键点击地图位置可新增直线/多垄作业中间点。"),
+                                  tr("直线任务启用“地图点击添加”后，鼠标左键点击地图位置可新增中间点。"),
                                   tr("右键删除地图点会同步清理无效路径和路线队列。")},
                                  content));
     layout->addWidget(createCard(tr("使用限制"),
@@ -686,29 +720,39 @@ QWidget *Help::createDocumentPage()
         auto *card = new QFrame(content);
         card->setObjectName(QStringLiteral("helpCard"));
         auto *cardLayout = new QVBoxLayout(card);
-        cardLayout->setContentsMargins(22, 20, 22, 20);
-        cardLayout->setSpacing(14);
+        cardLayout->setContentsMargins(20, 18, 20, 18);
+        cardLayout->setSpacing(10);
+        auto *heading = new QHBoxLayout;
+        heading->setSpacing(14);
         auto *title = new QLabel(doc.title, card);
         title->setObjectName(QStringLiteral("helpCardTitle"));
-        auto *desc = new QLabel(doc.description + QStringLiteral("\n") + doc.relativePath, card);
+        title->setWordWrap(true);
+        auto *desc = new QLabel(doc.description, card);
         desc->setObjectName(QStringLiteral("helpBody"));
         desc->setWordWrap(true);
         desc->setTextInteractionFlags(Qt::TextSelectableByMouse);
         auto *button = new QPushButton(tr("打开文档"), card);
         button->setObjectName(QStringLiteral("helpPrimaryButton"));
+        button->setProperty("supportPrimary", true);
         connect(button, &QPushButton::clicked, this, [this, doc]() {
             openPath(repositoryPath(doc.relativePath), tr("打开文档失败"));
         });
-        cardLayout->addWidget(title);
+        heading->addWidget(title, 1);
+        heading->addWidget(button);
+        cardLayout->addLayout(heading);
         cardLayout->addWidget(desc);
-        cardLayout->addWidget(button, 0, Qt::AlignLeft);
+        auto *path = new QLabel(doc.relativePath, card);
+        path->setObjectName(QStringLiteral("helpPath"));
+        path->setWordWrap(true);
+        path->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        cardLayout->addWidget(path);
         layout->addWidget(card);
     }
 
-    auto *openDocsDir = new QPushButton(tr("打开开发文档目录"), content);
+    auto *openDocsDir = new QPushButton(tr("打开文档目录"), content);
     openDocsDir->setObjectName(QStringLiteral("helpSecondaryButton"));
     connect(openDocsDir, &QPushButton::clicked, this, [this]() {
-        openPath(repositoryPath(QStringLiteral("docs/develop")), tr("打开文档目录失败"));
+        openPath(repositoryPath(QStringLiteral("docs")), tr("打开文档目录失败"));
     });
     layout->addWidget(openDocsDir, 0, Qt::AlignLeft);
     layout->addStretch(1);
@@ -722,19 +766,18 @@ QWidget *Help::createDataLogPage()
     auto *content = qobject_cast<QScrollArea *>(page->layout()->itemAt(0)->widget())->widget();
     auto *layout = qobject_cast<QVBoxLayout *>(content->layout());
     layout->addWidget(createCard(tr("应保留的数据"),
-                                 {tr("配置文件 config.json：记录通信地址、控制参数、云台限位、视频流和作业服务地址。"),
-                                  tr("配置备份 config_backups：用于恢复启动前配置，最多保留最近 10 份。"),
-                                  tr("运行日志 tenco.log / 会话日志：记录状态变化、请求错误、连接断开、配置应用和关键操作。"),
-                                  tr("审计日志 audit.log：记录保存、恢复、导出和关键控制动作。"),
+                                 {tr("本机 config.json：记录通信地址、手动控制、云台限位、视频显示和数据库设置；不保存融合或自动导航参数。"),
+                                  tr("本机配置备份 backups/config/local：保留原文件及摘要清单；同内容复用有效快照，不自动删除现场备份。旧 config_backups 只读兼容，缺少摘要的旧备份需自行核对来源。"),
+                                  tr("运行日志 tenco_启动时间_进程号.log：每次启动一个文件，统一记录状态变化、请求错误、配置应用和关键操作，不记录高频运动命令。"),
                                   tr("诊断导出目录 diagnostics：用于现场打包日志、脱敏配置和环境摘要。"),
                                   tr("视频、截图和录像：用于追溯现场环境、相机状态和作业过程。"),
                                   tr("地图、路径和作业计划文件：用于复现车辆当时执行的目标。")},
                                  content));
     layout->addWidget(createCard(tr("日志查看建议"),
-                                 {tr("先看错误发生时间附近的 WARN/ERROR，再向前查看配置应用、连接状态和用户操作。"),
+                                 {tr("先看错误发生时间附近的警告/错误，再向前查看配置应用、连接状态和用户操作。"),
                                   tr("如果日志中持续出现同一错误，应优先处理根因，不要重复点击按钮制造更多噪声。"),
-                                  tr("视频流、云台、底盘、作业服务问题应分别结合首页日志、运行日志、审计日志和维护页配置排查。"),
-                                  tr("日志级别、轮转、脱敏和诊断导出可在维护页的“日志”页统一配置。"),
+                                  tr("视频流、云台、底盘和作业服务问题统一结合本次运行日志与维护页配置排查。"),
+                                  tr("上位机日志在“本机 · 配置备份与日志 → 上位机日志”配置。工控机服务日志位于其项目 log/runtime，分别按启动时间记录。"),
                                   tr("提交问题给开发人员时，应同时提供配置文件、相关日志、复现步骤和现场现象。")},
                                  content));
     layout->addWidget(createCard(tr("隐私与安全"),
@@ -760,15 +803,14 @@ QWidget *Help::createRuntimePage()
     const QString runtimeDir = QCoreApplication::applicationDirPath();
     const QString logsDir = LoggingManager::logDirectoryPath();
     const QString runtimeLog = LoggingManager::currentLogFilePath();
-    const QString auditLog = LoggingManager::auditLogFilePath();
     const QString diagnosticsDir = LoggingManager::diagnosticsDirectoryPath();
-    const QString docsDir = repositoryPath(QStringLiteral("docs/develop"));
+    const QString docsDir = repositoryPath(QStringLiteral("docs"));
 
     auto *infoCard = new QFrame(content);
     infoCard->setObjectName(QStringLiteral("helpCard"));
     auto *infoLayout = new QVBoxLayout(infoCard);
-    infoLayout->setContentsMargins(22, 20, 22, 20);
-    infoLayout->setSpacing(14);
+    infoLayout->setContentsMargins(20, 18, 20, 18);
+    infoLayout->setSpacing(13);
     auto *title = new QLabel(tr("当前运行路径"), infoCard);
     title->setObjectName(QStringLiteral("helpCardTitle"));
     infoLayout->addWidget(title);
@@ -778,29 +820,31 @@ QWidget *Help::createRuntimePage()
     infoLayout->addWidget(createInfoRow(tr("备份目录"), backupDir, infoCard));
     infoLayout->addWidget(createInfoRow(tr("日志目录"), logsDir, infoCard));
     infoLayout->addWidget(createInfoRow(tr("运行日志"), runtimeLog, infoCard));
-    infoLayout->addWidget(createInfoRow(tr("审计日志"), auditLog, infoCard));
     infoLayout->addWidget(createInfoRow(tr("诊断导出目录"), diagnosticsDir, infoCard));
-    infoLayout->addWidget(createInfoRow(tr("开发文档目录"), docsDir, infoCard));
+    infoLayout->addWidget(createInfoRow(tr("文档目录"), docsDir, infoCard));
     layout->addWidget(infoCard);
 
     auto *buttonCard = new QFrame(content);
     buttonCard->setObjectName(QStringLiteral("helpCard"));
-    auto *buttonLayout = new QHBoxLayout(buttonCard);
-    buttonLayout->setContentsMargins(22, 20, 22, 20);
+    auto *buttonLayout = new QGridLayout(buttonCard);
+    buttonLayout->setContentsMargins(20, 18, 20, 18);
     buttonLayout->setSpacing(12);
+    int buttonIndex = 0;
     auto makeButton = [&](const QString &text, const QString &path) {
         auto *button = new QPushButton(text, buttonCard);
         button->setObjectName(QStringLiteral("helpSecondaryButton"));
         connect(button, &QPushButton::clicked, this, [this, path]() {
             openPath(path, tr("打开目录失败"));
         });
-        buttonLayout->addWidget(button);
+        buttonLayout->addWidget(button, buttonIndex / 2, buttonIndex % 2);
+        ++buttonIndex;
     };
     makeButton(tr("打开配置目录"), configDir);
     makeButton(tr("打开备份目录"), backupDir);
     makeButton(tr("打开日志目录"), logsDir);
     makeButton(tr("打开文档目录"), docsDir);
-    buttonLayout->addStretch(1);
+    buttonLayout->setColumnStretch(0, 1);
+    buttonLayout->setColumnStretch(1, 1);
     layout->addWidget(buttonCard);
     layout->addStretch(1);
     return page;
@@ -814,10 +858,13 @@ QWidget *Help::createInfoRow(const QString &label, const QString &value, QWidget
     layout->setSpacing(12);
     auto *labelWidget = new QLabel(label, row);
     labelWidget->setObjectName(QStringLiteral("helpInfoLabel"));
-    labelWidget->setMinimumWidth(120);
+    labelWidget->setFixedWidth(104);
+    labelWidget->setWordWrap(true);
     auto *valueWidget = new QLabel(value, row);
     valueWidget->setObjectName(QStringLiteral("helpInfoValue"));
     valueWidget->setWordWrap(true);
+    valueWidget->setMinimumWidth(0);
+    valueWidget->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     valueWidget->setTextInteractionFlags(Qt::TextSelectableByMouse);
     layout->addWidget(labelWidget);
     layout->addWidget(valueWidget, 1);
@@ -831,8 +878,50 @@ void Help::addTopic(const QString &title, QWidget *page)
     }
 
     auto *item = new QListWidgetItem(title, m_navList);
-    item->setSizeHint(QSize(160, 44));
+    item->setSizeHint(QSize(160, 38));
     m_stack->addWidget(page);
+    QStringList searchText{title};
+    for (auto *label : page->findChildren<QLabel *>())
+        searchText.append(label->text());
+    m_topicSearchText.append(searchText.join(QStringLiteral("\n")));
+}
+
+void Help::filterTopics(const QString &query)
+{
+    const QStringList terms = query.simplified().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    int firstVisible = -1;
+    for (int i = 0; i < m_navList->count(); ++i) {
+        bool matches = true;
+        for (const auto &term : terms)
+            if (!m_topicSearchText.at(i).contains(term, Qt::CaseInsensitive)) {
+                matches = false;
+                break;
+            }
+        m_navList->item(i)->setHidden(!matches);
+        if (matches && firstVisible < 0)
+            firstVisible = i;
+    }
+    if (firstVisible < 0) {
+        m_navList->setCurrentRow(-1);
+        m_stack->setCurrentWidget(m_emptyPage);
+        return;
+    }
+    const int current = m_navList->currentRow();
+    if (current < 0 || m_navList->item(current)->isHidden())
+        m_navList->setCurrentRow(firstVisible);
+    if (auto *scroll = m_stack->currentWidget()->findChild<QScrollArea *>())
+        scroll->verticalScrollBar()->setValue(0);
+}
+
+void Help::selectTopic(const QString &title)
+{
+    m_searchEdit->clear();
+    for (int i = 0; i < m_navList->count(); ++i)
+        if (m_navList->item(i)->text() == title) {
+            m_navList->setCurrentRow(i);
+            m_navList->scrollToItem(m_navList->item(i));
+            return;
+        }
 }
 
 void Help::openPath(const QString &path, const QString &errorTitle) const

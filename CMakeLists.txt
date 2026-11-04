@@ -86,8 +86,6 @@ qt_add_library(tenco_map_model STATIC
     taskcompiler.cpp
     rowworktypes.h
     rowworktypes.cpp
-    rowmissiontypes.h
-    rowmissiontypes.cpp
     mapdocument.h
     mapdocument.cpp
     mapgeometry.h
@@ -154,6 +152,14 @@ qt_add_library(tenco_camera_settings STATIC camerasettingspanel.h camerasettings
 target_link_libraries(tenco_camera_settings PUBLIC Qt6::Widgets tenco_network)
 tenco_configure_target(tenco_camera_settings)
 
+qt_add_library(tenco_navigation_diagnostics STATIC navigationdiagnosticspanel.h navigationdiagnosticspanel.cpp)
+target_link_libraries(tenco_navigation_diagnostics PUBLIC Qt6::Widgets tenco_network)
+tenco_configure_target(tenco_navigation_diagnostics)
+
+qt_add_library(tenco_ipc_management STATIC ipcmanagementpanel.h ipcmanagementpanel.cpp)
+target_link_libraries(tenco_ipc_management PUBLIC Qt6::Widgets tenco_network tenco_logging)
+tenco_configure_target(tenco_ipc_management)
+
 qt_add_executable(Tenco
     main.cpp
     UI_Design.cpp
@@ -190,6 +196,7 @@ qt_add_executable(Tenco
 
     maintenance.h
     maintenance.cpp
+    supportpagestyle.h
 
     help.h
     help.cpp
@@ -207,6 +214,8 @@ if(WIN32)
 endif()
 
 target_link_libraries(Tenco PRIVATE
+    tenco_navigation_diagnostics
+    tenco_ipc_management
     Qt6::Core
     Qt6::Gui
     Qt6::Widgets
@@ -245,7 +254,9 @@ tenco_configure_target(Tenco)
 
 # Keep a stable runtime output directory for local runs and deployment scripts.
 # Output path: <repo>/../bin
-set(_tenco_bin_dir "${CMAKE_CURRENT_SOURCE_DIR}/../bin")
+set(TENCO_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../bin" CACHE PATH
+    "Runtime directory (override only for isolated builds or packaging)")
+set(_tenco_bin_dir "${TENCO_RUNTIME_OUTPUT_DIRECTORY}")
 set_target_properties(Tenco PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${_tenco_bin_dir}"
 )
@@ -255,14 +266,38 @@ foreach(_cfg Debug Release RelWithDebInfo MinSizeRel)
     )
 endforeach()
 
-# Convenience for dev runs: ensure config.json is discoverable via
-# QCoreApplication::applicationDirPath() (see ConfigManager::defaultConfigPath()).
+# Seed a new runtime directory only; never overwrite saved device addresses or
+# credentials when rebuilding (ConfigManager::defaultConfigPath()).
 add_custom_command(TARGET Tenco POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CMAKE_CURRENT_SOURCE_DIR}/config.json"
-            "$<TARGET_FILE_DIR:Tenco>/config.json"
-    COMMENT "Copy config.json next to the executable"
+    COMMAND ${CMAKE_COMMAND}
+            "-DTENCO_CONFIG_TEMPLATE=${CMAKE_CURRENT_SOURCE_DIR}/config.json"
+            "-DTENCO_RUNTIME_CONFIG=$<TARGET_FILE_DIR:Tenco>/config.json"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/initialize_runtime_config.cmake"
+    COMMENT "Initialize config.json only when no runtime configuration exists"
+    VERBATIM
 )
+
+if(WIN32)
+    option(TENCO_DEPLOY_WINDOWS_RUNTIME "Deploy Qt and compiler runtime beside the Windows executable" ON)
+    if(TENCO_DEPLOY_WINDOWS_RUNTIME)
+        get_target_property(_tenco_qmake Qt6::qmake IMPORTED_LOCATION)
+        get_filename_component(_tenco_qt_bin "${_tenco_qmake}" DIRECTORY)
+        get_filename_component(_tenco_compiler_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)
+        if(NOT EXISTS "${_tenco_qt_bin}/windeployqt.exe")
+            message(FATAL_ERROR "Selected Qt kit has no windeployqt.exe")
+        endif()
+        add_custom_command(TARGET Tenco POST_BUILD
+            COMMAND ${CMAKE_COMMAND}
+                "-DTENCO_RUNTIME_EXECUTABLE=$<TARGET_FILE:Tenco>"
+                "-DTENCO_QT_BIN=${_tenco_qt_bin}"
+                "-DTENCO_COMPILER_BIN=${_tenco_compiler_bin}"
+                "-DTENCO_QML_DIRECTORY=${CMAKE_CURRENT_SOURCE_DIR}/qml"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/deploy_windows_runtime.cmake"
+            COMMENT "Deploy Qt/QML plugins and compiler runtime for desktop launch"
+            VERBATIM
+        )
+    endif()
+endif()
 
     add_custom_command(TARGET Tenco POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory
@@ -277,10 +312,16 @@ include(GNUInstallDirs)
 install(TARGETS Tenco
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
-install(FILES
-    "${CMAKE_CURRENT_SOURCE_DIR}/config.json"
-    DESTINATION ${CMAKE_INSTALL_BINDIR}
-)
+if(IS_ABSOLUTE "${CMAKE_INSTALL_BINDIR}")
+    set(_tenco_install_bindir "${CMAKE_INSTALL_BINDIR}")
+else()
+    set(_tenco_install_bindir "\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}")
+endif()
+install(CODE "
+    set(TENCO_CONFIG_TEMPLATE \"${CMAKE_CURRENT_SOURCE_DIR}/config.json\")
+    set(TENCO_RUNTIME_CONFIG \"\$ENV{DESTDIR}${_tenco_install_bindir}/config.json\")
+    include(\"${CMAKE_CURRENT_SOURCE_DIR}/cmake/initialize_runtime_config.cmake\")
+")
 
 set(CPACK_PACKAGE_NAME "Tenco")
 set(CPACK_PACKAGE_VENDOR "Tenco")

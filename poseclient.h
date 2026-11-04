@@ -9,7 +9,7 @@ class PoseClient : public QObject {
   public:
     explicit PoseClient(QObject *parent = nullptr);
     ~PoseClient() override;
-    void configure(const QUrl &baseUrl, const QString &token, int timeoutMs = 3000);
+    void configure(const QUrl &baseUrl, const QString &token, int timeoutMs = 5000);
     void start();
     void stop();
     bool isConfigured() const { return m_http.configured(); }
@@ -20,6 +20,7 @@ class PoseClient : public QObject {
   signals:
     void poseChanged(const ControlPoseSnapshot &pose);
     void availabilityChanged(bool fresh, const QString &reason);
+    void monitoringAvailabilityChanged(bool current, const QString &reason);
     void frameChanged();
     void captureFinished(const QJsonObject &capture);
     void errorOccurred(const QString &reason);
@@ -29,6 +30,7 @@ class PoseClient : public QObject {
     void readStream();
     void failStream(const QString &reason);
     bool acceptPose(const QJsonObject &object, qint64 lineAgeMs);
+    bool monitorFresh() const;
     void pollCapture();
     void acceptCapture(const JsonHttpResult &result);
     JsonHttpClient m_http;
@@ -42,11 +44,14 @@ class PoseClient : public QObject {
     QElapsedTimer m_age, m_captureAge;
     ControlPoseSnapshot m_pose;
     QString m_captureId, m_captureBoot;
-    bool m_running = false, m_online = false;
+    bool m_running = false, m_online = false, m_monitorOnline = false;
+    double m_transportAgeMs = 1e12;
     int m_failures = 0;
     int m_stateTimeoutMs = 350;
-    int m_streamTimeoutMs = 3000;
+    int m_streamTimeoutMs = 5000;
     double m_firstStreamSendTime = 0, m_lastStreamSendTime = 0;
+    bool m_streamTimingStarted = false;
+    QString m_streamFreshnessBasis, m_streamTimingBootId;
     qint64 m_firstStreamReceiveMs = 0;
     qint64 m_nextPoll = 0;
     QElapsedTimer m_clock;

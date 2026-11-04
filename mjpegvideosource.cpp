@@ -1,7 +1,5 @@
 #include "mjpegvideosource.h"
 
-#include <QUrlQuery>
-
 MjpegVideoSource::MjpegVideoSource(QObject *parent)
     : AbstractVideoSource(parent)
 {
@@ -58,18 +56,6 @@ QImage MjpegVideoSource::lastFrame() const
     return m_client.lastFrame();
 }
 
-void MjpegVideoSource::setStreamUrlTemplate(const QString &templateUrl)
-{
-    m_client.setStreamUrlTemplate(templateUrl);
-    const QUrl url(templateUrl.trimmed());
-    m_supportsTopics = url.isValid() && QUrlQuery(url).hasQueryItem(QStringLiteral("topic"));
-}
-
-QString MjpegVideoSource::buildUrlForTopic(const QString &topic) const
-{
-    return m_client.buildUrlForTopic(topic);
-}
-
 void MjpegVideoSource::setStreamUrl(const QUrl &url)
 {
     m_client.setStreamUrl(url);
@@ -93,11 +79,6 @@ void MjpegVideoSource::setAutoReconnect(bool enabled)
 void MjpegVideoSource::setMaxDisplayFps(int fps)
 {
     m_client.setMaxDisplayFps(fps);
-}
-
-bool MjpegVideoSource::supportsTopics() const
-{
-    return m_supportsTopics;
 }
 
 AbstractVideoSource::State MjpegVideoSource::mapState(VideoClient::State state)

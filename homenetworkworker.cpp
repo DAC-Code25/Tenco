@@ -8,8 +8,8 @@
 #include <QJsonDocument>
 #include <QJsonParseError>
 #include <QTimer>
-#include <QMetaObject>
 #include <QLoggingCategory>
+#include <QPointer>
 #include <QtGlobal>
 
 Q_LOGGING_CATEGORY(lcHomeNetworkWorker, "tenco.net.status")
@@ -20,6 +20,7 @@ HomeNetworkWorker::HomeNetworkWorker(QObject *parent)
     , m_timer(new QTimer(this))
 {
     m_timer->setTimerType(Qt::PreciseTimer);
+    m_timer->setSingleShot(true);
     connect(m_timer, &QTimer::timeout, this, &HomeNetworkWorker::triggerFetch);
 }
 
@@ -30,6 +31,8 @@ void HomeNetworkWorker::configure(const QUrl &url,
                                   int requestTimeoutMs,
                                   int maxBackoffMs)
 {
+    const bool restart = m_running;
+    if (restart) stop();
     m_url = url;
     m_requests = requests;
     m_intervalMs = qBound(50, intervalMs, 5000);
@@ -37,6 +40,7 @@ void HomeNetworkWorker::configure(const QUrl &url,
     m_requestTimeoutMs = qBound(500, requestTimeoutMs, 30000);
     m_maxBackoffMs = qBound(m_intervalMs, maxBackoffMs, 60000);
     m_timer->setInterval(m_intervalMs);
+    if (restart) start();
 }
 
 void HomeNetworkWorker::start()
@@ -46,22 +50,17 @@ void HomeNetworkWorker::start()
     }
 
     m_running = true;
-    m_fetchPending = false;
+    ++m_generation;
     m_failureCount = 0;
     m_timer->setInterval(m_intervalMs);
-
-    if (!m_timer->isActive()) {
-        m_timer->start(m_intervalMs);
-    }
-
     triggerFetch();
 }
 
 void HomeNetworkWorker::stop()
 {
     m_running = false;
+    ++m_generation;
     m_timer->stop();
-    m_fetchPending = false;
     m_failureCount = 0;
     m_timer->setInterval(m_intervalMs);
 
@@ -85,12 +84,10 @@ void HomeNetworkWorker::triggerFetch()
         return;
     }
 
-    if (m_currentReply && m_currentReply->isRunning()) {
-        m_fetchPending = true;
+    if (m_currentReply) {
         return;
     }
-
-    m_fetchPending = false;
+    m_timer->stop();
 
     QNetworkRequest request = NetworkPolicy::makeJsonRequest(m_url,
                                                              m_authToken,
@@ -108,18 +105,15 @@ void HomeNetworkWorker::onReplyFinished()
         return;
     }
 
-    if (reply == m_currentReply) {
-        m_currentReply = nullptr;
-    }
-
+    if (reply != m_currentReply) return;
+    m_currentReply = nullptr;
+    const auto generation = m_generation;
+    const QPointer<HomeNetworkWorker> guard(this);
+    reply->deleteLater();
     handleReply(reply);
 
-    reply->deleteLater();
-
-    if (m_running && m_fetchPending) {
-        m_fetchPending = false;
-        QMetaObject::invokeMethod(this, &HomeNetworkWorker::triggerFetch, Qt::QueuedConnection);
-    }
+    // A slow response never creates polling debt or bypasses error backoff.
+    if (guard && m_generation == generation && m_running && !m_currentReply) m_timer->start();
 }
 
 void HomeNetworkWorker::handleReply(QNetworkReply *reply)

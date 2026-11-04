@@ -9,13 +9,15 @@
 #include "motioncommandarbiter.h"
 #include "home_status_presenter.h"
 #include "homevideopresenter.h"
+#include "camerapreviewselection.h"
+#include "parameterwheelguard.h"
 #include "statusprotocol.h"
 #include "configmanager.h"
 #include "loggingmanager.h"
 #include "ui_mainwindow.h"         
 #include "imageswitch.h"         
 #include <QDir>              // 读取录像目录时需要主目录定位
-#include <QFileDialog>       // 弹出保存路径选择对话框
+#include <QCoreApplication>
 #include <QFile>
 #include <QDateTime>
 #include <QJsonArray>        // 构造批量寄存器读取的请求体
@@ -23,7 +25,7 @@
 #include <QJsonObject>       // 处理单条键值信息
 #include <QMessageBox>       // 输入校验提示与结果反馈
 #include <QLineEdit>         // 对经纬度输入框执行焦点与选中操作
-#include <QComboBox>       // 模式选择控件
+#include <QComboBox>       // 相机预览选择控件
 #include <QDoubleSpinBox>
 #include <QRegularExpression>// 校验经纬度格式
 #include <QNetworkRequest>   // 配置 HTTP 请求头与目标地址
@@ -37,11 +39,12 @@
 #include <QString>           // UI 文本与网络地址处理
 #include <QTimer>            // 周期性任务与长按控制的定时器
 #include <QUrl>              // 解析 WebSocket 与 HTTP 地址
-#include <QUrlQuery>
 #include <QKeyEvent>         // 处理 W/A/S/D 键盘事件
 #include <QDebug>            // 调试输出
 #include <QProgressDialog>   // 展示控制器重启的倒计时
 #include <QVector>
+#include <QSignalBlocker>
+#include <QStandardItemModel>
 #include <QtMath>
 #include <algorithm>
 #include <cmath>
@@ -143,6 +146,7 @@ void Home::initialize()
     if (!ui) {
         return;
     }
+    ParameterWheelGuard::install(ui->homePage);
     ui->battery->setValue(10);
     setupImageSwitches();
     restartCheckTimer->setInterval(500);
@@ -150,9 +154,28 @@ void Home::initialize()
     connect(ui->recordButton, &QPushButton::clicked, this, &Home::record);
     connect(ui->captureButton, &QPushButton::clicked, this, &Home::photo);
     connect(ui->pushButton_restart, &QPushButton::clicked, this, &Home::restartControl);
-    connect(ui->pushButton_9, &QPushButton::clicked, this, &Home::submitOriginCommand);
-    connect(ui->pushButton, &QPushButton::clicked, this, &Home::submitModeCommand);
-    connect(ui->savePathButton, &QPushButton::clicked, this, &Home::handleSavePathButtonClicked);
+    ui->lineEdit->setReadOnly(true);
+    ui->lineEdit_8->setReadOnly(true);
+    ui->lineEdit->setPlaceholderText(tr("待连接工控机"));
+    ui->lineEdit_8->setPlaceholderText(tr("待连接工控机"));
+    ui->pushButton_9->setText(tr("工控机维护"));
+    ui->pushButton_9->setToolTip(tr("启动或重启融合时，统一确认本次基准站坐标"));
+    connect(ui->pushButton_9, &QPushButton::clicked, this, &Home::ipcMaintenanceRequested);
+    updateOriginDisplay();
+    connect(ui->cameraPreviewKind, qOverload<int>(&QComboBox::currentIndexChanged), this, &Home::handlePreviewSelectionChanged);
+    connect(ui->videoPreviewButton, &QPushButton::toggled, this, &Home::handlePreviewToggled);
+    ui->recordButton->setToolTip(tr("拍照和录像保存彩色 RGB，不受预览类型影响。工控机媒体保存在相机服务 Capture 目录。"));
+    ui->captureButton->setToolTip(ui->recordButton->toolTip());
+    ui->pushButton_restart->setToolTip(tr("重启底盘控制器，会短时中断底盘通信；不是重启工控机导航服务。"));
+    const QString manualSpeedHelp = tr("仅用于首页独立手动控制。自动任务速度和跟踪参数请在维护 → 工控机维护中调整。");
+    ui->doubleSpinBox->setToolTip(manualSpeedHelp);
+    ui->doubleSpinBox_2->setToolTip(manualSpeedHelp);
+    ui->imageSwitch1->setToolTip(tr("启用后按住方向按钮点动，松开停止；不会启动或恢复自动任务。"));
+    ui->imageSwitch2->setToolTip(tr("启用后按住 W/A/S/D 手动控制，松开停止；输入框编辑时不触发运动。"));
+    ui->stopButton->setToolTip(tr("停止首页手动控制和云台，清除当前按键输入。自动任务请使用地图页“暂停任务”或“中止任务”。"));
+    ui->stopButton->setAccessibleName(tr("停止手动控制和云台"));
+    for (auto *button : {ui->forwardButton, ui->backwardButton, ui->leftButton, ui->rightButton})
+        button->setToolTip(tr("需先开启运动控制；按住点动，松开停止。"));
     connect(ui->forwardButton, &QPushButton::pressed, this, &Home::handleForwardButtonPressed);
     connect(ui->forwardButton, &QPushButton::released, this, &Home::handleForwardButtonReleased);
     connect(ui->backwardButton, &QPushButton::pressed, this, &Home::handleBackwardButtonPressed);
@@ -275,21 +298,11 @@ void Home::applyVideoConfig()
     if (!isVideoDisplayReady()) {
         return;
     }
-    const auto &videoCfg = ConfigManager::instance().video();
-    const bool wasActive = m_videoSource && m_videoSource->isActive();
-    const bool wantsOakBackend = videoCfg.backend == QStringLiteral("oak_depthai");
-    const bool hasOakBackend = dynamic_cast<OakCameraVideoSource *>(m_videoSource) != nullptr;
-
-    if (m_videoSource && wantsOakBackend != hasOakBackend) {
-        m_videoSource->stop();
-        m_videoSource->deleteLater();
-        m_videoSource = nullptr;
-    }
-
+    if (!m_previewConfigured) m_previewEnabled = ConfigManager::instance().video().autoStart;
+    m_previewConfigured = true;
+    resetPreviewSource();
+    populateVideoStreamSelector();
     initializeVideoDisplay();
-    if (m_videoSource && (wasActive || videoCfg.autoStart) && m_videoSource->isConfigured()) {
-        m_videoSource->start();
-    }
 }
 
 void Home::applyCameraControlConfig()
@@ -314,20 +327,40 @@ void Home::initializeVideoDisplay()
         m_videoPresenter->setScaleContents(videoCfg.scaleContents);
     }
 
+    auto *selector = ui->cameraPreviewKind;
+    const int index = selector ? selector->currentIndex() : -1;
+    const QString unavailable = index < 0 ? tr("未配置相机预览") : selector->itemData(index, Qt::UserRole + 2).toString();
+    if (!unavailable.isEmpty()) {
+        m_previewEnabled = false;
+        updatePreviewButton();
+        updateVideoPlaceholder(unavailable);
+        return;
+    }
     if (!m_videoSource) {
         if (videoCfg.backend == QStringLiteral("oak_depthai")) {
             m_videoSource = new OakCameraVideoSource(videoCfg, this);
         } else {
             m_videoSource = new MjpegVideoSource(this);
         }
-        connect(m_videoSource, &AbstractVideoSource::frameReceived, this, &Home::handleVideoFrameReceived);
-        connect(m_videoSource, &AbstractVideoSource::stateChanged, this, [this](AbstractVideoSource::State state, const QString &message) {
-            if (!message.isEmpty()) {
-                logMessage(message);
-                if (state != AbstractVideoSource::State::Streaming) {
-                    updateVideoPlaceholder(message);
-                }
+        const auto generation = m_previewGeneration;
+        auto *source = m_videoSource;
+        connect(source, &AbstractVideoSource::frameReceived, this, [this, source, generation](const QImage &frame) {
+            if (generation != m_previewGeneration || source != m_videoSource || !m_previewEnabled || !source->isActive()) return;
+            handleVideoFrameReceived(frame);
+        });
+        connect(source, &AbstractVideoSource::stateChanged, this, [this, source, generation](AbstractVideoSource::State state, const QString &message) {
+            if (generation != m_previewGeneration || source != m_videoSource || !m_previewEnabled) return;
+            if (state == AbstractVideoSource::State::Streaming && !source->isActive()) return;
+            const QString type = m_previewKind == "depth" ? tr("深度预览") : tr("彩色预览");
+            if (state == AbstractVideoSource::State::Streaming) {
+                m_previewMessage.clear();
+            } else {
+                m_previewMessage = (state == AbstractVideoSource::State::Error || state == AbstractVideoSource::State::Stopped) ?
+                    tr("%1暂不可用，等待重连\n请检查相机服务和连接地址").arg(type) : tr("正在连接%1…").arg(type);
+                updateVideoPlaceholder(m_previewMessage);
+                if (ui && ui->videoDisplay) ui->videoDisplay->setToolTip(message);
             }
+            if (!message.isEmpty()) logMessage(type + " · " + message);
         });
     }
 
@@ -336,34 +369,44 @@ void Home::initializeVideoDisplay()
         return;
     }
 
-    m_videoSource->setStreamUrlTemplate(videoCfg.streamUrl);
     m_videoSource->setReconnectIntervalMs(videoCfg.reconnectIntervalMs);
     m_videoSource->setAutoReconnect(true);
     if (auto *mjpegSource = qobject_cast<MjpegVideoSource *>(m_videoSource)) {
         mjpegSource->setMaxDisplayFps(videoCfg.previewFps);
     }
 
-    m_activeVideoTopic.clear();
-    const bool isMjpegBackend = videoCfg.backend == QStringLiteral("mjpeg_http");
-    const QUrl url(videoCfg.streamUrl.trimmed());
-    populateVideoStreamSelector();
-    QComboBox *topicCombo = ui->video_topic_name;
-    if (topicCombo && topicCombo->count() > 1) {
-        const bool selectionApplied = applyConfiguredVideoStreamSelection();
-        if (!selectionApplied) {
-            updateVideoPlaceholder(tr("请选择视频流以开启预览"));
-        }
-    } else {
-        if (isMjpegBackend) {
-            m_videoSource->setStreamUrl(url);
-            updateVideoPlaceholder(url.isValid() ? tr("等待视频流...") : tr("未配置视频流 URL"));
-        } else {
-            updateVideoPlaceholder(tr("等待本地相机..."));
-        }
-        if (videoCfg.autoStart && (m_videoSource->isConfigured() || url.isValid())) {
-            m_videoSource->start();
-        }
-    }
+    if (videoCfg.backend != QStringLiteral("oak_depthai"))
+        m_videoSource->setStreamUrl(QUrl(selector->currentData().toString()));
+    updatePreviewButton();
+    if (m_previewEnabled && m_videoSource->isConfigured()) {
+        updateVideoPlaceholder(m_previewKind == "depth" ? tr("正在连接深度预览…") : tr("正在连接彩色预览…"));
+        m_videoSource->start();
+    } else updateVideoPlaceholder(m_previewKind == "depth" ? tr("深度预览未开启") : tr("彩色预览未开启"));
+}
+
+void Home::resetPreviewSource()
+{
+    ++m_previewGeneration;
+    m_previewHasFrame = false;
+    m_previewMessage.clear();
+    if (!m_videoSource) return;
+    // Disconnect before stopping: reset/worker notifications from the previous
+    // stream cannot repaint an RGB frame under the newly selected depth label.
+    disconnect(m_videoSource, nullptr, this, nullptr);
+    m_videoSource->setAutoReconnect(false);
+    m_videoSource->stop();
+    m_videoSource->deleteLater();
+    m_videoSource = nullptr;
+    updateVideoPlaceholder(tr("预览切换中…"));
+}
+
+void Home::updatePreviewButton()
+{
+    if (!ui || !ui->videoPreviewButton) return;
+    const QSignalBlocker blocked(ui->videoPreviewButton);
+    ui->videoPreviewButton->setChecked(m_previewEnabled);
+    ui->videoPreviewButton->setText(m_previewEnabled ? tr("关闭预览") : tr("开启预览"));
+    ui->videoPreviewButton->setToolTip(tr("只控制实时预览，不影响工控机正在进行的录像。"));
 }
 
 void Home::initializeCameraStatusPolling()
@@ -451,98 +494,27 @@ void Home::initializeGimbalControl()
 
 void Home::populateVideoStreamSelector()
 {
-    if (!ui || !ui->video_topic_name) {
-        return;
+    if (!ui || !ui->cameraPreviewKind) return;
+    auto *selector = ui->cameraPreviewKind;
+    const QSignalBlocker blocked(selector);
+    selector->clear();
+    const auto &config = ConfigManager::instance().video();
+    const auto streams = CameraPreviewSelection::streams(config.backend, config.streamUrl, config.controlBaseUrl);
+    int selected = 0;
+    for (const auto &stream : streams) {
+        const int index = selector->count();
+        selector->addItem(stream.label, stream.url.toString(QUrl::FullyEncoded));
+        selector->setItemData(index, stream.kind, Qt::UserRole + 1);
+        selector->setItemData(index, stream.reason, Qt::UserRole + 2);
+        selector->setItemData(index, stream.available ? tr("仅切换预览；拍照和录像始终保存彩色 RGB。") : stream.reason, Qt::ToolTipRole);
+        if (auto *model = qobject_cast<QStandardItemModel *>(selector->model()))
+            if (auto *item = model->item(index)) item->setEnabled(stream.available);
+        if (stream.kind == m_previewKind && stream.available) selected = index;
     }
-
-    QComboBox *topicCombo = ui->video_topic_name;
-    m_videoStreamOptions.clear();
-
-    const auto &videoCfg = ConfigManager::instance().video();
-    const bool useConfiguredStreamOptions = !videoCfg.streamOptions.isEmpty();
-    const bool useTopicTemplateSelection = m_videoSource && m_videoSource->supportsTopics();
-
-    topicCombo->blockSignals(true);
-
-    if (useConfiguredStreamOptions || !useTopicTemplateSelection) {
-        topicCombo->clear();
-        topicCombo->addItem(tr("关闭视频"), QString());
-    } else {
-        if (topicCombo->count() == 0) {
-            topicCombo->addItem(tr("关闭视频"), QString());
-        } else {
-            topicCombo->setItemData(0, QString());
-        }
-    }
-
-    if (useConfiguredStreamOptions) {
-        for (const auto &option : videoCfg.streamOptions) {
-            topicCombo->addItem(option.name, option.url);
-            m_videoStreamOptions.insert(option.name, option.url);
-        }
-    } else if (useTopicTemplateSelection) {
-        for (int i = 1; i < topicCombo->count(); ++i) {
-            const QString topicName = topicCombo->itemText(i).trimmed();
-            if (!topicName.isEmpty()) {
-                m_videoStreamOptions.insert(topicName, QString());
-            }
-        }
-    } else if (!videoCfg.streamUrl.trimmed().isEmpty()) {
-        topicCombo->addItem(tr("默认视频流"), videoCfg.streamUrl.trimmed());
-        m_videoStreamOptions.insert(tr("默认视频流"), videoCfg.streamUrl.trimmed());
-    }
-
-    topicCombo->setEnabled(topicCombo->count() > 1);
-    topicCombo->setCurrentIndex(0);
-    topicCombo->blockSignals(false);
-    topicCombo->disconnect(this);
-#if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
-    connect(topicCombo, qOverload<int>(&QComboBox::currentIndexChanged), this, &Home::handleVideoTopicChanged);
-#else
-    connect(topicCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &Home::handleVideoTopicChanged);
-#endif
-}
-
-bool Home::applyConfiguredVideoStreamSelection()
-{
-    if (!ui || !ui->video_topic_name) {
-        return false;
-    }
-    QComboBox *topicCombo = ui->video_topic_name;
-    const QString configuredUrl = ConfigManager::instance().video().streamUrl.trimmed();
-    if (configuredUrl.isEmpty() || topicCombo->count() <= 1) {
-        return false;
-    }
-
-    const bool hasExplicitStreamOptions = !ConfigManager::instance().video().streamOptions.isEmpty();
-
-    if (!hasExplicitStreamOptions && !m_videoSource->supportsTopics()) {
-        topicCombo->setCurrentIndex(1);
-        return true;
-    }
-
-    for (int i = 1; i < topicCombo->count(); ++i) {
-        const QString itemUrl = topicCombo->itemData(i).toString().trimmed();
-        if (itemUrl == configuredUrl) {
-            topicCombo->setCurrentIndex(i);
-            return true;
-        }
-    }
-
-    if (!hasExplicitStreamOptions && m_videoSource && m_videoSource->supportsTopics()) {
-        const QUrl configuredStreamUrl(configuredUrl);
-        const QString configuredTopic = QUrlQuery(configuredStreamUrl).queryItemValue(QStringLiteral("topic")).trimmed();
-        if (!configuredTopic.isEmpty()) {
-            for (int i = 1; i < topicCombo->count(); ++i) {
-                if (topicCombo->itemText(i).trimmed() == configuredTopic) {
-                    topicCombo->setCurrentIndex(i);
-                    return true;
-                }
-            }
-        }
-    }
-
-    return false;
+    selector->setCurrentIndex(selected);
+    m_previewKind = selector->currentData(Qt::UserRole + 1).toString();
+    selector->setToolTip(config.backend == "oak_depthai" ? tr("本机 OAK 仅提供彩色预览，深度需要工控机相机服务。") :
+        tr("选择彩色或深度预览；预览关闭时只更新选择。拍照和录像始终保存彩色 RGB。"));
 }
 
 void Home::initializeCameraControl()
@@ -643,11 +615,13 @@ bool Home::isVideoDisplayReady() const
 
 bool Home::usesRemoteCameraControl() const
 {
-    return m_cameraControlClient && m_cameraControlClient->isConfigured();
+    return ConfigManager::instance().video().backend != "oak_depthai" &&
+        m_cameraControlClient && m_cameraControlClient->isConfigured();
 }
 
 void Home::updateVideoPlaceholder(const QString &message)
 {
+    m_previewHasFrame = false;
     if (m_videoPresenter) {
         m_videoPresenter->showPlaceholder(message);
     }
@@ -655,6 +629,8 @@ void Home::updateVideoPlaceholder(const QString &message)
 
 void Home::displayVideoFrame(const QImage &image)
 {
+    if (image.isNull()) return;
+    m_previewHasFrame = true;
     if (m_videoPresenter) {
         m_videoPresenter->showFrame(image);
     }
@@ -686,6 +662,7 @@ void Home::updateRemoteCameraUiState()
     if (!usesRemoteCameraControl()) {
         return;
     }
+    if (!m_previewEnabled) return;
 
     if (!m_remoteCameraServiceAvailable) {
         updateVideoPlaceholder(tr("工控机相机服务不可用，等待恢复..."));
@@ -695,9 +672,8 @@ void Home::updateRemoteCameraUiState()
         updateVideoPlaceholder(tr("工控机相机服务在线，但相机未连接"));
         return;
     }
-    if (!m_videoPresenter || m_videoPresenter->lastFrame().isNull()) {
-        updateVideoPlaceholder(tr("相机已连接，等待预览画面..."));
-    }
+    if (!m_previewHasFrame) updateVideoPlaceholder(!m_previewMessage.isEmpty() ? m_previewMessage :
+        (m_previewKind == "depth" ? tr("深度预览等待画面…") : tr("彩色预览等待画面…")));
 }
 
 void Home::requestRemoteCameraStatus()
@@ -894,7 +870,7 @@ void Home::logMessage(const QString &text)
     if (!ui || !ui->plainTextEdit) {
         return;
     }
-    const QString normalizedText = text.trimmed();
+    const QString normalizedText = LoggingManager::redact(text.trimmed());
     if (normalizedText.isEmpty()) {
         return;
     }
@@ -902,6 +878,11 @@ void Home::logMessage(const QString &text)
         return;
     }
     m_lastHomeLogMessage = normalizedText;
+    // Keep UI history and disk writes bounded; motion commands are samples,
+    // while capture, connection and failure messages are useful run events.
+    ui->plainTextEdit->setMaximumBlockCount(500);
+    static const QRegularExpression motionMessage(QStringLiteral("^(前进|后退|左转|右转)(开始|停止)（(按钮|键盘)）$"));
+    if (!motionMessage.match(normalizedText).hasMatch()) qInfo().noquote() << tr("首页：") << normalizedText;
     const QString line = QStringLiteral("[%1] %2")
                              .arg(QDateTime::currentDateTime().toString(QStringLiteral("hh:mm:ss")),
                                   normalizedText);
@@ -938,53 +919,29 @@ void Home::handleVideoFrameReceived(const QImage &frame)
     displayVideoFrame(frame);
 }
 
-void Home::handleVideoTopicChanged(int index)
+void Home::handlePreviewSelectionChanged(int index)
 {
-    if (!ui || !ui->video_topic_name) {
+    if (!ui || !ui->cameraPreviewKind || index < 0) return;
+    const auto reason = ui->cameraPreviewKind->itemData(index, Qt::UserRole + 2).toString();
+    if (!reason.isEmpty()) {
+        m_previewEnabled = false;
+        resetPreviewSource();
+        updatePreviewButton();
+        updateVideoPlaceholder(reason);
         return;
     }
-    if (!m_videoSource) {
-        return;
-    }
+    m_previewKind = ui->cameraPreviewKind->itemData(index, Qt::UserRole + 1).toString();
+    resetPreviewSource();
+    initializeVideoDisplay();
+}
 
-    if (index <= 0) {
-        m_activeVideoTopic.clear();
-        m_videoSource->stop();
-        updateVideoPlaceholder(tr("视频流已关闭"));
-        return;
-    }
-
-    const QString topic = ui->video_topic_name->itemText(index).trimmed();
-    if (topic.isEmpty()) {
-        return;
-    }
-
-    QString nextUrlStr = ui->video_topic_name->itemData(index).toString().trimmed();
-    if (nextUrlStr.isEmpty()) {
-        nextUrlStr = m_videoSource->buildUrlForTopic(topic);
-    }
-    if (nextUrlStr.isEmpty()) {
-        m_videoSource->stop();
-        updateVideoPlaceholder(tr("视频流 URL 配置无效"));
-        return;
-    }
-
-    m_activeVideoTopic = topic;
-    const QUrl nextUrl(nextUrlStr);
-    if (!nextUrl.isValid()) {
-        m_videoSource->stop();
-        updateVideoPlaceholder(tr("视频流 URL 配置无效"));
-        return;
-    }
-
-    if (m_videoSource->streamUrl() == nextUrl && m_videoSource->isActive()) {
-        return;
-    }
-
-    m_videoSource->stop();
-    m_videoSource->setStreamUrl(nextUrl);
-    m_videoSource->start();
-    updateVideoPlaceholder(tr("正在切换视频流..."));
+void Home::handlePreviewToggled(bool enabled)
+{
+    m_previewEnabled = enabled;
+    // A fresh source cancels reconnect timers, drains old decode work and gives
+    // every callback a new generation, including a quick stop/start sequence.
+    resetPreviewSource();
+    initializeVideoDisplay();
 }
 // 判断按钮手动控制是否被授权
 bool Home::isManualControlEnabledForButtons() const
@@ -1054,15 +1011,8 @@ void Home::startRecording()
         return;
     }
 
-    if (m_saveDirectory.isEmpty()) {
-        if (!ensureSaveDirectorySelected(parentWidget)) {
-            logMessage(tr("已取消选择保存目录，未开始录像。"));
-            return;
-        }
-    }
-
     QString path;
-    if (!m_videoSource->startRecording(m_saveDirectory, &path)) {
+    if (!m_videoSource->startRecording(localCaptureDirectory(), &path)) {
         QMessageBox::warning(parentWidget, tr("提示"), tr("无法开始录像：无法写入文件。"));
         return;
     }
@@ -1093,18 +1043,9 @@ void Home::stopRecordingAndSave()
     m_recordFilePath.clear();
 }
 
-// 确保选择了保存目录，返回是否成功选择
-bool Home::ensureSaveDirectorySelected(QWidget *parentForDialog)
+QString Home::localCaptureDirectory() const
 {
-    const QString dir = QFileDialog::getExistingDirectory(parentForDialog,
-                                                          tr("选择保存地址"),
-                                                          QDir::homePath(),
-                                                          QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
-    if (dir.isEmpty()) {
-        return false;
-    }
-    m_saveDirectory = dir;
-    return true;
+    return QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("Capture"));
 }
 // 更新重启倒计时弹窗的显示内容
 void Home::updateRebootProgress()
@@ -1145,26 +1086,6 @@ void Home::handleNetworkFailure(int httpStatus, const QString &errorString, cons
     stopMotionForSafety(QStringLiteral("status_network_failure"));
     if (m_statusPresenter->handleNetworkFailure(httpStatus, errorString, responseBody)) {
         restartCheckTimer->start();
-    }
-}
-void Home::submitModeCommand()
-{
-    if (!ui) return;
-    else logMessage(tr("自动任务请在任务页面明确启动或恢复；维护操作需先停稳"));
-}
-void Home::handleSavePathButtonClicked()
-{
-    if (!ui) {  // 缺少 UI 指针时直接返回
-        return;
-    }
-    const QString dir = QFileDialog::getExistingDirectory(ui->savePathButton,  // 以保存路径按钮为父控件弹出目录选择
-                                                          tr("选择保存地址"),
-                                                          QDir::homePath(),
-                                                          QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);  // 仅允许选择文件夹，不解析软链接
-    if (!dir.isEmpty()) {  // 用户选择了有效目录
-        m_saveDirectory = dir;
-        qDebug() << "Selected directory:" << dir;  // 当前实现只记录路径，后续可扩展保存逻辑
-        logMessage(tr("已选择保存目录：%1").arg(dir));
     }
 }
 // 切换手动控制开关后，更新定时器及可能的运动命令
@@ -1624,16 +1545,20 @@ void Home::record()
     if (!m_videoSource) {
         return;
     }
+    if (m_previewKind == "depth") {
+        QMessageBox::information(ui ? ui->centralwidget : nullptr, tr("彩色录像"),
+            tr("深度仅用于预览。请配置工控机相机控制地址，或切回彩色预览后录像。"));
+        return;
+    }
 
-    // If the stream/source is not configured (e.g. topic not selected), stop early.
+    // An unconfigured source cannot record.
     if (!m_videoSource->isConfigured()) {
         QMessageBox::warning(ui ? ui->centralwidget : nullptr, tr("提示"), tr("请先选择/配置视频流后再录像。"));
         return;
     }
 
-    if (!m_videoSource->isActive()) {
-        m_videoSource->start();
-    }
+    if (!m_previewEnabled) handlePreviewToggled(true);
+    if (!m_videoSource || !m_videoSource->isActive()) return;
 
     if (!m_videoSource->isRecording()) {
         startRecording();
@@ -1653,9 +1578,6 @@ void Home::photo()
         if (!m_cameraControlClient) {
             return;
         }
-        if (m_videoSource && m_videoSource->isConfigured() && !m_videoSource->isActive()) {
-            m_videoSource->start();
-        }
         if (m_cameraControlClient->isBusy()) {
             QMessageBox::information(ui ? ui->centralwidget : nullptr, tr("提示"), tr("相机命令处理中，请稍后再试。"));
             return;
@@ -1667,6 +1589,11 @@ void Home::photo()
     if (!m_videoSource) {
         return;
     }
+    if (m_previewKind == "depth") {
+        QMessageBox::information(ui ? ui->centralwidget : nullptr, tr("彩色拍照"),
+            tr("深度仅用于预览。请配置工控机相机控制地址，或切回彩色预览后拍照。"));
+        return;
+    }
 
     if (m_videoSource->lastFrame().isNull()) {
         QMessageBox::warning(ui ? ui->centralwidget : nullptr, tr("提示"), tr("请先开启视频流后再拍照。"));
@@ -1674,14 +1601,8 @@ void Home::photo()
     }
 
     QWidget *parentWidget = ui ? ui->centralwidget : nullptr;
-    if (m_saveDirectory.isEmpty()) {
-        if (!ensureSaveDirectorySelected(parentWidget)) {
-            return;
-        }
-    }
-
     QString savedPath;
-    if (m_videoSource->saveSnapshot(m_saveDirectory, &savedPath)) {
+    if (m_videoSource->saveSnapshot(localCaptureDirectory(), &savedPath)) {
         QMessageBox::information(parentWidget, tr("成功"), tr("已保存到:\n%1").arg(savedPath));
         logMessage(tr("已拍照并保存到 %1").arg(savedPath));
         return;
@@ -1728,16 +1649,75 @@ void Home::restartControl()
     rebootProgressDialog->raise();
     rebootCountdownTimer->start(1000);
 }
-void Home::submitOriginCommand()
+void Home::setSavedOriginSnapshot(const QJsonObject &origin)
+{
+    m_savedOriginSnapshot = origin;
+    updateOriginDisplay();
+}
+
+void Home::setActiveOriginSnapshot(const QJsonObject &origin)
+{
+    m_activeOriginSnapshot = origin;
+    updateOriginDisplay();
+}
+
+void Home::setNavigationStatusCurrent(bool current)
+{
+    m_navigationStatusCurrent = current;
+    updateOriginDisplay();
+}
+
+void Home::setControlPoseStatus(const ControlPoseSnapshot &pose)
+{
+    if (m_statusPresenter) m_statusPresenter->setControlPoseStatus(pose);
+}
+
+void Home::setPoseMonitoringAvailability(bool current, const QString &reason)
+{
+    if (m_statusPresenter) m_statusPresenter->setPoseMonitoringAvailability(current, reason);
+}
+
+void Home::setTaskStatus(const TrackingSnapshot &status, bool current)
+{
+    if (m_statusPresenter) m_statusPresenter->setTaskStatus(status, current);
+}
+
+void Home::updateOriginDisplay()
 {
     if (!ui) return;
-    bool latOk = false, lonOk = false;
-    const double lat = ui->lineEdit->text().toDouble(&latOk);
-    const double lon = ui->lineEdit_8->text().toDouble(&lonOk);
-    if (!latOk || !lonOk || !std::isfinite(lat) || !std::isfinite(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
-        logMessage(tr("请输入有效的经纬度")); return;
+    const auto valid = [](const QJsonObject &origin) {
+        const auto lat = origin.value("latitude");
+        const auto lon = origin.value("longitude");
+        return lat.isDouble() && lon.isDouble() && std::isfinite(lat.toDouble()) &&
+            std::isfinite(lon.toDouble()) && std::abs(lat.toDouble()) <= 90 && std::abs(lon.toDouble()) <= 180;
+    };
+    const auto saved = m_savedOriginSnapshot.value("saved").toObject();
+    const bool active = valid(m_activeOriginSnapshot);
+    const bool savedValid = valid(saved);
+    const auto origin = active ? m_activeOriginSnapshot : saved;
+    QString detail;
+    if (active) {
+        detail = (m_navigationStatusCurrent ? tr("导航服务当前运行原点；版本：%1") :
+            tr("无线任务监视状态延迟，保留上次运行原点；当前是否生效待更新；版本：%1"))
+            .arg(origin.value("originRevision").toString());
+        if (savedValid && (saved.value("originRevision") != origin.value("originRevision") ||
+            saved.value("latitude") != origin.value("latitude") || saved.value("longitude") != origin.value("longitude") ||
+            saved.value("altitude") != origin.value("altitude")))
+            detail += tr("\n工控机已保存不同原点，需在融合启动确认后重新绑定地图与任务。");
+    } else if (savedValid) {
+        detail = tr("工控机已保存原点；尚未确认导航运行生效。启动融合时需确认本次坐标。");
+    } else {
+        detail = tr("尚未读取工控机原点。请检查管理连接，在工控机维护启动融合时确认坐标。");
     }
-    emit originUpdateRequested(lat, lon);
+    if (!m_savedOriginSnapshot.isEmpty() && !m_savedOriginSnapshot.value("consistent").toBool())
+        detail += tr("\n配置需核对：%1").arg(m_savedOriginSnapshot.value("message").toString());
+    const bool haveOrigin = active || savedValid;
+    ui->label_8->setText(active ? (m_navigationStatusCurrent ? tr("运行经度") : tr("上次经度")) : tr("保存经度"));
+    ui->label_11->setText(active ? (m_navigationStatusCurrent ? tr("运行纬度") : tr("上次纬度")) : tr("保存纬度"));
+    ui->lineEdit->setText(haveOrigin ? QString::number(origin.value("longitude").toDouble(), 'f', 8) : QString());
+    ui->lineEdit_8->setText(haveOrigin ? QString::number(origin.value("latitude").toDouble(), 'f', 8) : QString());
+    ui->lineEdit->setToolTip(detail);
+    ui->lineEdit_8->setToolTip(detail);
 }
 // 检查控制器是否已经重连成功
 void Home::checkConnectionRestored()

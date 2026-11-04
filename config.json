@@ -1,8 +1,4 @@
 {
-  "geo": {
-    "baseLatitudeDeg": 30.2229922,
-    "baseLongitudeDeg": 120.0228563
-  },
   "routePlanning": {
     "minEdgeCost": 0.001,
     "edgePenalty": 0.01,
@@ -12,12 +8,6 @@
     "backend": "mjpeg_http",
     "streamUrl": "http://192.168.31.13:18080/camera/stream.mjpeg",
     "controlBaseUrl": "http://192.168.31.13:18080",
-    "streamOptions": [
-      {
-        "name": "前置彩色相机",
-        "url": "http://192.168.31.13:18080/camera/stream.mjpeg"
-      }
-    ],
     "deviceId": "",
     "previewWidth": 1280,
     "previewHeight": 720,
@@ -105,22 +95,14 @@
     "maxAngularSpeed": 0.8,
     "manualMotionRepeatIntervalMs": 40
   },
-  "taskDefaults": {
-    "speedLimit": 0.1,
-    "goalToleranceMeters": 0.03,
-    "angularSpeedLimit": 0.35,
-    "angleToleranceRad": 0.05,
-    "safetyProfileId": "",
-    "rotationZoneId": ""
-  },
   "poseSource": {
     "enabled": true,
     "baseUrl": "http://192.168.31.13:18131/api/v1",
-    "requestTimeoutMs": 3000
+    "requestTimeoutMs": 5000
   },
   "tracking": {
     "enabled": true,
     "baseUrl": "http://192.168.31.13:18130/api/v1",
-    "requestTimeoutMs": 3000
+    "requestTimeoutMs": 5000
   }
 }

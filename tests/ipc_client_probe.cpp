@@ -1,7 +1,6 @@
 #include <QtWidgets>
 #include <optional>
 #include "rowworktypes.h"
-#include "rowmissiontypes.h"
 #include "taskcompiler.h"
 #include "jsonhttpclient.h"
 #define private public
@@ -21,9 +20,12 @@
 #include <cmath>
 
 // Talks to the real IPC services and a loopback chassis simulator. No control law here.
+int runNavigationDefaultsProbe(QApplication &app);
 int main(int argc, char **argv) {
     QApplication app(argc, argv);
     if (argc > 1) { ConfigManager::instance().setConfigFilePath(argv[1]); ConfigManager::instance().reload(); }
+    if (argc > 2 && QString::fromLocal8Bit(argv[2]) == "--navigation-defaults")
+        return runNavigationDefaultsProbe(app);
     QMainWindow window;
     Ui::MainWindow ui; ui.setupUi(&window);
     Map map(&ui);
@@ -37,6 +39,10 @@ int main(int argc, char **argv) {
     QTemporaryDir journal;
     ExternalEventCoordinator events(&tracking);
     events.configure(QUrl("http://127.0.0.1:19133"), {}, journal.path(), 1000);
+    QObject::connect(&events, &ExternalEventCoordinator::manualConfirmationChanged,
+                     &map, &Map::setExternalActionReviewEvent);
+    QObject::connect(&map, &Map::externalActionResolved, &events,
+                     [&events](const QString &id, bool success) { events.resolveCurrent(id, success); });
     MapFrameBinding binding;
     binding.confirmed = true;
     binding.context = {"test-map",       "simulation-origin", "test-transform",
@@ -61,7 +67,10 @@ int main(int argc, char **argv) {
     QElapsedTimer deadline;
     deadline.start();
     auto fail = [&](const QString &error) {
-        QTextStream(stderr) << "FAIL phase " << phase << ": " << error << Qt::endl;
+        QTextStream(stderr) << "FAIL phase " << phase << ": " << error
+            << " | busy=" << tracking.busy() << " actionPending=" << coordinator.actionPending()
+            << " editable=" << map.canEditRowWorkPlan() << " queue=" << map.m_routeQueue.size()
+            << " notice=" << (map.m_routeStatusLabel ? map.m_routeStatusLabel->text() : QString()) << Qt::endl;
         app.exit(1);
     };
     QObject::connect(&pose, &PoseClient::poseChanged, &app, [&](const ControlPoseSnapshot &p) {
@@ -96,9 +105,9 @@ int main(int argc, char **argv) {
             return;
         }
         TaskCompileOptions options;
-        options.safetyProfileId = "open";
-        options.rotationZoneId = "open";
+        options.applyControllerDefaults(tracking.configuration());
         auto task = TaskCompiler::route({{"out", {{-10, 4}, {-9.4, 4}}, {}}}, binding, options);
+        if (!task.ok()) { fail(task.error); return; }
         const auto xy = task.plan["steps"].toArray()[0].toObject()["points"].toArray();
         if (std::abs(xy[0].toArray()[0].toDouble()) > 1e-8 ||
             std::abs(xy[1].toArray()[0].toDouble()-.6) > 1e-8 ||
@@ -147,7 +156,10 @@ int main(int argc, char **argv) {
             phase = 4;
         } else if (phase == 4 && status.state == "Tracking" && status.measuredV > .04) {
             chassis.connectToHost();
-            coordinator.pauseTask();
+            auto *pause = window.findChild<QPushButton *>("mapTaskPauseButton");
+            if (!pause || !pause->isEnabled()) { fail("actual pause button unavailable"); return; }
+            pause->click();
+            pause->click(); // A rapid second click must not queue another motion intent.
             phase = 5;
         } else if (phase == 5 && chassis.isConnected() && status.state == "Paused" && !tracking.busy() && tracking.motionReady()) {
             chassis.sendVelocityCommand(0, 0);
@@ -158,12 +170,19 @@ int main(int argc, char **argv) {
             coordinator.acquireSession(); phase = 10;
         } else if (phase == 10 && tracking.hasSession() && tracking.motionReady()) {
             if (status.executionId != originalExecution || !tracking.preparedPlan().isEmpty()) { fail("client reopen changed execution"); return; }
+            auto *resume = window.findChild<QPushButton *>("mapTaskResumeButton");
+            if (!resume || !resume->isEnabled()) { fail("reopen review button unavailable"); return; }
             phase = 11;
-            tracking.readTask(status.taskId, status.taskRevision);
+            resume->click(); // First click reads and reviews; it must not resume motion.
+            resume->click(); // Repeated clicks while reading must not queue motion.
         } else if (phase == 11 && !tracking.preparedPlan().isEmpty() && tracking.motionReady()) {
+            if (status.state != "Paused" || status.executionId != originalExecution ||
+                std::abs(status.measuredV) > .02) { fail("task review resumed motion"); return; }
             const auto revision = map.m_binding.context.mapRevision;
             map.handleRotationSpinChanged(30);
-            map.handleRouteResume();
+            auto *resume = window.findChild<QPushButton *>("mapTaskResumeButton");
+            if (!resume || !resume->isEnabled()) { fail("actual resume button unavailable"); return; }
+            resume->click();
             if (revision != map.m_binding.context.mapRevision) { fail("view rotation invalidated plan"); return; }
             QTextStream(stdout) << "PASS client reopen, remote plan preview/explicit confirmation, same execution resume" << Qt::endl;
             phase = 6;
@@ -179,12 +198,19 @@ int main(int argc, char **argv) {
                                 << Qt::endl;
             QTextStream(stdout) << "PASS pose -> actual map, model error=" << maxMapModelError
                                 << "m displayed error=" << maxSceneError << "m" << Qt::endl;
-            map.handleRouteStart();
+            phase = 12;
+        } else if (phase == 12 && status.state == "Completed" && tracking.commandFresh() &&
+                   !tracking.busy() && !coordinator.actionPending() && map.m_routeStartButton->isEnabled()) {
+            // Completion can arrive before the photo ack's command-result query.
+            // Match an actual enabled UI click instead of bypassing its guard and
+            // silently consuming the test's one dispatch while that query is pending.
+            map.m_routeStartButton->click();
+            if (!coordinator.actionPending() && !tracking.busy()) {
+                fail("enabled route execution action did not queue a request");
+                return;
+            }
             phase = 7;
-        } else if (phase == 7 && status.state == "Ready" && !tracking.busy() && tracking.motionReady()) {
-            coordinator.startTask();
-            phase = 8;
-        } else if (phase == 8 && status.state == "Tracking" && status.measuredV > .04) {
+        } else if (phase == 7 && status.state == "Tracking" && status.measuredV > .04) {
             coordinator.shutdown();
             chassis.disconnectFromHost();
             QTextStream(stdout) << "PASS Qt shutdown while autonomous task is running" << Qt::endl;

@@ -2,9 +2,9 @@
 #define MAP_H
 
 #include "rowworktypes.h"
-#include "rowmissiontypes.h"
 #include "taskcompiler.h"
 #include <QPointer>
+#include <QJsonObject>
 
 #include <QObject>
 #include <QHash>
@@ -45,6 +45,7 @@ class QWidget;
 class QJsonObject;
 class QShortcut;
 class QLineEdit;
+class QAction;
 class ControlSessionCoordinator;
 class TrackingClient;
 class PoseClient;
@@ -58,6 +59,7 @@ class MainWindow;
 class Map : public QObject
 {
     Q_OBJECT
+    friend class MapRouteIntegrationTest;
 
 public:
     explicit Map(Ui::MainWindow *ui, QObject *parent = nullptr);
@@ -70,6 +72,7 @@ public slots:
     void handleModuleActivated();
     void updateVehiclePose(double x, double y, double theta);
     void applyRuntimeConfig();
+    void setExternalActionReviewEvent(const QString &eventId);
 
 public:
     enum class PathType {
@@ -97,13 +100,9 @@ private slots:
     void handleRouteRemove();
     void handleRouteClear();
     void handleRouteStart();
-    void handleRoutePause();
     void handleRouteResume();
-    void handleRouteStop();
     void handleLocateCurrentPosition();
     void handleEditModeToggled(bool checked);
-    void handleZoomIn();
-    void handleZoomOut();
     void handleNewMap();
     void handleLoadMap();
     void handleSaveMap();
@@ -119,40 +118,29 @@ private slots:
     void handleRowWorkDeleteCheckpoint();
     void handleRowWorkClearCheckpoints();
     void handleRowWorkClearPlan();
-    void handleRowWorkReadPlan();
-    void handleRowWorkUploadPlan();
     void handleRowWorkStart();
-    void handleRowWorkPause();
-    void handleRowWorkResume();
-    void handleRowWorkStop();
     void handleRowWorkLoopChanged(bool checked);
     void handleRowWorkCheckpointCellChanged(int row, int column);
 
-    void handleRowMissionNameEdited();
-    void handleRowMissionLoopChanged(bool checked);
-    void handleRowMissionStepSelectionChanged();
-    void handleRowMissionStepCellChanged(int row, int column);
-    void handleRowMissionTypeChanged(int index);
-    void handleRowMissionStepNameEdited();
-    void handleRowMissionStepNoteEdited();
-    void handleRowMissionTargetYawChanged(double value);
-    void handleRowMissionDwellChanged(int value);
-    void handleRowMissionAddRowLegStep();
-    void handleRowMissionAddTransferStep();
-    void handleRowMissionAddTurnStep();
-    void handleRowMissionAddWaitStep();
-    void handleRowMissionRemoveStep();
-    void handleRowMissionMoveStepUp();
-    void handleRowMissionMoveStepDown();
-    void handleRowMissionClearSteps();
-    void handleRowMissionImportCurrentRowWork();
-    void handleRowMissionApplyStepEdits();
 
 private:
     void confirmFrameBinding();
+    void bindNewMapToController();
+    void refreshControllerProfileRevision();
     void refreshPlanningRevision();
     QByteArray m_planningFingerprint;
-    void uploadMissionTask();
+    void submitRouteTask();
+    void requestTaskReview();
+    bool hasConfirmedTask() const;
+    void handleCheckpointReview();
+    void openCheckpointReview();
+    QPushButton *m_taskPauseButton = nullptr, *m_taskResumeButton = nullptr,
+                *m_taskStopButton = nullptr, *m_taskResetButton = nullptr, *m_cancelStartButton = nullptr,
+                *m_checkpointReviewButton = nullptr, *m_frameBindingButton = nullptr;
+    QJsonObject m_taskReviewIdentity, m_checkpointReviewIdentity;
+    bool m_taskReviewOpen = false, m_checkpointReviewOpen = false;
+    quint64 m_checkpointReviewGeneration = 0;
+    QString m_externalReviewEventId;
     void applyCapture(const QJsonObject& capture);
     void applyTrackingStatus(const TrackingSnapshot& status);
     void reviewRemoteTask(const QJsonObject &record);
@@ -161,7 +149,13 @@ private:
     QPointer<TrackingClient> m_tracking;
     QPointer<PoseClient> m_poseClient;
     MapFrameBinding m_binding;
+    bool m_newMapMayAutoBind = true;
+    void refreshTaskStatus();
     QLabel* m_trackingStatusLabel = nullptr;
+    QLabel* m_taskProgressLabel = nullptr;
+    QLabel* m_routeStartHintLabel = nullptr;
+    QLabel* m_rowWorkStartHintLabel = nullptr;
+    QLabel* m_routeQueueEmptyLabel = nullptr;
     struct MapPoint {
         int id = -1;
         QPointF mapPosition;
@@ -177,21 +171,19 @@ private:
         int startId = -1;
         int endId = -1;
         PathType type = PathType::Line;
+        bool bidirectional = false;
         QList<QPointF> polyline;
         double sagitta = 0.0;
         QPointF arcCenter;
         double radius = 0.0;
         double sweepAngleRad = 0.0;
         QGraphicsPathItem *pathItem = nullptr;
-        QGraphicsPathItem *arrowItem = nullptr;
     };
 
     struct RouteStep {
         int fromId = -1;
         int toId = -1;
         QList<int> pathIds;
-        QList<int> pointSequence;
-        int progressEdgeIndex = 0;
     };
 
     enum class RowWorkPendingCaptureTarget {
@@ -214,31 +206,34 @@ private:
 
     bool addPointInternal(double x, double y, double theta, std::optional<int> forcedId = std::nullopt);
     void removePointInternal(int pointId);
-    bool addLinePath(int startId, int endId, std::optional<int> forcedId = std::nullopt);
-    bool addArcPath(int startId, int endId, double sagitta, std::optional<int> forcedId = std::nullopt);
+    bool addLinePath(int startId, int endId, std::optional<int> forcedId = std::nullopt, bool bidirectional = false);
+    bool addArcPath(int startId, int endId, double sagitta, std::optional<int> forcedId = std::nullopt, bool bidirectional = false);
     bool addPathInternal(MapPath &&path);
     void removePathInternal(int pathId);
     void refreshPathGeometry(MapPath &path);
-    int addPathOrWarn(int startId, int endId, PathType type, double sagitta = 0.0, std::optional<int> forcedId = std::nullopt);
+    int addPathOrWarn(int startId, int endId, PathType type, double sagitta = 0.0, std::optional<int> forcedId = std::nullopt, bool bidirectional = false);
     int findPathId(int startId, int endId) const;
     void updatePointGraphics(MapPoint &point);
     void refreshAllPointGraphics();
     void refreshVehicleGraphics();
+    void appendLocalizationTrail(const ControlPoseSnapshot &pose);
+    void refreshLocalizationTrailGraphics();
+    void clearLocalizationTrail();
     void refreshPathsForPoint(int pointId);
     void autoSelectRoutePoints(int startId, int endId);
 
     QList<int> findRoutePathIds(int startId, int endId) const;
-    QList<QPointF> composePolyline(const QList<int> &pathIds) const;
+    QList<QPointF> composePolyline(const QList<int> &pathIds, int startId = -1) const;
     int findNearestPointId(const QPointF &mapPos, double thresholdMeters, double *outDistance = nullptr) const;
     void updatePointTableRow(int pointId);
     double angleFromMapVector(double dx, double dy) const;
-    QList<int> buildPointSequenceFromPaths(const QList<int> &pathIds, int startId) const;
     bool rebuildRouteStep(RouteStep &step);
 
     void refreshPointUi();
     void refreshPathUi();
     void refreshSelectors();
     void refreshRouteQueueUi();
+    void refreshRouteGraphics();
     void updateRouteControlState();
     void setRouteStatusText(const QString &text, bool warning = false);
     void setMapRotation(double rotationDeg);
@@ -257,10 +252,12 @@ private:
     const MapPoint *pointById(int id) const;
 
     void updateMapNameDisplay();
-    void updateVehiclePointBinding();
-    bool isRouteQueueContinuous() const;
+    static QString mapsDirectory();
+    QString suggestedMapFilePath(const QString &directory) const;
+    bool ensureMapsDirectory();
     void resetToBlankMap();
     bool saveCurrentMapInteractive(bool forceChooseFile);
+    bool confirmMapChanges(const QString &title);
     QByteArray buildComparableMapState() const;
     void syncCommittedMapState();
     bool hasUnsavedMapChanges() const;
@@ -280,35 +277,13 @@ private:
     void updateRowWorkPlanVersion();
     bool hasRowWorkLine() const;
     void clearRowWorkPlanInternal(bool keepStatusMessage = false);
-    void addRowWorkCheckpoint(const QPointF &mapPos);
+    bool addRowWorkCheckpoint(const QPointF &mapPos);
     void sortRowWorkCheckpoints();
     QString nextCheckpointName() const;
-    RowCheckpoint checkpointFromRow(int row) const;
+    bool checkpointFromRow(int row, RowCheckpoint *outCheckpoint, QString *errorMessage) const;
     void updateCheckpointRowNames();
     bool canEditRowWorkPlan() const;
-    bool uploadRowWorkPlanIfNeeded(bool forceUpload);
-
-    void refreshRowMissionUi();
-    void refreshRowMissionSummary();
-    void refreshRowMissionStepTable();
-    void refreshRowMissionControlState();
-    void refreshRowMissionStepEditor();
-    void setRowMissionStatusText(const QString &text, bool warning = false);
-    void updateRowMissionPlanVersion();
-    bool canEditRowMissionPlan() const;
-    RowMissionStep *rowMissionStepAt(int row);
-    const RowMissionStep *rowMissionStepAt(int row) const;
-    int rowMissionSelectedStepRow() const;
-    QString rowMissionStepTypeText(RowMissionStepType type) const;
-    QString rowMissionStepSummaryText(const RowMissionStep &step) const;
-    RowMissionStep buildMissionStepFromCurrentRowWork(RowMissionStepType type) const;
-    void insertRowMissionStep(const RowMissionStep &step, int row = -1);
-    void moveRowMissionStep(int fromRow, int toRow);
-    void updateRowMissionStepNames();
-    void loadRowMissionStepEditor(int row);
-    void applyRowMissionStepEditor(int row);
-    void syncRowMissionEditorWidgets();
-    void selectRowMissionStep(int row);
+    bool submitRowWorkTask();
 
     Ui::MainWindow *ui;
 
@@ -321,8 +296,6 @@ private:
     double m_cellSizeMeters = 1.0;
     double m_cellSizePixels = 50.0;
     double m_mapRotationDeg = 0.0;
-    double m_baseLatitudeDeg = 0.0;
-    double m_baseLongitudeDeg = 0.0;
     bool m_initialized = false;
     bool m_pathsVisible = true;
     int m_gridWidth = 0;
@@ -333,35 +306,40 @@ private:
 
     QHash<int, MapPoint> m_points;
     QHash<int, MapPath> m_paths;
-    QHash<int, QList<int>> m_outgoingPathIds;
 
     QGraphicsItemGroup *m_vehicleItem = nullptr;
     QGraphicsRectItem *m_vehicleBody = nullptr;
     QGraphicsItemGroup *m_vehiclePoseMarker = nullptr;
     QGraphicsEllipseItem *m_vehiclePoseCircle = nullptr;
     QGraphicsPathItem *m_vehiclePoseArrow = nullptr;
+    QGraphicsPathItem *m_localizationTrailItem = nullptr;
+    QGraphicsPathItem *m_routePlanItem = nullptr;
+    struct LocalizationTrailSample {
+        QPointF enuPosition;
+        double yaw = 0.0;
+        bool startsSegment = true;
+    };
+    static constexpr qsizetype kMaxLocalizationTrailSamples = 6000;
+    QList<LocalizationTrailSample> m_localizationTrail;
+    QByteArray m_localizationTrailFrame;
+    QString m_localizationTrailBoot;
+    quint64 m_localizationTrailSequence = 0;
+    bool m_localizationTrailStartsSegment = true;
+    QElapsedTimer m_localizationTrailAge;
+    QTimer *m_localizationTrailRefreshTimer = nullptr;
     QGraphicsPathItem *m_rowWorkLineItem = nullptr;
-    QGraphicsPathItem *m_rowWorkDirectionArrowItem = nullptr;
     QGraphicsEllipseItem *m_rowWorkStartMarker = nullptr;
     QGraphicsEllipseItem *m_rowWorkEndMarker = nullptr;
     QList<QGraphicsItemGroup *> m_rowWorkCheckpointMarkers;
 
-    std::optional<int> m_vehicleCurrentPointId;
     bool m_hasVehiclePose = false;
     double m_vehiclePoseX = 0.0;
     double m_vehiclePoseY = 0.0;
     double m_vehiclePoseTheta = 0.0;
-    bool m_hasRenderedVehiclePose = false;
-    double m_lastRenderedVehiclePoseX = 0.0;
-    double m_lastRenderedVehiclePoseY = 0.0;
-    double m_lastRenderedVehiclePoseTheta = 0.0;
-    QElapsedTimer m_vehiclePoseRefreshClock;
     bool m_editModeEnabled = false;
     int m_draggedPointId = -1;
     bool m_draggedPointMoved = false;
     bool m_draggedPointRotated = false;
-    QPointF m_contextMenuScenePos;
-    std::optional<int> m_altRouteStartPointId;
     bool m_altRotationActive = false;
     double m_rotationStartTheta = 0.0;
     double m_rotationReferenceAngle = 0.0;
@@ -395,6 +373,7 @@ private:
     QComboBox *m_startPointCombo = nullptr;
     QComboBox *m_endPointCombo = nullptr;
     QComboBox *m_pathTypeCombo = nullptr;
+    QComboBox *m_pathDirectionCombo = nullptr;
     QDoubleSpinBox *m_arcSagittaSpin = nullptr;
     QPushButton *m_addPathButton = nullptr;
     QPushButton *m_removePathButton = nullptr;
@@ -408,9 +387,6 @@ private:
     QPushButton *m_routeRemoveButton = nullptr;
     QPushButton *m_routeClearButton = nullptr;
     QPushButton *m_routeStartButton = nullptr;
-    QPushButton *m_routePauseButton = nullptr;
-    QPushButton *m_routeResumeButton = nullptr;
-    QPushButton *m_routeStopButton = nullptr;
     QCheckBox *m_routeLoopCheck = nullptr;
     QSpinBox *m_routeLoopIntervalSpin = nullptr;
     QLabel *m_routeStatusLabel = nullptr;
@@ -432,53 +408,11 @@ private:
     QPushButton *m_rowWorkDeleteCheckpointButton = nullptr;
     QPushButton *m_rowWorkClearCheckpointsButton = nullptr;
     QTableWidget *m_rowWorkCheckpointTable = nullptr;
-    QDoubleSpinBox *m_rowWorkBaseSpeedSpin = nullptr;
-    QDoubleSpinBox *m_rowWorkMaxSpeedSpin = nullptr;
-    QDoubleSpinBox *m_rowWorkEndpointArrivalSpin = nullptr;
-    QDoubleSpinBox *m_rowWorkCheckpointToleranceSpin = nullptr;
-    QDoubleSpinBox *m_rowWorkTurnAngularSpeedSpin = nullptr;
     QCheckBox *m_rowWorkLoopCheck = nullptr;
-    QPushButton *m_rowWorkReadPlanButton = nullptr;
-    QPushButton *m_rowWorkUploadPlanButton = nullptr;
     QPushButton *m_rowWorkStartButton = nullptr;
-    QPushButton *m_rowWorkPauseButton = nullptr;
-    QPushButton *m_rowWorkResumeButton = nullptr;
-    QPushButton *m_rowWorkStopButton = nullptr;
     QLabel *m_rowWorkPlanLabel = nullptr;
-    QLabel *m_rowWorkRuntimeLabel = nullptr;
-    QLabel *m_rowWorkProgressLabel = nullptr;
-    QLabel *m_rowWorkTargetLabel = nullptr;
-    QLabel *m_rowWorkControlLabel = nullptr;
-    QLabel *m_rowWorkPoseLabel = nullptr;
-    QLabel *m_rowWorkFaultLabel = nullptr;
-    QLabel *m_rowWorkEventLabel = nullptr;
-    QLabel *m_rowWorkStatusLabel = nullptr;
 
-    QTabWidget *m_rowWorkModeTabWidget = nullptr;
     QWidget *m_rowWorkPrimitivePage = nullptr;
-    QWidget *m_rowWorkMissionPage = nullptr;
-    QLineEdit *m_rowMissionNameEdit = nullptr;
-    QLabel *m_rowMissionIdLabel = nullptr;
-    QLabel *m_rowMissionSummaryLabel = nullptr;
-    QLabel *m_rowMissionStatusLabel = nullptr;
-    QCheckBox *m_rowMissionLoopCheck = nullptr;
-    QTableWidget *m_rowMissionStepTable = nullptr;
-    QPushButton *m_rowMissionAddRowLegButton = nullptr;
-    QPushButton *m_rowMissionAddTransferButton = nullptr;
-    QPushButton *m_rowMissionAddTurnButton = nullptr;
-    QPushButton *m_rowMissionAddWaitButton = nullptr;
-    QPushButton *m_rowMissionRemoveStepButton = nullptr;
-    QPushButton *m_rowMissionMoveUpButton = nullptr;
-    QPushButton *m_rowMissionMoveDownButton = nullptr;
-    QPushButton *m_rowMissionClearButton = nullptr;
-    QPushButton *m_rowMissionImportRowWorkButton = nullptr;
-    QComboBox *m_rowMissionStepTypeCombo = nullptr;
-    QLineEdit *m_rowMissionStepNameEdit = nullptr;
-    QLineEdit *m_rowMissionStepNoteEdit = nullptr;
-    QDoubleSpinBox *m_rowMissionTargetYawSpin = nullptr;
-    QSpinBox *m_rowMissionDwellSpin = nullptr;
-    QLabel *m_rowMissionPrimitiveSummaryLabel = nullptr;
-    QPushButton *m_rowMissionApplyStepButton = nullptr;
 
     QList<RouteStep> m_routeQueue;
     bool m_waitingForClickPlacement = false;
@@ -489,13 +423,11 @@ private:
     QByteArray m_committedMapState;
     static QString s_lastMapFilePath;
     RowWorkPlan m_rowWorkPlan;
-    RowMissionPlan m_rowMissionPlan;
+    QJsonObject m_legacyRowMissionDocument;
+    bool m_hasLegacyRowMissionDocument = false;
     bool m_rowWorkCheckpointTableUpdating = false;
     bool m_rowWorkClickPlacementMode = false;
     RowWorkPendingCaptureTarget m_rowWorkPendingCaptureTarget = RowWorkPendingCaptureTarget::None;
-    bool m_rowMissionStepTableUpdating = false;
-    bool m_rowMissionEditorUpdating = false;
-    int m_rowMissionSelectedStepRow = -1;
 
     QPushButton *m_newMapButton = nullptr;
 };

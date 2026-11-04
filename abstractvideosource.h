@@ -35,13 +35,10 @@ public:
     virtual bool saveSnapshot(const QString &directory, QString *outPath = nullptr) const = 0;
     virtual QImage lastFrame() const = 0;
 
-    virtual void setStreamUrlTemplate(const QString &templateUrl);
-    virtual QString buildUrlForTopic(const QString &topic) const;
     virtual void setStreamUrl(const QUrl &url);
     virtual QUrl streamUrl() const;
     virtual void setReconnectIntervalMs(int intervalMs);
     virtual void setAutoReconnect(bool enabled);
-    virtual bool supportsTopics() const;
 
 signals:
     void frameReceived(const QImage &frame);

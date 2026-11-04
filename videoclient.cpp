@@ -8,7 +8,6 @@
 #include <QNetworkRequest>
 #include <QThread>
 #include <QTimer>
-#include <QUrlQuery>
 #include <QLoggingCategory>
 #include <QtGlobal>
 
@@ -34,34 +33,6 @@ VideoClient::~VideoClient()
         m_frameThread->quit();
         m_frameThread->wait();
     }
-}
-
-void VideoClient::setStreamUrlTemplate(const QString &templateUrl)
-{
-    m_streamTemplate = templateUrl.trimmed();
-}
-
-QString VideoClient::buildUrlForTopic(const QString &topic) const
-{
-    if (m_streamTemplate.isEmpty()) {
-        return QString();
-    }
-
-    QUrl url(m_streamTemplate);
-    if (!url.isValid()) {
-        return QString();
-    }
-
-    QUrlQuery query(url);
-    if (query.hasQueryItem(QStringLiteral("topic"))) {
-        query.removeAllQueryItems(QStringLiteral("topic"));
-    }
-    if (!topic.isEmpty()) {
-        query.addQueryItem(QStringLiteral("topic"), topic);
-    }
-    url.setQuery(query);
-
-    return url.toString(QUrl::FullyEncoded);
 }
 
 void VideoClient::setStreamUrl(const QUrl &url)
@@ -124,6 +95,7 @@ void VideoClient::start()
     req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("TencoVideoClient/1.0"));
     req.setRawHeader("Accept", "multipart/x-mixed-replace");
     req.setRawHeader("Connection", "keep-alive");
+    req.setTransferTimeout(m_transferTimeoutMs);
 #if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
     req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
 #endif
@@ -181,8 +153,8 @@ void VideoClient::handleReadyRead()
     if (!m_frameWorker) {
         return;
     }
-    QMetaObject::invokeMethod(m_frameWorker, [worker = m_frameWorker, chunk]() {
-        worker->enqueueBytes(chunk);
+    QMetaObject::invokeMethod(m_frameWorker, [worker = m_frameWorker, chunk, epoch = m_streamEpoch]() {
+        worker->enqueueBytes(chunk, epoch);
     }, Qt::QueuedConnection);
 }
 
@@ -190,17 +162,21 @@ void VideoClient::handleStreamFinished()
 {
     qCWarning(lcVideoClient) << "Stream finished";
     cleanupReply();
+    resetFrameWorkerStream();
     setState(State::Stopped, tr("视频流已结束，等待重连..."));
     scheduleReconnect();
 }
 
 void VideoClient::handleStreamError(QNetworkReply::NetworkError error)
 {
-    Q_UNUSED(error);
     const QString errStr = m_reply ? m_reply->errorString() : QStringLiteral("unknown");
     qCWarning(lcVideoClient) << "Stream error:" << errStr;
     cleanupReply();
-    setState(State::Error, tr("视频流异常：%1").arg(errStr));
+    resetFrameWorkerStream();
+    const bool timedOut = error == QNetworkReply::TimeoutError || error == QNetworkReply::OperationCanceledError;
+    setState(State::Error, timedOut ?
+        tr("视频流连续 %1 秒未收到数据，请检查相机地址、服务与网络").arg(m_transferTimeoutMs / 1000.0, 0, 'g', 3) :
+        tr("视频流异常：%1，请检查相机地址与服务").arg(errStr));
     scheduleReconnect();
 }
 
@@ -254,7 +230,8 @@ void VideoClient::initializeFrameWorker()
     m_frameWorker->moveToThread(m_frameThread);
 
     connect(m_frameThread, &QThread::finished, m_frameWorker, &QObject::deleteLater);
-    connect(m_frameWorker, &VideoFrameWorker::frameReady, this, [this](const QImage &frame) {
+    connect(m_frameWorker, &VideoFrameWorker::frameReady, this, [this](const QImage &frame, quint64 epoch) {
+        if (epoch != m_streamEpoch || !isActive()) return;
         m_lastFrame = frame;
         if (!m_seenFirstFrame) {
             m_seenFirstFrame = true;
@@ -263,7 +240,8 @@ void VideoClient::initializeFrameWorker()
         }
         emit frameReceived(m_lastFrame);
     });
-    connect(m_frameWorker, &VideoFrameWorker::workerError, this, [this](const QString &message) {
+    connect(m_frameWorker, &VideoFrameWorker::workerError, this, [this](const QString &message, quint64 epoch) {
+        if (epoch != m_streamEpoch) return;
         m_isRecording = false;
         m_recordFilePath.clear();
         setState(State::Error, message);
@@ -273,15 +251,18 @@ void VideoClient::initializeFrameWorker()
 
 void VideoClient::resetFrameWorkerStream()
 {
+    const auto epoch = ++m_streamEpoch;
     m_lastFrame = QImage();
     if (!m_frameWorker) {
         return;
     }
     if (QThread::currentThread() == m_frameWorker->thread()) {
-        m_frameWorker->resetStream();
+        m_frameWorker->resetStream(epoch);
         return;
     }
-    QMetaObject::invokeMethod(m_frameWorker, "resetStream", Qt::BlockingQueuedConnection);
+    QMetaObject::invokeMethod(m_frameWorker, [worker = m_frameWorker, epoch] {
+        worker->resetStream(epoch);
+    }, Qt::BlockingQueuedConnection);
 }
 
 void VideoClient::setState(State state, const QString &message)

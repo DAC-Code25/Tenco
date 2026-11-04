@@ -27,7 +27,6 @@ private:
     QWidget *createBulletList(const QStringList &items, QWidget *parent = nullptr) const;
     QWidget *createCarVisualWidget(QWidget *parent = nullptr) const;
     QString diagnosticText() const;
-    QString appDataPath(const QString &child = QString()) const;
     QString aboutModelFilePath() const;
     QUrl aboutModelSourceUrl() const;
     QString oakBackendStatus() const;

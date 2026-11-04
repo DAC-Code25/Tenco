@@ -47,14 +47,14 @@ public:
     Metrics metrics() const;
 
 public slots:
-    void enqueueBytes(const QByteArray &chunk);
-    void resetStream();
+    void enqueueBytes(const QByteArray &chunk, quint64 streamEpoch);
+    void resetStream(quint64 streamEpoch);
     void reset();
 
 signals:
-    void frameReady(const QImage &frame);
+    void frameReady(const QImage &frame, quint64 streamEpoch);
     void metricsUpdated(const VideoFrameWorker::Metrics &metrics);
-    void workerError(const QString &message);
+    void workerError(const QString &message, quint64 streamEpoch);
 
 private:
     static constexpr int kMinDisplayFps = 1;
@@ -62,16 +62,17 @@ private:
     static constexpr int kMinBufferBytes = 64 * 1024;
     static constexpr int kMaxBufferBytesLimit = 16 * 1024 * 1024;
 
-    void processBuffer();
-    void handleJpegFrame(const QByteArray &frameData);
+    void processBuffer(quint64 streamEpoch);
+    void handleJpegFrame(const QByteArray &frameData, quint64 streamEpoch);
     bool shouldDisplayFrame(qint64 nowMs) const;
-    void writeRecordingFrame(const QByteArray &frameData);
+    void writeRecordingFrame(const QByteArray &frameData, quint64 streamEpoch);
     void emitMetrics();
 
     mutable QMutex m_mutex;
     Settings m_settings;
     Metrics m_metrics;
     QByteArray m_buffer;
+    quint64 m_streamEpoch = 0;
     QImage m_lastFrame;
     QFile *m_recordFile = nullptr;
     QString m_recordFilePath;

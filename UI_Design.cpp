@@ -5,98 +5,41 @@
 #include <QGlobalStatic>
 #include <QString>
 #include <QLineEdit>
+#include <QComboBox>
+#include <QListView>
+#include <QGridLayout>
+#include <QLabel>
+
+namespace {
+QString cameraActionStyle(const QString &background, const QString &hover, const QString &pressed)
+{
+    return QStringLiteral(
+        "QPushButton { background:%1; color:white; border:2px solid transparent; border-radius:8px;"
+        " font-family:'Microsoft YaHei'; font-size:17px; font-weight:600; }"
+        "QPushButton:hover { background:%2; }"
+        "QPushButton:pressed, QPushButton:checked { background:%3; }"
+        "QPushButton:disabled { background:#e5ebe8; color:#88978f; border-color:#dfe6e1; }")
+        .arg(background, hover, pressed);
+}
+}
 
 // 集中式样式管理
-//录像按钮
-static QString BUTTON_STYLE() {
-    return    QStringLiteral(
-        "QPushButton {"
-        " background-color: #fea443;"
-        " color: white;"
-        " border: none;"
-        " padding: 12px 24px;"
-        " border-radius: 8px;"
-        " font-size: 18px;"
-        " font-weight: bold;"
-        " min-width: 100px;"
-        " min-height: 40px;"
-        " qproperty-iconSize: 24px 24px;"
-        "}"
-        "QPushButton:hover {"
-        " background-color: #ff8000;"
-        " border: 2px solid #ffffff;"
-        "}"
-        "QPushButton:pressed {"
-        " background-color: #b45f04;"
-        " border: 3px solid #ffffff;"
-        "}"
-        );
-}
-//拍照按钮
-static QString BUTTON_STYLE1() {
-    return    QStringLiteral(
-        "QPushButton {"
-        " background-color: #b7e533;"
-        " color: white;"
-        " border: none;"
-        " padding: 12px 24px;"
-        " border-radius: 8px;"
-        " font-size: 18px;"
-        " font-weight: bold;"
-        " min-width: 100px;"
-        " min-height: 40px;"
-        " qproperty-iconSize: 24px 24px;"
-        "}"
-        "QPushButton:hover {"
-        " background-color: #92bc1d;"
-        " border: 2px solid #ffffff;"
-        "}"
-        "QPushButton:pressed {"
-        " background-color: #688a08;"
-        " border: 3px solid #ffffff;"
-        "}"
-        );
-}
-//保存按钮
-static QString BUTTON_STYLE2() {
-    return    QStringLiteral(
-        "QPushButton {"
-        " background-color: #69d7f8;"
-        " color: white;"
-        " border: none;"
-        " padding: 12px 24px;"
-        " border-radius: 8px;"
-        " font-size: 18px;"
-        " font-weight: bold;"
-        " min-width: 100px;"
-        " min-height: 40px;"
-        " qproperty-iconSize: 24px 24px;"
-        "}"
-        "QPushButton:hover {"
-        " background-color: #00bfff;"
-        " border: 2px solid #ffffff;"
-        "}"
-        "QPushButton:pressed {"
-        " background-color: #0489b1;"
-        " border: 3px solid #ffffff;"
-        "}"
-        );
-}
 //运动方向控制
 static QString BUTTON_STYLE3() {
     return    QStringLiteral(
         "QPushButton {"
         " min-width: 80px;"
         " min-height: 80px;"
-        "border: 2px solid #f9f5fd;"
-        " border-radius: 30px;"
+        " background-color:#f4f8f6;"
+        " border:1px solid #dbe4de;"
+        " border-radius:12px;"
         "}"
         "QPushButton:hover {"
-        "    background-color: #dddddd;"
+        "    background-color:#e6f0e9;"
 
         "}"
         "QPushButton:pressed {"
-        "   background-color: #cdcdcd;;"
+        "   background-color:#d6e7dc;"
         "}"
         );
 }
@@ -167,18 +110,6 @@ static QString LINEEDIT_STYLE1() {
         );
 }
 
-
-//地图名称框
-static QString LINEEDIT_STYLE2() {
-    return    QStringLiteral(
-        "QLineEdit {"
-        "border-radius: 1px;"
-        " border: 1px solid #9cd0ce;"
-        "font-size: 12px;"
-        "font-family: 微软雅黑;"
-        "}"
-        );
-}
 
 //确定按钮
 static QString BUTTON_STYLE6(){
@@ -276,9 +207,44 @@ void MainWindow::initUIComponents()
 {
     // 1. 集中设置样式
     //按钮
-    ui->recordButton->setStyleSheet(BUTTON_STYLE());
-    ui->captureButton->setStyleSheet(BUTTON_STYLE1());
-    ui->savePathButton->setStyleSheet(BUTTON_STYLE2());
+    ui->recordButton->setStyleSheet(cameraActionStyle("#a85c18", "#914c10", "#753c0b"));
+    ui->captureButton->setStyleSheet(cameraActionStyle("#24775c", "#1e664e", "#18543f"));
+    ui->videoPreviewButton->setStyleSheet(cameraActionStyle("#246f95", "#1b5c7e", "#174c68"));
+    // The four camera actions share one compact button row. Override the
+    // legacy button padding/minimum so the row fits the 1200 px main window.
+    const QString cameraActionMetrics = QStringLiteral(
+        "QPushButton { min-width:0; min-height:0; padding:0 8px; border:2px solid transparent; }"
+        "QPushButton:hover, QPushButton:focus { border:2px solid rgba(255,255,255,190); }"
+        "QPushButton:pressed { border:2px solid white; }");
+    for (auto *button : {ui->recordButton, ui->captureButton, ui->videoPreviewButton}) {
+        button->setStyleSheet(button->styleSheet() + cameraActionMetrics);
+        button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        button->setMinimumWidth(96);
+        button->setFixedHeight(64);
+    }
+    ui->cameraPreviewKind->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    ui->cameraPreviewKind->setMinimumWidth(96);
+    ui->cameraPreviewKind->setFixedHeight(64);
+    ui->cameraPreviewKind->setCursor(Qt::PointingHandCursor);
+    auto *previewMenu = new QListView(ui->cameraPreviewKind);
+    previewMenu->setSpacing(2);
+    previewMenu->setMouseTracking(true);
+    previewMenu->viewport()->setAttribute(Qt::WA_Hover);
+    previewMenu->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    ui->cameraPreviewKind->setView(previewMenu);
+    previewMenu->setItemDelegate(new CameraPreviewItemDelegate(previewMenu));
+    ui->cameraPreviewKind->setStyleSheet(QStringLiteral(
+        "QComboBox { background:#7b78d6; color:white; border:2px solid transparent;"
+        " border-radius:8px; padding:0 9px; min-height:0; min-width:0;"
+        " font-size:18px; font-weight:600; }"
+        "QComboBox:hover, QComboBox:focus { background:#6c68c9; border:2px solid rgba(255,255,255,190); }"
+        "QComboBox:on { background:#5e59b7; border:2px solid white; }"
+        "QComboBox::drop-down { subcontrol-origin:padding; subcontrol-position:top right;"
+        " border:none; width:26px; }"
+        "QComboBox::down-arrow { image:url(:/image/camera-chevron-down.svg); width:14px; height:14px; }"
+        "QComboBox QAbstractItemView { background:white; color:#45416d; border:1px solid #dedcf1;"
+        " border-radius:10px; padding:7px; font-size:16px; font-weight:600; outline:none;"
+        " selection-background-color:#eceafd; selection-color:#514bb2; }"));
     ui->forwardButton->setStyleSheet(BUTTON_STYLE3());
     ui->leftButton->setStyleSheet(BUTTON_STYLE3());
     ui->rightButton->setStyleSheet(BUTTON_STYLE3());
@@ -291,7 +257,6 @@ void MainWindow::initUIComponents()
     ui->pushButton_7->setStyleSheet(BUTTON_STYLE5());
     ui->pushButton_8->setStyleSheet(BUTTON_STYLE5());
     ui->pushButton_9->setStyleSheet(BUTTON_STYLE6()); //确定按钮
-    ui->pushButton->setStyleSheet(BUTTON_STYLE6());
     ui->pushButton_restart->setStyleSheet(BUTTON_STYLE8());
     ui->homeButton->setStyleSheet(BUTTON_STYLE9());//导航栏按钮
     ui->mapButton->setStyleSheet(BUTTON_STYLE9());
@@ -314,8 +279,6 @@ void MainWindow::initUIComponents()
     ui->lineEdit_BattryVol->setStyleSheet(LINEEDIT_STYLE1());
     ui->lineEdit_Position->setStyleSheet(LINEEDIT_STYLE1());
     ui->lineEdit_RunTime->setStyleSheet(LINEEDIT_STYLE1());
-    ui->lineEdit_mapname->setStyleSheet(LINEEDIT_STYLE2());
-    ui->lineEdit_mode->setStyleSheet(LINEEDIT_STYLE2());
 
     //widget
     if (QLineEdit *lineEdit = ui->doubleSpinBox->findChild<QLineEdit *>()) {
@@ -330,44 +293,6 @@ void MainWindow::initUIComponents()
     ui->doubleSpinBox_2->setFocusPolicy(Qt::NoFocus);
 
     ui->navBar->setStyleSheet(QWidget_STYLE());
-
-
-    //设置QComboBox下拉选项的样式
-    ui->comboBox_Mode->setStyleSheet(
-        // 主控件基础样式
-        "QComboBox {"
-        "border: 2px ridge #c4c4c4;"
-        "border-radius: 5px;"
-        " padding: 5px;"                  // 输入区内边距
-        " border-radius: 5px;"             // 圆角效果
-        "font-family: 微软雅黑;"
-        "}"
-
-        // 下拉列表样式（核心部分）
-        "QComboBox QAbstractItemView {"
-        "   background: #F8F9F9;"           // 下拉背景浅灰色（匹配图片背景）
-        "   border: 1px solid #D6DBDF;"     // 边框颜色
-        "   selection-background-color: #AED6F1;"  // 选中项背景色
-        "}"
-
-        // 单个选项的样式
-        "QComboBox QAbstractItemView::item {"
-        "   height: 25px;"                  // 选项高度
-        "   padding-left: 10px;"            // 文字左对齐
-        "   color: #2C3E50;"                // 文字颜色（深蓝黑）
-        "   font-family: '微软雅黑';"        // 字体设置
-        "   font-size: 14px;"               // 字号
-        "}"
-
-        // 鼠标悬停效果
-        "QComboBox QAbstractItemView::item:hover {"
-        "   background: #EBF5FB;"           // 悬停背景色
-        "   color: #21618C;"                // 悬停文字颜色
-        "}"
-
-        "QComboBox::drop-down {"
-        " }"
-        );
 
 
 
@@ -388,11 +313,10 @@ void MainWindow::initUIComponents()
     ui->lineEdit_Position->setReadOnly(true);      // 禁止编辑
     ui->lineEdit_Position->setFocusPolicy(Qt::NoFocus); // 禁用焦点
 
-    ui->lineEdit_mapname->setReadOnly(true);      // 禁止编辑
-    ui->lineEdit_mapname->setFocusPolicy(Qt::NoFocus); // 禁用焦点
-
-    ui->lineEdit_mode->setReadOnly(true);      // 禁止编辑
-    ui->lineEdit_mode->setFocusPolicy(Qt::NoFocus); // 禁用焦点
+    for (auto *field : {ui->homeLocalizationState, ui->homeTaskState, ui->homeTaskProgress}) {
+        field->setReadOnly(true);
+        field->setFocusPolicy(Qt::NoFocus);
+    }
 
     ui->plainTextEdit->setReadOnly(true);     // 禁止编辑
     ui->plainTextEdit->setFocusPolicy(Qt::NoFocus); // 禁用焦点
@@ -407,6 +331,107 @@ void MainWindow::initUIComponents()
     ui->doubleSpinBox_2->setSuffix("    转向速度");
     ui->doubleSpinBox_2->setStyleSheet(QString());
     ui->doubleSpinBox_2->setButtonSymbols(QAbstractSpinBox::UpDownArrows);
+
+    // Scope the homepage presentation to its cards; borders must not cascade
+    // onto every child widget (the original unqualified styles did so).
+    ui->homePage->setStyleSheet(QStringLiteral(
+        "QWidget#homePage { background:#f4f6f5; }"
+        "QWidget#homePage QLabel { color:#385346; font-family:'Microsoft YaHei'; font-size:13px; }"));
+    for (auto *card : {ui->widget_top, ui->widget_info, ui->widget_2, ui->widget_3, ui->controlwidget}) {
+        card->setStyleSheet(QStringLiteral(
+            "QWidget#%1 { background:white; border:1px solid #dfe7e3; border-radius:9px; }")
+            .arg(card->objectName()));
+    }
+    for (auto *child : {ui->widget_speed, ui->widget_4, ui->widget_switch, ui->widget_6})
+        child->setStyleSheet(QStringLiteral("QWidget#%1 { background:transparent; border:none; }")
+            .arg(child->objectName()));
+    for (auto *label : {ui->label_10, ui->label_3, ui->label_4, ui->label_9,
+                       ui->label_8, ui->label_11, ui->label, ui->label_2}) {
+        label->setTextFormat(Qt::PlainText);
+        label->setStyleSheet(QStringLiteral(
+            "QLabel { background:transparent; border:none; color:#52665b;"
+            " font-family:'Microsoft YaHei'; font-size:13px; }"));
+    }
+    ui->label_10->setText(tr("电池状态"));
+    ui->label_3->setText(tr("运行时长"));
+    ui->label->setText(tr("定位状态"));
+    ui->lable_battray->setStyleSheet(QStringLiteral(
+        "QLabel { background:transparent; border:none; color:black; font-family:'Times New Roman';"
+        " font-size:14pt; font-weight:bold; }"));
+    // Both coordinates share a column; the maintenance action must not shorten
+    // only the longitude field while latitude uses an unrelated spacer width.
+    auto *originGrid = new QGridLayout;
+    originGrid->setContentsMargins(0, 0, 0, 0);
+    originGrid->setHorizontalSpacing(4);
+    originGrid->setVerticalSpacing(4);
+    for (auto *row : {ui->horizontalLayout_12, ui->horizontalLayout_16}) {
+        while (auto *item = row->takeAt(0)) delete item;
+        ui->verticalLayout_7->removeItem(row);
+        delete row;
+    }
+    originGrid->addWidget(ui->label_8, 0, 0);
+    originGrid->addWidget(ui->lineEdit, 0, 1);
+    originGrid->addWidget(ui->pushButton_9, 0, 2);
+    originGrid->addWidget(ui->label_11, 1, 0);
+    originGrid->addWidget(ui->lineEdit_8, 1, 1);
+    originGrid->setColumnStretch(1, 1);
+    ui->verticalLayout_7->addLayout(originGrid);
+    const QString readoutStyle = QStringLiteral(
+        "QLineEdit { background:#f5f8f6; color:#30493d; border:1px solid #dfe7e3;"
+        " border-radius:5px; padding:4px 6px; font-family:'Microsoft YaHei'; font-size:13px; }");
+    for (auto *field : {ui->lineEdit_BattryState, ui->lineEdit_BattryTemp, ui->lineEdit_BattryVol,
+                       ui->lineEdit_Position, ui->lineEdit_RunTime, ui->homeLocalizationState,
+                       ui->homeTaskState, ui->homeTaskProgress, ui->lineEdit, ui->lineEdit_8})
+        field->setStyleSheet(readoutStyle);
+    const QString secondaryAction = QStringLiteral(
+        "QPushButton { background:#edf5f0; color:#24775c; border:1px solid #c8ddcf;"
+        " border-radius:6px; padding:5px 7px; font-family:'Microsoft YaHei'; font-size:12px; }"
+        "QPushButton:hover { background:#e0eee5; border-color:#90b59e; }"
+        "QPushButton:pressed { background:#d5e7dc; }"
+        "QPushButton:disabled { color:#93a198; background:#f0f3f1; border-color:#e1e7e3; }");
+    ui->pushButton_9->setStyleSheet(secondaryAction);
+    ui->pushButton_restart->setStyleSheet(secondaryAction);
+    ui->pushButton_restart->setMinimumSize(88, 38);
+    ui->label_12->setTextFormat(Qt::RichText);
+    ui->label_12->setText(tr("<span style='font-size:24pt'>m/s </span>"
+                           "<span style='font-size:14pt'>速度</span>"));
+    ui->label_12->setAlignment(Qt::AlignBottom | Qt::AlignLeft);
+    ui->label_12->setStyleSheet(QStringLiteral(
+        "QLabel { border:none; background:transparent; color:black; }"));
+    ui->lcdNumber->setStyleSheet(QStringLiteral("color:black; border:none; background:transparent;"));
+    ui->doubleSpinBox->setPrefix(tr("直行 "));
+    ui->doubleSpinBox->setSuffix(tr(" m/s"));
+    ui->doubleSpinBox_2->setPrefix(tr("转向 "));
+    ui->doubleSpinBox_2->setSuffix(tr(" rad/s"));
+    const QString manualSpeedStyle = QStringLiteral(
+        "QDoubleSpinBox { background:#f5f8f6; color:#30493d; border:1px solid #d3ded7;"
+        " border-radius:5px; padding:5px 18px 5px 5px; font-family:'Microsoft YaHei'; font-size:12px; }"
+        "QDoubleSpinBox::up-button, QDoubleSpinBox::down-button { subcontrol-origin:border;"
+        " width:18px; height:14px; border:none; border-left:1px solid #d3ded7; background:#edf3ef; }"
+        "QDoubleSpinBox::up-button { subcontrol-position:top right; }"
+        "QDoubleSpinBox::down-button { subcontrol-position:bottom right; }"
+        "QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover { background:#dcebe2; }"
+        "QDoubleSpinBox::up-arrow { image:url(:/image/support-chevron-up.svg); width:12px; height:12px; }"
+        "QDoubleSpinBox::down-arrow { image:url(:/image/support-chevron-down.svg); width:12px; height:12px; }");
+    ui->doubleSpinBox->setStyleSheet(manualSpeedStyle);
+    ui->doubleSpinBox_2->setStyleSheet(manualSpeedStyle);
+    ui->horizontalLayout_23->setSpacing(12);
+    ui->horizontalLayout_19->setSpacing(12);
+    ui->horizontalLayout_13->setSpacing(6);
+    ui->plainTextEdit->setStyleSheet(QStringLiteral(
+        "QPlainTextEdit { background:#f6f8f7; color:#52665b; border:1px solid #e1e7e3;"
+        " border-radius:6px; padding:5px; font-family:'Microsoft YaHei'; font-size:11px; }"));
+    const QString gimbalActionStyle = secondaryAction + QStringLiteral(
+        "QPushButton { padding:5px 0; font-size:12px; }"
+        "QPushButton:disabled { color:#93a198; }");
+    for (auto *button : {ui->pushButton_3, ui->pushButton_4, ui->pushButton_5,
+                         ui->pushButton_6, ui->pushButton_7, ui->pushButton_8})
+        button->setStyleSheet(gimbalActionStyle);
+    ui->pushButton_3->setText(tr("升高"));
+    ui->pushButton_4->setText(tr("降低"));
+    ui->stopButton->setText(tr("手动\n停止"));
+    ui->stopButton->setStyleSheet(BUTTON_STYLE4() + QStringLiteral(
+        "QPushButton { color:white; font-family:'Microsoft YaHei'; font-size:18px; }"));
 
 
 

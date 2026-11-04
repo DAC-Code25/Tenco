@@ -16,6 +16,8 @@ public:
         {"photo",QJsonObject{{"width",0},{"height",0},{"fps",2}}},
         {"recording",QJsonObject{{"width",1280},{"height",720},{"fps",30}}}};
     QString revision="1", state="applied", error;
+    QString persistenceState="confirmed", persistenceError;
+    bool persisted=true;
     int writes=0, reads=0, pendingPolls=0;
     bool recording=false, reject=false, dropWriteReply=false, unsupported=false;
     QByteArray lastMethod;
@@ -57,7 +59,8 @@ public:
     }
     QJsonObject configuration() const {
         return {{"schemaVersion",1},{"revision",revision},{"activeRevision",revision},{"applyState",state},{"lastError",error},
-            {"cameraConnected",true},{"recording",recording},{"settings",settings},{"activeSettings",settings},{"persisted",true}};
+            {"cameraConnected",true},{"recording",recording},{"settings",settings},{"activeSettings",settings},{"persisted",persisted},
+            {"persistenceState",persistenceState},{"persistenceError",persistenceError}};
     }
     QUrl url() const {return QUrl(QString("http://127.0.0.1:%1").arg(serverPort()));}
     static void reply(QTcpSocket *s,const QJsonObject &body,int code=200) {
@@ -83,9 +86,17 @@ private slots:
         QTRY_VERIFY(panel.findChild<QLabel*>("cameraSettingsResult")->text().contains("已在工控机生效"));
         QCOMPARE(server.writes,1);QCOMPARE(server.lastMethod,QByteArray("PUT"));
         QCOMPARE(server.settings["recording"].toObject()["fps"].toDouble(),20.0);
-        QTRY_VERIFY(panel.findChild<QLabel*>("cameraSettingsRuntime")->text().contains("24.50"));
+        auto *runtime=panel.findChild<QLabel*>("cameraSettingsRuntime");
+        QTRY_VERIFY(runtime->text().contains("24.50"));
+        QVERIFY(runtime->text().contains("最近录像"));
+        QVERIFY(runtime->toolTip().contains("24.50 FPS"));
+        QVERIFY(runtime->toolTip().contains("245 帧"));
+        QVERIFY(runtime->toolTip().contains("丢弃 0 帧"));
         server.recording=true;QTRY_VERIFY(!apply->isEnabled());
+        QVERIFY(runtime->text().contains("录像中"));
+        QVERIFY(runtime->text().contains("录像实测 24.50 FPS"));
         server.recording=false;QTRY_VERIFY(apply->isEnabled());
+        QVERIFY(runtime->text().contains("最近录像 24.50 FPS"));
         server.revision="99";QTRY_VERIFY(panel.findChild<QLabel*>("cameraSettingsResult")->text().contains("参数已变化"));
         QVERIFY(!apply->isEnabled());
     }
@@ -95,6 +106,43 @@ private slots:
         server.reject=true;QVERIFY(client.apply(server.settings));QTRY_COMPARE(finished.count(),2);
         QVERIFY(!finished.last()[0].toBool());QVERIFY(client.configuration().isEmpty());
         QVERIFY(!client.apply(server.settings));QCOMPARE(server.writes,1);
+    }
+    void appliedButUnconfirmedPersistenceNeverReportsSaved_data() {
+        QTest::addColumn<QString>("state");
+        QTest::newRow("directory-fsync-unconfirmed") << QString("unconfirmed");
+        QTest::newRow("memory-only") << QString("memory_only");
+    }
+    void appliedButUnconfirmedPersistenceNeverReportsSaved() {
+        QFETCH(QString, state);
+        CameraFixture server; CameraSettingsClient client; client.configure(server.url(),{},500);
+        QSignalSpy finished(&client,&CameraSettingsClient::finished);
+        client.read(); QTRY_COMPARE(finished.count(),1);
+        server.persisted=false; server.persistenceState=state;
+        server.persistenceError="directory fsync failed";
+        auto settings=server.settings; settings["sensorFps"]=25;
+        QVERIFY(client.apply(settings)); QTRY_COMPARE(finished.count(),2);
+        QVERIFY(!finished.last()[0].toBool());
+        const auto message=finished.last()[1].toString();
+        QVERIFY(message.contains(QStringLiteral("已在工控机生效")));
+        QVERIFY(!message.contains(QStringLiteral("并保存")));
+        QVERIFY(message.contains(state=="memory_only" ? QStringLiteral("仅在内存") : QStringLiteral("保存状态未确认")));
+        QCOMPARE(client.configuration()["revision"].toString(),QString("2"));
+        QCOMPARE(client.configuration()["activeSettings"].toObject(),settings);
+        QCOMPARE(server.writes,1);
+    }
+    void readingUnconfirmedSettingsKeepsTheWarningVisible() {
+        CameraFixture server; server.persisted=false; server.persistenceState="unconfirmed";
+        server.persistenceError="directory fsync failed";
+        CameraSettingsPanel panel;
+        panel.setConnectionProvider([&] {return CameraSettingsConnection{server.url(),{},500};}); panel.show();
+        auto *read=panel.findChild<QPushButton*>("cameraSettingsRead");
+        auto *result=panel.findChild<QLabel*>("cameraSettingsResult");
+        auto *runtime=panel.findChild<QLabel*>("cameraSettingsRuntime");
+        QTest::mouseClick(read,Qt::LeftButton);
+        QTRY_VERIFY(result->text().contains(QStringLiteral("保存状态未确认")));
+        QTRY_VERIFY(runtime->text().contains(QStringLiteral("保存状态未确认")));
+        QVERIFY(runtime->toolTip().contains("directory fsync failed"));
+        QVERIFY(!result->text().contains(QStringLiteral("并保存")));
     }
     void lostPutReplyIsResolvedWithoutReplay() {
         CameraFixture server;CameraSettingsClient client;client.configure(server.url(),{},500);

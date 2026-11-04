@@ -24,20 +24,16 @@ public:
     bool saveSnapshot(const QString &directory, QString *outPath = nullptr) const override;
     QImage lastFrame() const override;
 
-    void setStreamUrlTemplate(const QString &templateUrl) override;
-    QString buildUrlForTopic(const QString &topic) const override;
     void setStreamUrl(const QUrl &url) override;
     QUrl streamUrl() const override;
     void setReconnectIntervalMs(int intervalMs) override;
     void setAutoReconnect(bool enabled) override;
     void setMaxDisplayFps(int fps);
-    bool supportsTopics() const override;
 
 private:
     static AbstractVideoSource::State mapState(VideoClient::State state);
 
     VideoClient m_client;
-    bool m_supportsTopics = false;
 };
 
 #endif // MJPEGVIDEOSOURCE_H

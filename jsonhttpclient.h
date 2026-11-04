@@ -1,4 +1,5 @@
 #pragma once
+#include <QElapsedTimer>
 #include <QHash>
 #include <QJsonObject>
 #include <QNetworkAccessManager>
@@ -11,7 +12,14 @@ struct JsonHttpResult {
     int status = 0;
     QJsonObject object;
     QString error;
+    QString requestId;
+    bool serverRequestIdMatched = false;
+    QJsonObject serverTimingMs;
     qint64 roundTripMs = 0;
+    // Offsets from submission; -1 means Qt did not report that milestone.
+    // A reused connection normally has no connectionStartMs milestone.
+    qint64 connectionStartMs = -1, requestSentMs = -1, firstResponseMs = -1;
+    int sendAttempts = 0;
     bool ok() const { return error.isEmpty() && status >= 200 && status < 300; }
 };
 
@@ -23,6 +31,7 @@ class JsonHttpClient : public QObject {
     explicit JsonHttpClient(QObject *parent = nullptr);
     ~JsonHttpClient() override;
     void configure(const QUrl &baseUrl, const QString &bearer, int timeoutMs = 3000);
+    bool matchesConfiguration(const QUrl &baseUrl, const QString &bearer, int timeoutMs) const;
     bool configured() const;
     bool busy(const QString &lane) const { return m_pending.contains(lane); }
     bool request(const QString &lane, const QString &method, const QString &path, const QJsonObject &body,
@@ -30,11 +39,17 @@ class JsonHttpClient : public QObject {
                  qint64 maxResponseBytes = 1024 * 1024);
     void cancelAll();
 
+  signals:
+    // Timing only: no URL, query, credentials, request or response content.
+    void requestMeasured(const QString &lane, const QJsonObject &measurements);
+
   private:
     QNetworkAccessManager m_manager;
+    QNetworkAccessManager m_operationManager;
     QHash<QString, QPointer<QNetworkReply>> m_pending;
     QUrl m_base;
     QString m_bearer;
     int m_timeoutMs = 3000;
     quint64 m_generation = 0;
+    QElapsedTimer m_slowLogAge;
 };
