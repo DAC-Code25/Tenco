@@ -78,16 +78,19 @@ class CameraSettingsTest : public QObject {
 private slots:
     void explicitReadAndApplyFromPanel() {
         CameraFixture server;CameraSettingsPanel panel;panel.resize(900,650);
-        panel.setConnectionProvider([&] {return CameraSettingsConnection{server.url(),{},500};});panel.show();
+        server.readDelayMs=650;
+        panel.setConnectionProvider([&] {return CameraSettingsConnection{server.url(),{}};});panel.show();
         auto *read=panel.findChild<QPushButton*>("cameraSettingsRead");
         auto *apply=panel.findChild<QPushButton*>("cameraSettingsApply");
+        auto *result=panel.findChild<QLabel*>("cameraSettingsResult");
+        QVERIFY(read);QVERIFY(apply);QVERIFY(result);
         QVERIFY(!apply->isEnabled());QCOMPARE(server.writes,0);
-        QTest::mouseClick(read,Qt::LeftButton);QTRY_VERIFY(apply->isEnabled());QCOMPARE(server.writes,0);
+        read->click();QTRY_COMPARE(server.reads,1);QTRY_VERIFY2(apply->isEnabled(),qPrintable(result->text()));QCOMPARE(server.writes,0);
         const auto screenshot=qEnvironmentVariable("TENCO_CAMERA_PANEL_SCREENSHOT");
         if(!screenshot.isEmpty()) QVERIFY(panel.grab().save(screenshot));
         auto *fps=panel.findChild<QDoubleSpinBox*>("cameraFps_recording");fps->setValue(20);
-        QTest::mouseClick(apply,Qt::LeftButton);QVERIFY(!apply->isEnabled());
-        QTRY_VERIFY(panel.findChild<QLabel*>("cameraSettingsResult")->text().contains("已在工控机生效"));
+        apply->click();QVERIFY(!apply->isEnabled());QTRY_COMPARE(server.writes,1);
+        QTRY_VERIFY2(result->text().contains("已在工控机生效"),qPrintable(result->text()));
         QCOMPARE(server.writes,1);QCOMPARE(server.lastMethod,QByteArray("PUT"));
         QCOMPARE(server.settings["recording"].toObject()["fps"].toDouble(),20.0);
         auto *runtime=panel.findChild<QLabel*>("cameraSettingsRuntime");
