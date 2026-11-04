@@ -86,13 +86,13 @@ Help::Help(Ui::MainWindow *ui, QObject *parent)
     m_documents = {
         {tr("操作与控制接口"),
          tr("地图示教、完整任务、位姿推送、工控机控制接口和故障处理。"),
-         QStringLiteral("docs/工控机闭环操作与接口.md")},
+         QStringLiteral("README.md")},
         {tr("配置与使用说明"),
          tr("本地构建、配置分组、手动控制、云台和相机使用说明。"),
          QStringLiteral("README.md")},
         {tr("网络流量与排查"),
          tr("无线网络流量、测量方法、预览设置和已知波动说明。"),
-         QStringLiteral("docs/无线网络流量与优化说明.md")}
+         QStringLiteral("CHANGELOG.md")}
     };
 
     buildUi();
