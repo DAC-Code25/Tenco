@@ -7,6 +7,7 @@
 #include <QPushButton>
 #include <QTcpServer>
 #include <QTcpSocket>
+#include <QTimer>
 #include <QtTest>
 
 class CameraFixture : public QTcpServer {
@@ -18,7 +19,7 @@ public:
     QString revision="1", state="applied", error;
     QString persistenceState="confirmed", persistenceError;
     bool persisted=true;
-    int writes=0, reads=0, pendingPolls=0;
+    int writes=0, reads=0, pendingPolls=0, readDelayMs=0;
     bool recording=false, reject=false, dropWriteReply=false, unsupported=false;
     QByteArray lastMethod;
     CameraFixture() {
@@ -43,7 +44,10 @@ public:
                             {"resolutions",QJsonArray{QJsonObject{{"width",640},{"height",480}},QJsonObject{{"width",960},{"height",540}},QJsonObject{{"width",1280},{"height",720}},QJsonObject{{"width",4056},{"height",3040}}}}},unsupported?404:200);
                     } else if(path=="/camera/settings"&&method=="GET") {
                         ++reads; if(pendingPolls>0&&!--pendingPolls) state="applied";
-                        reply(s,configuration());
+                        if(readDelayMs>0) {
+                            const auto snapshot=configuration();
+                            QTimer::singleShot(readDelayMs,s,[s,snapshot] {reply(s,snapshot);});
+                        } else reply(s,configuration());
                     } else if(path=="/camera/settings") {
                         ++writes;lastMethod=method;
                         if(reject||recording||body["expectedRevision"]!=revision) {reply(s,{{"message","settings_revision_conflict"}},409);return;}
@@ -133,14 +137,19 @@ private slots:
     void readingUnconfirmedSettingsKeepsTheWarningVisible() {
         CameraFixture server; server.persisted=false; server.persistenceState="unconfirmed";
         server.persistenceError="directory fsync failed";
+        // This checks persistence messaging, not a 500 ms network deadline.
+        // A valid slow read must use the same bounded budget as maintenance.
+        server.readDelayMs=650;
         CameraSettingsPanel panel;
-        panel.setConnectionProvider([&] {return CameraSettingsConnection{server.url(),{},500};}); panel.show();
+        panel.setConnectionProvider([&] {return CameraSettingsConnection{server.url(),{}};}); panel.show();
         auto *read=panel.findChild<QPushButton*>("cameraSettingsRead");
         auto *result=panel.findChild<QLabel*>("cameraSettingsResult");
         auto *runtime=panel.findChild<QLabel*>("cameraSettingsRuntime");
-        QTest::mouseClick(read,Qt::LeftButton);
-        QTRY_VERIFY(result->text().contains(QStringLiteral("保存状态未确认")));
-        QTRY_VERIFY(runtime->text().contains(QStringLiteral("保存状态未确认")));
+        QVERIFY(read); QVERIFY(result); QVERIFY(runtime);
+        read->click();
+        QTRY_COMPARE(server.reads,1);
+        QTRY_VERIFY2(result->text().contains(QStringLiteral("保存状态未确认")),qPrintable(result->text()));
+        QTRY_VERIFY2(runtime->text().contains(QStringLiteral("保存状态未确认")),qPrintable(runtime->text()));
         QVERIFY(runtime->toolTip().contains("directory fsync failed"));
         QVERIFY(!result->text().contains(QStringLiteral("并保存")));
     }

@@ -981,6 +981,7 @@ class IpcClientsTest : public QObject {
         DeploymentFixture server;
         const auto original = server.handler;
         bool delayedHeartbeat = false;
+        bool delayedHeartbeatReplied = false;
         QPointer<QTcpSocket> heartbeat;
         QJsonObject startBody;
         server.handler = [&](auto *socket, const QByteArray &path, const QJsonObject &body) {
@@ -995,7 +996,13 @@ class IpcClientsTest : public QObject {
                         {"sessionId", "session"}, {"stateVersion", QString::number(server.version)},
                         {"expiresInMs", 10000}, {"motionPermit", "permit"}, {"permitValidForMs", 3000}});
                 };
-                if (delayedHeartbeat) { heartbeat = socket; QTimer::singleShot(2500, socket, reply); }
+                if (delayedHeartbeat) {
+                    heartbeat = socket;
+                    QTimer::singleShot(2500, socket, [&, reply] {
+                        reply();
+                        delayedHeartbeatReplied = true;
+                    });
+                }
                 else reply();
             } else if (path.endsWith("/control") && body["cmd"] == "start") {
                 startBody = body;
@@ -1025,8 +1032,12 @@ class IpcClientsTest : public QObject {
         QTest::qWait(1300);
         QVERIFY(client.hasSession()); // The former one-second client cap would expire.
         delayedHeartbeat = false;
-        // Obtain a current permit; the delayed permit correctly lost its RTT.
-        QTest::qWait(1500);
+        // A delayed permit can legitimately have less than 500 ms remaining.
+        // Require a new state version after that reply so motionReady cannot
+        // pass using it while the immediate renewal is still in flight.
+        QTRY_VERIFY(delayedHeartbeatReplied);
+        ++server.version;
+        QTRY_COMPARE(client.snapshot().stateVersion, server.version);
         QTRY_VERIFY(client.motionReady());
         QVERIFY(client.control("start"));
         QTRY_COMPARE(server.starts, 1);
