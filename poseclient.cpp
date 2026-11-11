@@ -3,6 +3,7 @@
 #include <QJsonDocument>
 #include <QNetworkProxy>
 #include <QNetworkReply>
+#include <QScopedValueRollback>
 #include <cmath>
 
 namespace {
@@ -220,6 +221,8 @@ void PoseClient::readStream() {
 void PoseClient::failStream(const QString &reason) {
     if (!m_running || !m_streamReply)
         return;
+    // Keep the source available while existing generic error observers run.
+    QScopedValueRollback<bool> reporting(m_reportingStreamError, true);
     auto *reply = m_streamReply.data();
     m_streamReply.clear();
     m_streamDeadline.stop();
@@ -234,6 +237,7 @@ void PoseClient::failStream(const QString &reason) {
     emit availabilityChanged(false, reason);
     emit monitoringAvailabilityChanged(false, reason);
     emit errorOccurred(reason);
+    emit streamErrorOccurred(reason);
 }
 bool PoseClient::acceptPose(const QJsonObject &object, qint64 lineAgeMs) {
     ControlPoseSnapshot pose;
@@ -323,6 +327,11 @@ void PoseClient::acceptCapture(const JsonHttpResult &r) {
     }
     if (r.object["state"].toString() == "running") {
         m_captureId = r.object["captureId"].toString();
+        if (m_captureId.trimmed().isEmpty()) {
+            m_captureId.clear();
+            m_captureAge.invalidate();
+            emit errorOccurred("invalid_capture_response");
+        }
         return;
     }
     m_captureId.clear();

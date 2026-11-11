@@ -173,6 +173,27 @@ private slots:
         QCOMPARE(server.requests.value("/pose/status"),0);
     }
 
+    void endpointRecoverySummaryKeepsPauseAndDelayedStateExplicit() {
+        QMainWindow window; Ui::MainWindow ui; ui.setupUi(&window);
+        HomeStatusPresenter presenter(&ui, {});
+        TrackingSnapshot task;
+        task.bootId="tracking-1"; task.taskId="row-1"; task.state="Turning";
+        task.endpointRecovering=true; task.turnRecovering=true; task.turnOffsetMeters=.42;
+        presenter.setTaskStatus(task,true);
+        QVERIFY(ui.homeTaskState->text().contains("端点回位"));
+        QVERIFY(ui.homeTaskProgress->text().contains("0.42 m"));
+        QVERIFY(ui.homeTaskState->toolTip().contains("端点回位中"));
+        QVERIFY(!ui.homeTaskState->toolTip().contains("转向回点中"));
+        task.state="Paused"; task.pauseReason="endpoint_motion_unconfirmed";
+        presenter.setTaskStatus(task,true);
+        QVERIFY(ui.homeTaskState->text().contains("已暂停"));
+        QVERIFY(ui.homeTaskState->toolTip().contains("缺少运动证据"));
+        QVERIFY(!ui.homeTaskState->text().contains("等待自动恢复"));
+        presenter.setTaskStatus(task,false);
+        QVERIFY(ui.homeTaskState->text().contains("显示延迟"));
+        QVERIFY(ui.homeTaskState->toolTip().contains("停稳状态未知"));
+        QVERIFY(!ui.homeTaskState->text().contains("已停稳"));
+    }
     void taskSummaryDistinguishesTurnsWaitsPauseAndFault() {
         QMainWindow window; Ui::MainWindow ui; ui.setupUi(&window);
         HomeStatusPresenter presenter(&ui, {});

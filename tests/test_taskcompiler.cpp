@@ -336,6 +336,309 @@ class TaskCompilerTest : public QObject {
         invalid.points[1] = invalid.points[0];
         QVERIFY(!TaskCompiler::route({incoming, invalid}, binding(), settings).ok());
     }
+    void recordedInternalTinyPathRetainsItsGeometryStopsAndFinalHeading() {
+        // The 2026-11-05 16:20 execution split this one section into five paths.
+        // Its 20.59 mm internal path was already within arrival tolerance.
+        const QList<QPointF> enu{{38.658, 48.416}, {40.507, 48.687}, {42.911, 48.680},
+            {45.093, 48.888}, {47.057, 49.048}, {49.380, 49.222}, {51.484, 49.373},
+            {54.136, 49.652}, {56.644, 49.849}, {59.640, 50.113}, {61.846, 50.291},
+            {63.895, 50.444}, {67.232, 50.782}, {68.683, 50.916}, {70.861, 51.114},
+            {71.201, 50.409}, {71.305, 49.199}, {71.547, 47.443}, {71.719, 45.800},
+            {71.988, 43.865}, {72.242, 41.816}, {72.260, 41.826}, {71.987, 44.410},
+            {71.751, 47.263}, {71.317, 50.792}, {71.132, 52.389}};
+        const MapFrameAdapter frame(binding());
+        TaskRouteSection section{"recorded", {}, std::nullopt};
+        for (const auto &point : enu) section.points.append(frame.fromEnu(point));
+        auto settings = options();
+        settings.speedLimit = settings.angularSpeedLimit = .2;
+        settings.goalToleranceMeters = .1;
+        settings.vehicleFootprintRotation = true;
+        const auto baseline = TaskCompiler::route({section}, binding(), settings);
+        QVERIFY2(baseline.ok(), qPrintable(baseline.error));
+        auto expected = baseline.plan["steps"].toArray();
+        QCOMPARE(expected.size(), 9);
+        QCOMPARE(expected[5].toObject()["type"].toString(), "turn");
+        QCOMPARE(expected[6].toObject()["points"].toArray(),
+                 QJsonArray({QJsonArray{72.242, 41.816}, QJsonArray{72.260, 41.826}}));
+        expected.removeAt(5); // Only the turn into the tiny tangent may disappear.
+        settings.shortPathEndpointCapture = true;
+        const auto compiled = TaskCompiler::route({section}, binding(), settings);
+        QVERIFY2(compiled.ok(), qPrintable(compiled.error));
+        QCOMPARE(compiled.plan["steps"].toArray(), expected);
+        QCOMPARE(compiled.plan["context"], baseline.plan["context"]);
+        QCOMPARE(compiled.plan["repeat"], baseline.plan["repeat"]);
+    }
+    void internalTinyPathCaptureKeepsConsecutiveAndOtherIneligiblePathsUnchanged() {
+        const MapFrameAdapter frame(binding());
+        auto settings = options();
+        settings.goalToleranceMeters = .125; // Exactly representable equality boundary.
+        settings.vehicleFootprintRotation = settings.shortPathEndpointCapture = true;
+        auto unchanged = [&](const QList<QPointF> &enu, TaskCompileOptions cfg) {
+            TaskRouteSection section{"guard", {}, std::nullopt};
+            for (const auto &point : enu) section.points.append(frame.fromEnu(point));
+            const auto compiled = TaskCompiler::route({section}, binding(), cfg);
+            cfg.shortPathEndpointCapture = false;
+            const auto baseline = TaskCompiler::route({section}, binding(), cfg);
+            return compiled.ok() && baseline.ok() && compiled.plan["steps"] == baseline.plan["steps"];
+        };
+        const QList<QPointF> isolated{{0, 0}, {1, 0}, {1, .02}, {2, .02}};
+        auto disabled = settings; disabled.shortPathEndpointCapture = false;
+        QVERIFY(unchanged(isolated, disabled));
+        auto strict = settings; strict.vehicleFootprintRotation = false;
+        QVERIFY(unchanged(isolated, strict));
+        auto tight = settings; tight.goalToleranceMeters = .01;
+        QVERIFY(unchanged(isolated, tight));
+        QVERIFY(unchanged({{0, 0}, {1, 0}, {1, .125}, {2, .125}}, settings));
+        QVERIFY(unchanged({{0, 0}, {1, 0}, {1, .2}, {2, .2}}, settings));
+        QVERIFY(unchanged({{0, 0}, {1, 0}, {1, .01}, {1.001, .02}, {2, .02}}, settings));
+        QVERIFY(unchanged({{0, 0}, {1, 0}, {1, .02}}, settings)); // No following heading.
+        QVERIFY(unchanged({{0, 0}, {0, .02}, {1, .02}}, settings)); // First path, not internal.
+        QVERIFY(unchanged({{0, 0}, {1, 0}, {1, .02}, {1.02, .02}, {1.02, 1.02}}, settings));
+
+        // Never reach across logical section boundaries to manufacture eligibility.
+        const QList<TaskRouteSection> separate{{"in", {{0, 0}, {0, 1}}, std::nullopt},
+            {"tiny", {{0, 1}, {-.02, 1}}, std::nullopt},
+            {"out", {{-.02, 1}, {-.02, 2}}, std::nullopt}};
+        const auto compiled = TaskCompiler::route(separate, binding(), settings);
+        settings.shortPathEndpointCapture = false;
+        const auto baseline = TaskCompiler::route(separate, binding(), settings);
+        QVERIFY(compiled.ok() && baseline.ok());
+        QCOMPARE(compiled.plan["steps"], baseline.plan["steps"]);
+    }
+    void internalTinyPathRemovalPreservesCaptureIndicesAcrossSections() {
+        const MapFrameAdapter frame(binding());
+        auto makeSection = [&](const QString &id, const QList<QPointF> &enu, bool headed) {
+            TaskRouteSection section{id, {}, headed ? std::optional<double>(frame.yawFromEnu(0)) : std::nullopt};
+            for (const auto &point : enu) section.points.append(frame.fromEnu(point));
+            return section;
+        };
+        const QList<TaskRouteSection> route{
+            makeSection("incoming", {{-1, 0}, {0, 0}}, true),
+            makeSection("prefix", {{0, 0}, {.02, 0}}, true),
+            makeSection("internal", {{.02, 0}, {1.02, 0}, {1.02, .02}, {2.02, .02}}, false),
+            makeSection("suffix", {{2.02, .02}, {2.04, .02}}, true),
+            makeSection("outgoing", {{2.04, .02}, {3.04, .02}}, false)};
+        auto settings = options();
+        settings.goalToleranceMeters = .1;
+        settings.vehicleFootprintRotation = settings.shortPathEndpointCapture = true;
+        const auto compiled = TaskCompiler::route(route, binding(), settings);
+        QVERIFY2(compiled.ok(), qPrintable(compiled.error));
+        const auto steps = compiled.plan["steps"].toArray();
+        QCOMPARE(steps.size(), 10);
+        qsizetype paths = 0;
+        for (const auto &entry : steps) {
+            const auto step = entry.toObject();
+            if (step["type"] == "follow_path") {
+                ++paths;
+                QCOMPARE(step["endBehavior"].toString(), "stop");
+            }
+        }
+        QCOMPARE(paths, 7);
+        // Two independent internal tiny paths in one section keep both stops.
+        const auto twice = TaskCompiler::route({makeSection("twice",
+            {{0, 0}, {1, 0}, {1, .02}, {2, .02}, {2, .04}, {3, .04}}, false)}, binding(), settings);
+        QVERIFY2(twice.ok(), qPrintable(twice.error));
+        QCOMPARE(twice.plan["steps"].toArray().size(), 7);
+        for (const auto &entry : twice.plan["steps"].toArray())
+            if (entry.toObject()["type"] == "follow_path")
+                QCOMPARE(entry.toObject()["endBehavior"].toString(), "stop");
+    }
+    void internalTinyPathKeepsThePlannedTurnAcrossPi() {
+        const MapFrameAdapter frame(binding());
+        auto settings = options();
+        settings.goalToleranceMeters = .1;
+        settings.vehicleFootprintRotation = true;
+        for (double yaw : {-1e-6, 0., 1e-6}) {
+            TaskRouteSection section{"uturn", {}, std::nullopt};
+            for (const QPointF &p : {QPointF{0, 0}, QPointF{1, 0}, QPointF{1, .02}, QPointF{0, .02}}) {
+                const QPointF rotated{std::cos(yaw) * p.x() - std::sin(yaw) * p.y(),
+                                      std::sin(yaw) * p.x() + std::cos(yaw) * p.y()};
+                section.points.append(frame.fromEnu(rotated));
+            }
+            settings.shortPathEndpointCapture = false;
+            const auto baseline = TaskCompiler::route({section}, binding(), settings);
+            QVERIFY(baseline.ok());
+            auto expected = baseline.plan["steps"].toArray();
+            QCOMPARE(expected.size(), 5);
+            expected.removeAt(1);
+            settings.shortPathEndpointCapture = true;
+            const auto compiled = TaskCompiler::route({section}, binding(), settings);
+            QVERIFY(compiled.ok());
+            QCOMPARE(compiled.plan["steps"].toArray(), expected);
+            const double target = expected[2].toObject()["targetYaw"].toDouble();
+            QVERIFY(std::isfinite(target) && target >= -std::acos(-1.) && target < std::acos(-1.));
+        }
+    }
+    void routeDwellRequiresAnActualHeadingStepBeforeWaiting() {
+        const MapFrameAdapter frame(binding());
+        QList<TaskRouteSection> route{{"one", {{0, 0}, {0, 1}}, frame.yawFromEnu(0), 1250},
+                                     {"two", {{0, 1}, {0, 2}}, std::nullopt}};
+        auto compiled = TaskCompiler::route(route, binding(), options());
+        QVERIFY2(compiled.ok(), qPrintable(compiled.error));
+        auto steps = compiled.plan["steps"].toArray();
+        QCOMPARE(steps.size(), 4);
+        QCOMPARE(steps[0].toObject()["type"].toString(), "follow_path");
+        QCOMPARE(steps[0].toObject()["endBehavior"].toString(), "stop");
+        QCOMPARE(steps[1].toObject()["type"].toString(), "turn");
+        QCOMPARE(steps[1].toObject()["targetYaw"].toDouble(), 0.);
+        QCOMPARE(steps[1].toObject()["angleToleranceRad"].toDouble(), options().angleToleranceRad);
+        QCOMPARE(steps[2].toObject()["type"].toString(), "wait");
+        QCOMPARE(steps[2].toObject()["checkpointId"].toString(), "one");
+        QCOMPARE(steps[2].toObject()["completion"].toObject()["durationMs"].toInt(), 1250);
+        QCOMPARE(steps[3].toObject()["type"].toString(), "follow_path");
+
+        // No requested yaw still needs a real turn to the arrival tangent.
+        route[0].goalMapYaw.reset();
+        compiled = TaskCompiler::route(route, binding(), options());
+        QVERIFY(compiled.ok());
+        QCOMPARE(compiled.plan["steps"].toArray()[1].toObject()["type"].toString(), "turn");
+        QCOMPARE(compiled.plan["steps"].toArray()[1].toObject()["targetYaw"].toDouble(), 0.);
+        for (int invalid : {-1, 3600001}) {
+            route[0].dwellMs = invalid;
+            const auto rejected = TaskCompiler::route(route, binding(), options());
+            QVERIFY(!rejected.ok());
+            QVERIFY(rejected.plan.isEmpty());
+        }
+        route[0].dwellMs = 0;
+        compiled = TaskCompiler::route(route, binding(), options());
+        QVERIFY(compiled.ok());
+        QCOMPARE(compiled.plan["steps"].toArray().size(), 2);
+        QCOMPARE(compiled.plan["steps"].toArray()[0].toObject()["endBehavior"].toString(), "blend");
+        route[0].dwellMs = 3600000;
+        QVERIFY(TaskCompiler::route(route, binding(), options()).ok());
+    }
+    void routeStartDwellHasAPlannedPositionGuardBeforeTurning() {
+        auto transformed = binding();
+        transformed.enuTranslation = {7, -4};
+        transformed.enuYawOffsetRad = .3;
+        const MapFrameAdapter frame(transformed);
+        QList<TaskRouteSection> route{{"one", {{0, 0}, {0, 1}}, std::nullopt, 500, 1500, .8},
+                                     {"two", {{0, 1}, {0, 2}}, std::nullopt}};
+        const auto result = TaskCompiler::route(route, transformed, options());
+        QVERIFY2(result.ok(), qPrintable(result.error));
+        const auto steps = result.plan["steps"].toArray();
+        QCOMPARE(steps[0].toObject()["type"].toString(), "wait");
+        QCOMPARE(steps[0].toObject()["completion"].toObject()["durationMs"].toInt(), 0);
+        QVERIFY(steps[0].toObject()["checkpointId"].toString().isEmpty());
+        QCOMPARE(steps[1].toObject()["type"].toString(), "turn");
+        QCOMPARE(steps[1].toObject()["targetYaw"].toDouble(), frame.yawToEnu(.8));
+        QCOMPARE(steps[2].toObject()["type"].toString(), "wait");
+        QCOMPARE(steps[2].toObject()["completion"].toObject()["durationMs"].toInt(), 1500);
+        QCOMPARE(steps[2].toObject()["checkpointId"].toString(), "one-start");
+        int paths = 0, businessWaits = 0;
+        for (const auto &entry : steps) {
+            const auto step = entry.toObject();
+            if (step["type"] == "follow_path") {
+                ++paths;
+                if (paths == 1) {
+                    const auto start = frame.toEnu({0, 0});
+                    QCOMPARE(step["points"].toArray().first().toArray(), QJsonArray({start.x(), start.y()}));
+                }
+            }
+            if (step["type"] == "wait" && !step["checkpointId"].toString().isEmpty()) ++businessWaits;
+        }
+        QCOMPARE(paths, 2);
+        QCOMPARE(businessWaits, 2);
+        route[0].startMapYaw.reset();
+        auto fallback = TaskCompiler::route(route, transformed, options());
+        QVERIFY(fallback.ok());
+        QVERIFY(std::abs(fallback.plan["steps"].toArray()[1].toObject()["targetYaw"].toDouble() - .3) < 1e-12);
+        for (int invalid : {-1, 3600001}) {
+            route[0].startDwellMs = invalid;
+            QVERIFY(!TaskCompiler::route(route, transformed, options()).ok());
+        }
+        route[0].startDwellMs = 0;
+        route[1].startDwellMs = 1;
+        QVERIFY(!TaskCompiler::route(route, transformed, options()).ok());
+        route[1].startDwellMs = 0;
+        route[0].startMapYaw = std::numeric_limits<double>::quiet_NaN();
+        QVERIFY(!TaskCompiler::route(route, transformed, options()).ok());
+
+        // A closed repeat stops at A on its arrival; re-entering the same body
+        // must not perform an extra startup dwell on that same point.
+        route = {{"out", {{0, 0}, {0, 1}}, std::nullopt, 200, 1500, .8},
+                 {"back", {{0, 1}, {0, 0}}, std::nullopt, 1500}};
+        for (bool untilStopped : {false, true}) {
+            auto repeat = options();
+            repeat.repeatCount = 2;
+            repeat.repeatUntilStopped = untilStopped;
+            const auto repeated = TaskCompiler::route(route, transformed, repeat);
+            QVERIFY2(repeated.ok(), qPrintable(repeated.error));
+            int waits = 0;
+            for (const auto &entry : repeated.plan["steps"].toArray()) {
+                const auto step = entry.toObject();
+                QVERIFY(!step["stepId"].toString().contains("start-dwell"));
+                QVERIFY(!step["stepId"].toString().contains("start-position"));
+                if (step["type"] == "wait") ++waits;
+            }
+            QCOMPARE(waits, 2);
+        }
+    }
+    void rowDwellFacesTheLocalTravelDirectionBeforeEachAction() {
+        auto transformed = binding();
+        transformed.enuTranslation = {7, -4};
+        transformed.enuYawOffsetRad = .3;
+        const MapFrameAdapter frame(transformed);
+        RowWorkPlan row;
+        row.frameBinding = transformed;
+        row.hasStartPose = row.hasEndPose = true;
+        // Recorded yaw is deliberately unrelated: return travel must never use
+        // the outbound teaching yaw as its parking target.
+        row.startPose = {0, 0, 1.1};
+        row.endPose = {6, 0, -.9};
+        row.checkpoints = {{"start", 0, 100}, {"end", 6, 200}};
+        RowCheckpoint middle{"middle", 0, 300, true, true, true, true, 12000};
+        QVERIFY(RowWorkGeometry::setCheckpointPosition(row, {2, .2}, &middle));
+        row.checkpoints.append(middle);
+        middle.name = "same-position";
+        middle.capturePhoto = false;
+        row.checkpoints.append(middle);
+        RowCheckpoint shape{"shape", 0, 0, false};
+        QVERIFY(RowWorkGeometry::setCheckpointPosition(row, {4, -.1}, &shape));
+        row.checkpoints.append(shape);
+        const auto compiled = TaskCompiler::row(row, transformed, options(), true, true);
+        QVERIFY2(compiled.ok(), qPrintable(compiled.error));
+        const auto steps = compiled.plan["steps"].toArray();
+        QCOMPARE(steps[0].toObject()["type"].toString(), "return_to_start");
+        QCOMPARE(steps[1].toObject()["type"].toString(), "wait");
+        QCOMPARE(steps[1].toObject()["completion"].toObject()["durationMs"].toInt(), 0);
+        QCOMPARE(steps[2].toObject()["type"].toString(), "turn");
+        bool alignedSincePath = false;
+        double actualTarget = 0;
+        int businessActions = 0, middleTurns = 0;
+        const auto enuHeading = [&](QPointF a, QPointF b) {
+            a = frame.toEnu(a); b = frame.toEnu(b);
+            return std::atan2(b.y() - a.y(), b.x() - a.x());
+        };
+        for (const auto &entry : steps) {
+            const auto step = entry.toObject();
+            const auto type = step["type"].toString();
+            const auto id = step["stepId"].toString();
+            if (type == "follow_path") alignedSincePath = false;
+            if (type == "turn") {
+                alignedSincePath = true;
+                actualTarget = step["targetYaw"].toDouble();
+                if (id.contains("checkpoint-heading") &&
+                    std::abs(std::remainder(actualTarget - enuHeading({2, .2}, {4, -.1}), 2 * std::acos(-1.))) < 1e-12)
+                    ++middleTurns;
+            }
+            if (type != "wait" || step["checkpointId"].toString().isEmpty()) continue;
+            ++businessActions;
+            QVERIFY(alignedSincePath);
+            const bool backwards = id.startsWith("return-");
+            const auto point = step["checkpointId"].toString();
+            double expected;
+            if (point == "start") expected = backwards ? enuHeading({2, .2}, {0, 0}) : enuHeading({0, 0}, {2, .2});
+            else if (point == "end") expected = backwards ? enuHeading({6, 0}, {4, -.1}) : enuHeading({4, -.1}, {6, 0});
+            else expected = backwards ? enuHeading({2, .2}, {0, 0}) : enuHeading({2, .2}, {4, -.1});
+            QVERIFY(std::abs(std::remainder(actualTarget - expected, 2 * std::acos(-1.))) < 1e-12);
+        }
+        QCOMPARE(businessActions, 10); // Four dwell points and one capture, both directions.
+        QCOMPARE(middleTurns, 1); // Both co-located outbound actions share their alignment.
+        auto missingZone = options();
+        missingZone.rotationZoneId.clear();
+        QVERIFY(!TaskCompiler::row(row, transformed, missingZone, false).ok());
+    }
     void rowForwardAndReturn() {
         RowWorkPlan row;
         row.frameBinding = binding();
@@ -364,11 +667,11 @@ class TaskCompilerTest : public QObject {
                 checkpoints << s["checkpointId"].toString();
             QVERIFY(!s.contains("reverse"));
         }
-        QCOMPARE(turns, 2);
+        QCOMPARE(turns, 4);
         QCOMPARE(checkpoints, QStringList({"forward", "back"}));
         auto single = TaskCompiler::row(row, binding(), options(), false);
         QVERIFY(single.ok());
-        QCOMPARE(single.plan["steps"].toArray().size(), 3);
+        QCOMPARE(single.plan["steps"].toArray().size(), 4);
         auto repeat = options();
         repeat.repeatCount = 2;
         QVERIFY(!TaskCompiler::row(row, binding(), repeat, false).ok());
@@ -404,7 +707,11 @@ class TaskCompilerTest : public QObject {
             QVERIFY(!preparation.contains("checkpointId"));
             QVERIFY(!preparation.contains("completion"));
             QCOMPARE(steps, legacy.plan["steps"].toArray());
-            QCOMPARE(steps.first().toObject()["checkpointId"].toString(), "start-photo");
+            QCOMPARE(steps.first().toObject()["type"].toString(), "wait");
+            QCOMPARE(steps.first().toObject()["completion"].toObject()["durationMs"].toInt(), 0);
+            QVERIFY(steps.first().toObject()["checkpointId"].toString().isEmpty());
+            QCOMPARE(steps[1].toObject()["type"].toString(), "turn");
+            QCOMPARE(steps[2].toObject()["checkpointId"].toString(), "start-photo");
             QCOMPARE(result.plan["repeat"], legacy.plan["repeat"]);
             for (const auto &step : steps) {
                 QVERIFY(step.toObject()["type"] != "return_to_start");
@@ -584,7 +891,7 @@ class TaskCompilerTest : public QObject {
         QVERIFY2(result.ok(), qPrintable(result.error));
         QCOMPARE(result.plan["repeat"].toObject(), QJsonObject({{"mode", "count"}, {"count", 7}}));
         const auto steps = result.plan["steps"].toArray();
-        QCOMPARE(steps.size(), 20);
+        QCOMPARE(steps.size(), 28);
         QStringList checkpoints;
         QList<int> dwell;
         QList<QPointF> pathEnds;
@@ -610,6 +917,11 @@ class TaskCompilerTest : public QObject {
                 QCOMPARE(type, "wait");
                 const auto completion = step["completion"].toObject();
                 if (completion["type"] == "timer") {
+                    if (step["checkpointId"].toString().isEmpty()) {
+                        QCOMPARE(i, 0);
+                        QCOMPARE(completion["durationMs"].toInt(), 0);
+                        continue;
+                    }
                     checkpoints.append(step["checkpointId"].toString());
                     dwell.append(completion["durationMs"].toInt());
                 } else {
@@ -629,14 +941,18 @@ class TaskCompilerTest : public QObject {
         QCOMPARE(dwell, QList<int>({750, 1500, 0, 2300, 1000, 1000, 4500, 0, 2300, 750}));
         QCOMPARE(captures, 2);
         QCOMPARE(pathEnds, QList<QPointF>({{1, 0}, {2, 0}, {4, 0}, {3, 0}, {2, 0}, {0, 0}}));
-        QCOMPARE(turns.size(), 2);
-        QVERIFY(std::abs(std::abs(turns[0]) - std::acos(-1.)) < 1e-10);
-        QVERIFY(std::abs(turns[1]) < 1e-10);
+        QCOMPARE(turns.size(), 9);
+        for (qsizetype i = 0; i < turns.size(); ++i) {
+            if (i >= 4 && i <= 7)
+                QVERIFY(std::abs(std::abs(turns[i]) - std::acos(-1.)) < 1e-10);
+            else
+                QVERIFY(std::abs(turns[i]) < 1e-10);
+        }
 
         settings.repeatCount = 1;
         const auto forward = TaskCompiler::row(restored, binding(), settings, false);
         QVERIFY2(forward.ok(), qPrintable(forward.error));
-        QCOMPARE(forward.plan["steps"].toArray().size(), 9);
+        QCOMPARE(forward.plan["steps"].toArray().size(), 14);
         settings.repeatUntilStopped = true;
         const auto looping = TaskCompiler::row(restored, binding(), settings, true);
         QVERIFY2(looping.ok(), qPrintable(looping.error));
@@ -655,7 +971,7 @@ class TaskCompilerTest : public QObject {
             row.checkpoints = {checkpoint};
             const auto result = TaskCompiler::row(row, binding(), options(), false);
             QVERIFY2(result.ok(), qPrintable(result.error));
-            QCOMPARE(result.plan["steps"].toArray()[1].toObject()["completion"].toObject()["durationMs"].toInt(), duration);
+            QCOMPARE(result.plan["steps"].toArray()[2].toObject()["completion"].toObject()["durationMs"].toInt(), duration);
         }
         for (int duration : {-1, 3600001}) {
             checkpoint.dwellMs = duration;
@@ -693,8 +1009,9 @@ class TaskCompilerTest : public QObject {
         row.frameBinding = binding();
         row.hasStartPose = row.hasEndPose = true;
         row.endPose = {0, 2, 0};
-        for (int i = 0; i < 498; ++i)
+        for (int i = 0; i < 496; ++i)
             row.checkpoints.append({QString::number(i), 0, 0});
+        row.checkpoints.append({"out-only-limit", 0, 0, true, true, false});
         const auto maximum = TaskCompiler::row(row, binding(), options(), true);
         QVERIFY2(maximum.ok(), qPrintable(maximum.error));
         QCOMPARE(maximum.plan["steps"].toArray().size(), 1000);
@@ -735,8 +1052,8 @@ class TaskCompilerTest : public QObject {
         const auto steps = result.plan["steps"].toArray();
         QCOMPARE(steps.last().toObject()["goalToleranceMeters"].toDouble(), .03);
         QCOMPARE(steps.first().toObject()["goalToleranceMeters"].toDouble(), .03);
-        QCOMPARE(steps[2].toObject()["completion"].toObject()["type"].toString(), "external_ack");
-        QCOMPARE(steps[2].toObject()["completion"].toObject()["timeoutMs"].toInt(), 12000);
+        QCOMPARE(steps[3].toObject()["completion"].toObject()["type"].toString(), "external_ack");
+        QCOMPARE(steps[3].toObject()["completion"].toObject()["timeoutMs"].toInt(), 12000);
         loaded.frameBinding.context.originRevision = "old";
         QVERIFY(!TaskCompiler::row(loaded, binding(), options(), false).ok());
         auto legacy = RowWorkJson::planToJson(row);

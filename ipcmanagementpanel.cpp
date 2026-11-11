@@ -2,6 +2,7 @@
 #include "loggingmanager.h"
 #include "parameterwheelguard.h"
 #include <QComboBox>
+#include <QCheckBox>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDateTime>
@@ -73,6 +74,7 @@ QString parameterValueText(const QJsonValue &value, const QJsonObject &field) {
     const auto type = field.value("type").toString();
     QString result;
     if (type == "string" && value.isString()) result = value.toString().isEmpty() ? QObject::tr("（空）") : value.toString();
+    else if (type == "boolean" && value.isBool()) result = value.toBool() ? QObject::tr("启用") : QObject::tr("关闭");
     else if ((type == "number" || type == "integer") && value.isDouble() && std::isfinite(value.toDouble()) &&
              (type != "integer" || value.toDouble() == std::floor(value.toDouble())))
         result = QString::number(value.toDouble(), 'g', 16);
@@ -520,8 +522,9 @@ void IpcManagementPanel::loadFields(const QJsonObject &component) {
     for (const auto &value : fields) {
         const auto field = value.toObject();
         const auto type = field.value("type").toString();
-        if (field.value("key").toString().isEmpty() || (type != "number" && type != "integer" && type != "string") ||
-            (type != "string" && (!field.value("value").isDouble() || !std::isfinite(field.value("value").toDouble()) ||
+        if (field.value("key").toString().isEmpty() || (type != "number" && type != "integer" && type != "string" && type != "boolean") ||
+            (type == "boolean" && !field.value("value").isBool()) ||
+            ((type == "number" || type == "integer") && (!field.value("value").isDouble() || !std::isfinite(field.value("value").toDouble()) ||
               !field.value("minimum").isDouble() || !field.value("maximum").isDouble() ||
               !std::isfinite(field.value("minimum").toDouble()) || !std::isfinite(field.value("maximum").toDouble()) ||
               field.value("minimum").toDouble() > field.value("maximum").toDouble() ||
@@ -557,7 +560,12 @@ void IpcManagementPanel::loadFields(const QJsonObject &component) {
             const QString key = field.value("key").toString();
             const QString type = field.value("type").toString();
             QWidget *editor = nullptr;
-            if (type == "string") {
+            if (type == "boolean") {
+                auto *check = new QCheckBox(tr("启用"), this);
+                check->setChecked(field.value("value").toBool());
+                connect(check, &QCheckBox::toggled, this, [this] { updateButtons(); });
+                editor = check;
+            } else if (type == "string") {
                 auto *line = new QLineEdit(field.value("value").toString(), this);
                 line->setMaxLength(256);
                 connect(line, &QLineEdit::textEdited, this, [this] { updateButtons(); });
@@ -621,7 +629,8 @@ void IpcManagementPanel::loadFields(const QJsonObject &component) {
 QJsonObject IpcManagementPanel::currentValues() const {
     QJsonObject values;
     for (auto it=m_fields.cbegin(); it!=m_fields.cend(); ++it) {
-        if (auto *line = qobject_cast<QLineEdit *>(it.value())) values.insert(it.key(), line->text());
+        if (auto *check = qobject_cast<QCheckBox *>(it.value())) values.insert(it.key(), check->isChecked());
+        else if (auto *line = qobject_cast<QLineEdit *>(it.value())) values.insert(it.key(), line->text());
         else if (auto *spin = qobject_cast<QSpinBox *>(it.value())) values.insert(it.key(), spin->value());
         else if (auto *spin = qobject_cast<QDoubleSpinBox *>(it.value())) {
             // Do not round unchanged remote values to the display precision.

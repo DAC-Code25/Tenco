@@ -123,7 +123,12 @@ QString TrackingJson::reasonText(const QString &reason) {
         {"execution_history_unavailable", QObject::tr("任务记录暂不可用，正在重新读取")},
         {"execution_history_recovery_exhausted", QObject::tr("任务记录读取失败，请检查工控机连接")},
         {"capture_timeout", QObject::tr("位置采样超时，请停稳后重新采样")},
+        {"capture_not_stationary_or_invalid", QObject::tr("车辆尚未停稳或定位、实测反馈不可用，请停稳后重新采样")},
+        {"capture_scatter_exceeded", QObject::tr("定位样本变化过大，未记录点位，请等待稳定后重新采样")},
+        {"insufficient_independent_samples", QObject::tr("有效定位样本不足，未记录点位，请稍后重新采样")},
+        {"capture_source_timeout", QObject::tr("采样期间定位更新中断，未记录点位，请检查定位连接")},
         {"capture_version_or_boot_mismatch", QObject::tr("定位服务或坐标已改变，请重新采样")},
+        {"invalid_capture_response", QObject::tr("工控机采样响应异常，未记录点位，请重新采样")},
         {"control_cycle_late", QObject::tr("控制调度延迟，停稳后自动继续")},
         {"control_deadline", QObject::tr("控制响应超时，请检查车辆状态")},
         {"pose_sample_invalid", QObject::tr("定位数据异常，等待恢复")},
@@ -152,6 +157,12 @@ QString TrackingJson::reasonText(const QString &reason) {
         {"turn_timeout", QObject::tr("转向超时，请检查现场")},
         {"turn_recovery_timeout", QObject::tr("转向回点超时，请检查现场")},
         {"turn_space_exceeded", QObject::tr("转向偏移过大，请检查现场")},
+        {"endpoint_motion_unconfirmed", QObject::tr("位置偏移缺少运动证据，已停车，请核对定位与车辆位置")},
+        {"endpoint_space_unavailable", QObject::tr("端点返回空间不足，已停车，请检查现场")},
+        {"endpoint_recovery_timeout", QObject::tr("端点回位超时，已停车，请检查现场")},
+        {"endpoint_position_recovery", QObject::tr("正在低速返回原端点")},
+        {"endpoint_position_recovered", QObject::tr("已回到原端点并确认停稳")},
+        {"endpoint_recovery_braking", QObject::tr("端点偏离已核对，正在停稳后回位")},
         {"lateral_safety_limit", QObject::tr("车辆偏离路径过远，请检查现场")},
         {"command_expired", QObject::tr("控制指令已过期，请检查车辆状态")},
         {"emergency_stop", QObject::tr("已触发急停，请确认现场安全后复位")},
@@ -242,6 +253,9 @@ bool TrackingJson::status(const QJsonObject &o, TrackingSnapshot *out, QString *
     if (o.contains("turnRecovering") && !o["turnRecovering"].isBool())
         return reject(error, QStringLiteral("转向回点状态无效"));
     s.turnRecovering = o["turnRecovering"].toBool();
+    if (o.contains("endpointRecovering") && !o["endpointRecovering"].isBool())
+        return reject(error, QStringLiteral("端点回位状态无效"));
+    s.endpointRecovering = o["endpointRecovering"].toBool();
     if (o.contains("turnOffsetMeters") &&
         (!finiteNumber(o, "turnOffsetMeters", &s.turnOffsetMeters) || s.turnOffsetMeters < 0))
         return reject(error, QStringLiteral("转向偏移距离无效"));

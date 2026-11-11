@@ -130,6 +130,7 @@ private:
     void refreshPlanningRevision();
     QByteArray m_planningFingerprint;
     void submitRouteTask();
+    QList<TaskRouteSection> buildRouteSections(QString *error = nullptr);
     void requestTaskReview();
     bool hasConfirmedTask() const;
     void handleCheckpointReview();
@@ -160,6 +161,7 @@ private:
         int id = -1;
         QPointF mapPosition;
         double theta = 0.0;
+        int dwellMs = 0;
         QGraphicsItemGroup *markerGroup = nullptr;
         QGraphicsEllipseItem *circle = nullptr;
         QGraphicsPathItem *arrow = nullptr;
@@ -190,8 +192,10 @@ private:
         None,
         StartPose,
         EndPose,
-        CheckpointFromVehicle
+        CheckpointFromVehicle,
+        MapPoint
     };
+    bool requestPoseCapture(RowWorkPendingCaptureTarget target);
 
     void initializeUi();
     void ensureScene();
@@ -204,7 +208,8 @@ private:
     void resetNextPointId();
     void resetNextPathId();
 
-    bool addPointInternal(double x, double y, double theta, std::optional<int> forcedId = std::nullopt);
+    bool addPointInternal(double x, double y, double theta, std::optional<int> forcedId = std::nullopt,
+                          std::optional<int> dwellMs = std::nullopt);
     void removePointInternal(int pointId);
     bool addLinePath(int startId, int endId, std::optional<int> forcedId = std::nullopt, bool bidirectional = false);
     bool addArcPath(int startId, int endId, double sagitta, std::optional<int> forcedId = std::nullopt, bool bidirectional = false);
@@ -358,6 +363,8 @@ private:
     QDoubleSpinBox *m_pointXSpin = nullptr;
     QDoubleSpinBox *m_pointYSpin = nullptr;
     QDoubleSpinBox *m_pointThetaSpin = nullptr;
+    QSpinBox *m_pointDwellSpin = nullptr;
+    QCheckBox *m_autoConnectPointsCheck = nullptr;
     QPushButton *m_addPointFromInputButton = nullptr;
     QPushButton *m_addPointFromClickButton = nullptr;
     QPushButton *m_updatePointButton = nullptr;
@@ -390,6 +397,8 @@ private:
     QCheckBox *m_routeLoopCheck = nullptr;
     QSpinBox *m_routeLoopIntervalSpin = nullptr;
     QLabel *m_routeStatusLabel = nullptr;
+    enum class TaskNoticeSource { Other, PoseStream, CaptureInterrupted };
+    TaskNoticeSource m_taskNoticeSource = TaskNoticeSource::Other;
     QLabel *m_mapNameLabel = nullptr;
     QLabel *m_mousePositionLabel = nullptr;
     QPushButton *m_loadMapButton = nullptr;
@@ -428,6 +437,8 @@ private:
     bool m_rowWorkCheckpointTableUpdating = false;
     bool m_rowWorkClickPlacementMode = false;
     RowWorkPendingCaptureTarget m_rowWorkPendingCaptureTarget = RowWorkPendingCaptureTarget::None;
+    QJsonObject m_pendingCaptureBinding;
+    int m_pendingMapPointDwellMs = 0;
 
     QPushButton *m_newMapButton = nullptr;
 };

@@ -1347,6 +1347,42 @@ class IpcClientsTest : public QObject {
         object["recoveryStableMs"] = -1;
         QVERIFY(!TrackingJson::status(object, &snapshot));
     }
+    void endpointRecoveryStatusIsOptionalAndStrictlyBoolean() {
+        auto object = statusObject(1, "boot");
+        TrackingSnapshot snapshot;
+        snapshot.endpointRecovering = true;
+        QVERIFY(TrackingJson::status(object, &snapshot));
+        QVERIFY(!snapshot.endpointRecovering); // Old services retain their existing status contract.
+        object["state"] = "Turning";
+        object["endpointRecovering"] = true;
+        object["turnOffsetMeters"] = .42;
+        QVERIFY(TrackingJson::status(object, &snapshot));
+        QVERIFY(snapshot.endpointRecovering);
+        QVERIFY(snapshot.isExecuting());
+        QCOMPARE(snapshot.turnOffsetMeters, .42);
+        for (const auto &invalid : QJsonArray{QJsonValue::Null, 0, 1, "true", "false", QJsonArray{}, QJsonObject{}}) {
+            auto malformed = object;
+            malformed["endpointRecovering"] = invalid;
+            QString error;
+            QVERIFY(!TrackingJson::status(malformed, &snapshot, &error));
+            QCOMPARE(error, QString("端点回位状态无效"));
+            QVERIFY(snapshot.endpointRecovering); // Rejected input cannot replace the last usable snapshot.
+        }
+        object["endpointRecovering"] = false;
+        object["state"] = "Paused";
+        object["pauseReason"] = "endpoint_motion_unconfirmed";
+        object["autoResumePending"] = false;
+        QVERIFY(TrackingJson::status(object, &snapshot));
+        QVERIFY(!snapshot.endpointRecovering);
+        QVERIFY(!snapshot.isExecuting());
+        QVERIFY(!snapshot.autoResumePending);
+        QVERIFY(TrackingJson::reasonText(snapshot.pauseReason).contains("缺少运动证据"));
+        QVERIFY(TrackingJson::reasonText("endpoint_space_unavailable").contains("返回空间不足"));
+        QVERIFY(TrackingJson::reasonText("endpoint_recovery_timeout").contains("端点回位超时"));
+        QVERIFY(TrackingJson::reasonText("endpoint_position_recovery").contains("返回原端点"));
+        QVERIFY(TrackingJson::reasonText("endpoint_position_recovered").contains("确认停稳"));
+        QVERIFY(TrackingJson::reasonText("endpoint_recovery_braking").contains("正在停稳后回位"));
+    }
     void eventPollingFollowsAdvertisedSequenceAndRecovers() {
         HttpFixture server;
         quint64 seq = 0, advertised = 0;
