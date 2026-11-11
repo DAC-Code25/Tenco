@@ -267,6 +267,8 @@ void HomeStatusPresenter::setTaskStatus(const TrackingSnapshot &status, bool cur
     }
 
     QString state = taskStateName(status.state);
+    if (status.endpointRecovering && status.isExecuting() &&
+        status.state != "Pausing" && status.state != "Aborting") state = QObject::tr("端点回位中");
     if (status.autoResumePending) state = QObject::tr("等待自动恢复");
     const auto reason = status.state == "Fault" ? status.faultCode : status.pauseReason;
     if (!reason.isEmpty()) state += QStringLiteral(" · ") + compactTaskReason(reason);
@@ -301,7 +303,8 @@ void HomeStatusPresenter::setTaskStatus(const TrackingSnapshot &status, bool cur
     if (!status.pauseReason.isEmpty()) detail += QObject::tr("\n暂停原因：%1").arg(TrackingJson::reasonText(status.pauseReason));
     if (!status.faultCode.isEmpty()) detail += QObject::tr("\n故障原因：%1").arg(TrackingJson::reasonText(status.faultCode));
     if (status.autoResumePending) detail += QObject::tr("\n恢复条件由工控机校验，通过后自动继续。");
-    if (status.turnRecovering) detail += QObject::tr("\n转向回点中，偏移 %1 m").arg(status.turnOffsetMeters, 0, 'f', 2);
+    if (status.endpointRecovering) detail += QObject::tr("\n端点回位中，偏移 %1 m").arg(status.turnOffsetMeters, 0, 'f', 2);
+    else if (status.turnRecovering) detail += QObject::tr("\n转向回点中，偏移 %1 m").arg(status.turnOffsetMeters, 0, 'f', 2);
     if (!current) {
         const auto lastState = status.autoResumePending ? QObject::tr("等待恢复") : taskStateName(status.state);
         state = QObject::tr("显示延迟 · 上次%1").arg(lastState);

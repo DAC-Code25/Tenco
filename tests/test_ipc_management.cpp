@@ -4,6 +4,7 @@
 #include <QApplication>
 #include <QAbstractItemView>
 #include <QComboBox>
+#include <QCheckBox>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
@@ -695,6 +696,80 @@ private slots:
         confirmOrigin(panel);
         QTRY_COMPARE(fixture.writes, 2);
         QTRY_VERIFY(panel.findChild<QLabel *>("ipcParameterState")->text().contains("已核验生效"));
+    }
+    void booleanNavigationParameterLoadsAndSavesAsBoolean_data() {
+        QTest::addColumn<bool>("saved");
+        QTest::newRow("enable") << false;
+        QTest::newRow("disable") << true;
+    }
+    void booleanNavigationParameterLoadsAndSavesAsBoolean() {
+        QFETCH(bool, saved);
+        ManagementFixture fixture;
+        fixture.parameterState = "pending";
+        fixture.customFields = {QJsonObject{{"key", "endpoint_recovery.enabled"},
+            {"label", "端点自主回位"}, {"type", "boolean"}, {"value", saved}, {"appliedValue", !saved},
+            {"group", "到点与转向完成"}, {"description", "仅在运动证据与返回空间通过核验后回原端点。"}}};
+        IpcManagementPanel panel; connectPanel(panel, fixture);
+        panel.findChild<QComboBox *>("ipcParameterComponent")->setCurrentIndex(1);
+        panel.findChild<QTabWidget *>("ipcMaintenanceTabs")->setCurrentIndex(1);
+        auto *read = panel.findChild<QPushButton *>("ipcParametersRead");
+        QTRY_VERIFY(read->isEnabled()); read->click();
+        QTRY_VERIFY(panel.findChild<QCheckBox *>("ipcParameter_endpoint_recovery.enabled"));
+        auto *editor = panel.findChild<QCheckBox *>("ipcParameter_endpoint_recovery.enabled");
+        auto *readback = panel.findChild<QLabel *>("ipcParameterReadback_endpoint_recovery.enabled");
+        QVERIFY(readback);
+        QCOMPARE(editor->isChecked(), saved);
+        QVERIFY(!panel.hasUnsavedChanges());
+        QVERIFY(readback->text().contains(saved ? "已保存：启用" : "已保存：关闭"));
+        QVERIFY(readback->text().contains(saved ? "运行值：关闭" : "运行值：启用"));
+        QCOMPARE(fixture.writes, 0);
+        editor->setChecked(!saved);
+        QVERIFY(panel.hasUnsavedChanges());
+        editor->setChecked(saved);
+        QVERIFY(!panel.hasUnsavedChanges());
+        editor->setChecked(!saved);
+        auto *save = panel.findChild<QPushButton *>("ipcParametersSave");
+        QVERIFY(save->isEnabled()); save->click();
+        QTRY_COMPARE(fixture.writes, 1);
+        QCOMPARE(fixture.lastPath, QString("/api/v1/management/parameters/tracking"));
+        QCOMPARE(fixture.lastBody.value("expectedRevision"), QJsonValue("1"));
+        QVERIFY(!fixture.lastBody.value("apply").toBool());
+        const auto values = fixture.lastBody.value("values").toObject();
+        QCOMPARE(values.size(), 1);
+        QVERIFY(values.value("endpoint_recovery.enabled").isBool());
+        QCOMPARE(values.value("endpoint_recovery.enabled").toBool(), !saved);
+        QCOMPARE(fixture.serviceStates.value("tracking"), QString("inactive"));
+    }
+    void malformedBooleanNavigationParameterRejectsWholeForm_data() {
+        QTest::addColumn<QJsonValue>("value");
+        QTest::newRow("missing") << QJsonValue(QJsonValue::Undefined);
+        QTest::newRow("null") << QJsonValue(QJsonValue::Null);
+        QTest::newRow("zero") << QJsonValue(0);
+        QTest::newRow("one") << QJsonValue(1);
+        QTest::newRow("string-true") << QJsonValue("true");
+        QTest::newRow("string-false") << QJsonValue("false");
+        QTest::newRow("array") << QJsonValue(QJsonArray{});
+        QTest::newRow("object") << QJsonValue(QJsonObject{});
+    }
+    void malformedBooleanNavigationParameterRejectsWholeForm() {
+        QFETCH(QJsonValue, value);
+        ManagementFixture fixture;
+        fixture.customFields = {
+            QJsonObject{{"key", "speed.limit"}, {"label", "速度上限"}, {"type", "number"},
+                {"minimum", .1}, {"maximum", 1.5}, {"value", .2}},
+            QJsonObject{{"key", "endpoint_recovery.enabled"}, {"label", "端点自主回位"},
+                {"type", "boolean"}, {"value", value}}};
+        IpcManagementPanel panel; connectPanel(panel, fixture);
+        panel.findChild<QComboBox *>("ipcParameterComponent")->setCurrentIndex(1);
+        auto *read = panel.findChild<QPushButton *>("ipcParametersRead");
+        QTRY_VERIFY(read->isEnabled()); read->click();
+        QTRY_VERIFY(panel.findChild<QLabel *>("ipcManagementResult")->text().contains("参数定义无效"));
+        QVERIFY(!panel.findChild<QWidget *>("ipcParameter_endpoint_recovery.enabled"));
+        QVERIFY(!panel.findChild<QWidget *>("ipcParameter_speed.limit"));
+        QVERIFY(!panel.findChild<QPushButton *>("ipcParametersSave")->isEnabled());
+        QVERIFY(!panel.findChild<QPushButton *>("ipcParametersSaveApply")->isEnabled());
+        QVERIFY(!panel.hasUnsavedChanges());
+        QCOMPARE(fixture.writes, 0);
     }
     void longParameterFormKeepsActionsVisibleAndNamesRetainedEdits() {
         ManagementFixture fixture;

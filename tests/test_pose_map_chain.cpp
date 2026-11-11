@@ -2,6 +2,7 @@
 #include <QtNetwork>
 #include <QtTest>
 #include <optional>
+#include <memory>
 #include "rowworktypes.h"
 #include "taskcompiler.h"
 #include "mapgeometry.h"
@@ -22,6 +23,125 @@ static MapFrameBinding testBinding() {
     b.context = {"map", "origin", "transform", "cal", "profile", 1};
     return b;
 }
+
+class MapCaptureFixture : public QTcpServer {
+public:
+    int requests = 0;
+    QPointer<QTcpSocket> pending;
+    QJsonObject body;
+    MapCaptureFixture() {
+        listen(QHostAddress::LocalHost);
+        connect(this, &QTcpServer::newConnection, this, [this] {
+            auto *socket = nextPendingConnection();
+            auto buffer = std::make_shared<QByteArray>();
+            connect(socket, &QTcpSocket::readyRead, this, [this, socket, buffer] {
+                buffer->append(socket->readAll());
+                const auto end = buffer->indexOf("\r\n\r\n");
+                if (end < 0) return;
+                int length = 0;
+                for (const auto &line : buffer->left(end).split('\n'))
+                    if (line.toLower().startsWith("content-length:"))
+                        length = line.mid(15).trimmed().toInt();
+                if (buffer->size() < end + 4 + length) return;
+                socket->disconnect(this);
+                body = QJsonDocument::fromJson(buffer->mid(end + 4, length)).object();
+                pending = socket;
+                ++requests;
+            });
+            connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+        });
+    }
+    QUrl url() const { return QUrl(QStringLiteral("http://127.0.0.1:%1/api/v1").arg(serverPort())); }
+    void reply(const QString &state = QStringLiteral("succeeded"), const QString &boot = QStringLiteral("fusion")) {
+        if (!pending) return;
+        const auto payload = QJsonDocument(QJsonObject{
+            {"apiVersion", 1}, {"fusionBootId", boot}, {"state", state},
+            {"originRevision", "origin"}, {"calibrationId", "cal"},
+            {"sampleCount", 12}, {"positionScatterMeters", .004},
+            {"reason", state == "succeeded" ? "" : "capture_scatter_exceeded"},
+            {"pose", QJsonObject{{"x", 1.123456789}, {"y", -2.234567891}, {"yaw", .345678912}}}
+        }).toJson(QJsonDocument::Compact);
+        pending->write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: " +
+                       QByteArray::number(payload.size()) + "\r\n\r\n" + payload);
+        pending->disconnectFromHost();
+        pending.clear();
+    }
+    static void seed(PoseClient &pose) {
+        pose.m_running = true;
+        pose.m_pose.bootId = "fusion";
+        pose.m_pose.validForControl = true;
+        pose.m_pose.originRevision = "origin";
+        pose.m_pose.calibrationId = "cal";
+        pose.m_pose.stateAgeMs = 0;
+        pose.m_age.start();
+    }
+};
+
+class MapPoseStreamFixture : public QTcpServer {
+public:
+    int streams = 0, captures = 0, nextStreamStatus = 200;
+    QPointer<QTcpSocket> stream, capture;
+    QElapsedTimer clock;
+    quint64 sequence = 0;
+    MapPoseStreamFixture() {
+        clock.start();
+        listen(QHostAddress::LocalHost);
+        connect(this, &QTcpServer::newConnection, this, [this] {
+            while (hasPendingConnections()) {
+                auto *socket = nextPendingConnection();
+                auto buffer = std::make_shared<QByteArray>();
+                connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+                connect(socket, &QTcpSocket::readyRead, this, [this, socket, buffer] {
+                    buffer->append(socket->readAll());
+                    const auto end = buffer->indexOf("\r\n\r\n");
+                    if (end < 0 || socket->property("handled").toBool()) return;
+                    int length = 0;
+                    for (const auto &line : buffer->left(end).split('\n'))
+                        if (line.toLower().startsWith("content-length:"))
+                            length = line.mid(15).trimmed().toInt();
+                    if (buffer->size() < end + 4 + length) return;
+                    socket->setProperty("handled", true);
+                    if (buffer->left(end).split(' ').value(1).endsWith("/pose/stream")) {
+                        ++streams;
+                        const int status = nextStreamStatus;
+                        nextStreamStatus = 200;
+                        if (status != 200) {
+                            socket->write("HTTP/1.1 " + QByteArray::number(status) +
+                                " Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                            socket->disconnectFromHost();
+                            return;
+                        }
+                        stream = socket;
+                        socket->write("HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\n"
+                                      "Transfer-Encoding: chunked\r\n\r\n");
+                    } else {
+                        capture = socket;
+                        ++captures;
+                    }
+                });
+            }
+        });
+    }
+    QUrl url() const { return QUrl(QStringLiteral("http://127.0.0.1:%1/api/v1").arg(serverPort())); }
+    void writeLine(const QByteArray &line) {
+        if (stream) stream->write(QByteArray::number(line.size(), 16) + "\r\n" + line + "\r\n");
+    }
+    void publish(bool valid = true) {
+        writeLine(QJsonDocument(QJsonObject{
+            {"apiVersion", 1}, {"seq", QString::number(++sequence)}, {"bootId", "fusion"},
+            {"frameId", "map"}, {"baseFrameId", "base_link"}, {"originRevision", "origin"},
+            {"calibrationId", "cal"}, {"freshnessBasis", "http_receipt"},
+            {"sendMonotonicSeconds", clock.elapsed() / 1000.0}, {"stateAgeMs", 0},
+            {"positionObservationAgeMs", 0}, {"headingObservationAgeMs", 0},
+            {"pose", QJsonObject{{"x", 0}, {"y", 0}, {"yaw", 0}}},
+            {"estimatedTwist", QJsonObject{{"v", 0}, {"omega", 0}}}, {"validForControl", valid}
+        }).toJson(QJsonDocument::Compact) + '\n');
+    }
+    void disconnectStream() {
+        if (stream) stream->disconnectFromHost();
+        stream.clear();
+    }
+};
 
 class PoseMapChainTest : public QObject {
     Q_OBJECT
@@ -280,6 +400,72 @@ private slots:
         defaults.remove("goal_tolerance_m");
         tracking.m_configuration["navigation_defaults"] = defaults;
         QVERIFY(!TaskCompiler::route(sections, testBinding(), map.taskOptions()).ok());
+    }
+    void routeCycleWaitCannotExceedTheCompiledStepLimit() {
+        QMainWindow window; Ui::MainWindow ui; ui.setupUi(&window); Map map(&ui);
+        MapCaptureFixture server;
+        QVERIFY(server.isListening());
+        TrackingClient tracking; PoseClient pose; ControlSessionCoordinator coordinator(&tracking, &pose);
+        tracking.configure(server.url(), {});
+        tracking.m_configuration = {{"profile_revision", "profile"},
+            {"calibration", QJsonObject{{"calibrationId", "cal"}}},
+            {"origin", QJsonObject{{"active", QJsonObject{{"originRevision", "origin"}}}}},
+            {"navigation_defaults", QJsonObject{{"rotation_policy", "vehicle_footprint"},
+                {"default_safety_profile", "field-low-speed"}, {"task_parameters_version", 1},
+                {"task_speed_mps", .1}, {"task_turn_speed_radps", .2}, {"goal_tolerance_m", .03},
+                {"angle_tolerance_rad", .05}, {"task_turn_timeout_ms", 30000}}}};
+        map.m_binding = testBinding();
+        map.m_newMapMayAutoBind = false;
+        map.setControlCoordinator(&coordinator);
+        map.m_routeLoopCheck->setChecked(true);
+        map.m_routeLoopIntervalSpin->setValue(1);
+
+        // A closed directed line has 333 stopped legs: 166 outbound and 167
+        // returning. Each has path/heading/dwell, plus one turnaround = 1000.
+        const MapFrameAdapter frame(map.m_binding);
+        constexpr int turnaroundId = 167;
+        for (int id = 1; id <= 333; ++id) {
+            const double x = id <= turnaroundId ? id - 1.0
+                : 166.0 * (334 - id) / 167.0;
+            const auto point = frame.fromEnu({x, 0});
+            const double yaw = frame.yawFromEnu(id > 1 && id <= turnaroundId ? 0 : std::acos(-1.));
+            QVERIFY(map.addPointInternal(point.x(), point.y(), yaw, id, 2000));
+        }
+        for (int id = 1; id <= 333; ++id)
+            QVERIFY(map.addLinePath(id, id == 333 ? 1 : id + 1, id));
+        map.m_routeQueue = {{1, turnaroundId, {}}, {turnaroundId, 1, {}}};
+        map.refreshPlanningRevision();
+        QString error;
+        const auto sections = map.buildRouteSections(&error);
+        QVERIFY2(error.isEmpty(), qPrintable(error));
+        QCOMPARE(sections.size(), 333);
+        auto options = map.taskOptions();
+        options.repeatUntilStopped = true;
+        const auto compiled = TaskCompiler::route(sections, map.m_binding, options);
+        QVERIFY2(compiled.ok(), qPrintable(compiled.error));
+        QCOMPARE(compiled.plan["steps"].toArray().size(), 1000);
+
+        // Make every ordinary submit gate eligible, so an early configuration
+        // or state rejection cannot conceal a missing post-compile size guard.
+        tracking.m_running = true;
+        tracking.m_statusUsable = true;
+        tracking.m_statusAge.start();
+        tracking.m_status.bootId = "boot";
+        tracking.m_status.state = "Idle";
+        QVERIFY(tracking.commandFresh());
+        QVERIFY(coordinator.coordinatesReady());
+        QVERIFY(map.canEditRowWorkPlan());
+        QSignalSpy actionChanges(&coordinator, &ControlSessionCoordinator::actionPendingChanged);
+        QSignalSpy pendingChanges(&tracking, &TrackingClient::pendingChanged);
+        map.submitRouteTask();
+        QVERIFY(!coordinator.actionPending());
+        QCOMPARE(actionChanges.count(), 0);
+        QVERIFY(!tracking.busy());
+        QCOMPARE(pendingChanges.count(), 0);
+        QVERIFY(map.m_routeStatusLabel->text().contains(QStringLiteral("1000")));
+        QTest::qWait(20);
+        QCOMPARE(server.requests, 0);
+        tracking.m_running = false;
     }
     void staleMonitoringAndBusyWriteDoNotDisableStopsForKnownExecution() {
         QMainWindow window; Ui::MainWindow ui; ui.setupUi(&window); Map map(&ui);
@@ -556,8 +742,10 @@ private slots:
         QVERIFY(tracking.preparedPlan().isEmpty());
     }
     void locatingVehicleCreatesSequentialPointsFromFreshFullPrecisionPose() {
+        MapCaptureFixture server;
         QMainWindow window; Ui::MainWindow ui; ui.setupUi(&window); Map map(&ui);
         TrackingClient tracking; PoseClient pose; ControlSessionCoordinator coordinator(&tracking, &pose);
+        pose.configure(server.url(), {}, 3000);
         map.m_binding = testBinding(); map.setControlCoordinator(&coordinator);
         QVERIFY(map.addPointInternal(0, 0, 0, 1));
         QVERIFY(map.addPointInternal(1, 0, 0, 2));
@@ -566,25 +754,128 @@ private slots:
         map.syncCommittedMapState();
         tracking.m_preparedPlan = {{"taskId", "prepared-task"}, {"revision", 7}};
         const auto revision = map.m_binding.context.mapRevision;
-        pose.m_running = true;
-        pose.m_pose.validForControl = true;
-        pose.m_pose.originRevision = "origin";
-        pose.m_pose.calibrationId = "cal";
-        pose.m_pose.stateAgeMs = 0;
-        pose.m_age.start();
+        map.m_pointDwellSpin->setValue(1750);
+        MapCaptureFixture::seed(pose);
         map.updateVehiclePose(.123456789, -.234567891, .345678912);
         map.handleLocateCurrentPosition();
         map.handleLocateCurrentPosition();
+        QTRY_COMPARE(server.requests, 1);
+        QCOMPARE(map.m_points.size(), 2); // A live frame is not a validated teaching result.
+        QVERIFY(!map.m_pointDwellSpin->isEnabled());
+        QVERIFY(!map.m_autoConnectPointsCheck->isEnabled());
+        QVERIFY(!tracking.preparedPlan().isEmpty());
+        QCOMPARE(server.body["durationMs"].toInt(), 1000);
+        server.reply();
+        QTRY_COMPARE(map.m_points.size(), 3);
+        MapCaptureFixture::seed(pose);
+        map.handleLocateCurrentPosition();
+        QTRY_COMPARE(server.requests, 2);
+        server.reply();
+        QTRY_COMPARE(map.m_points.size(), 4);
         map.refreshPlanningRevision();
         QCOMPARE(map.m_points.size(), 4);
-        QCOMPARE(map.pointById(3)->mapPosition, QPointF(.123456789, -.234567891));
-        QCOMPARE(map.pointById(4)->mapPosition, QPointF(.123456789, -.234567891));
-        QVERIFY(std::abs(map.pointById(3)->theta - .345678912) < 1e-12);
+        const MapFrameAdapter frame(map.m_binding);
+        const auto expected = frame.fromEnu({1.123456789, -2.234567891});
+        QCOMPARE(map.pointById(3)->mapPosition, expected);
+        QCOMPARE(map.pointById(4)->mapPosition, expected);
+        QCOMPARE(map.pointById(3)->dwellMs, 1750);
+        QCOMPARE(map.pointById(4)->dwellMs, 1750);
+        QVERIFY(std::abs(map.pointById(3)->theta - frame.yawFromEnu(.345678912)) < 1e-12);
         QCOMPARE(map.m_pendingPointSelection.value(), 4);
         QCOMPARE(map.m_binding.context.mapRevision, revision + 2);
         QVERIFY(tracking.preparedPlan().isEmpty());
         QVERIFY(map.hasUnsavedMapChanges());
         pose.m_running = false;
+    }
+    void delayedMapPointCaptureNeverEditsChangedMap_data() {
+        QTest::addColumn<QString>("change");
+        for (const auto *change : {"failed", "boot", "missing-id", "edit-off", "edit-off-on", "transform", "new-map", "load-map", "task"})
+            QTest::newRow(change) << QString::fromLatin1(change);
+    }
+    void editingSampledPointDwellKeepsItsCapturedCoordinates() {
+        MapCaptureFixture server;
+        QMainWindow window; Ui::MainWindow ui; ui.setupUi(&window); Map map(&ui);
+        TrackingClient tracking; PoseClient pose; ControlSessionCoordinator coordinator(&tracking, &pose);
+        pose.configure(server.url(), {}, 3000);
+        map.m_binding = testBinding(); map.setControlCoordinator(&coordinator);
+        QVERIFY(map.addPointInternal(9, 8, .7));
+        map.m_pendingPointSelection = 1;
+        map.refreshPointUi(); map.handlePointSelectionChanged();
+        MapCaptureFixture::seed(pose);
+        map.updateVehiclePose(.1, -.2, .3);
+        map.handleLocateCurrentPosition();
+        QTRY_COMPARE(server.requests, 1);
+        server.reply();
+        QTRY_COMPARE(map.m_points.size(), 2);
+        const auto position = map.pointById(2)->mapPosition;
+        const auto yaw = map.pointById(2)->theta;
+        map.m_pointDwellSpin->setValue(2500);
+        map.handleUpdatePoint();
+        QCOMPARE(map.pointById(2)->dwellMs, 2500);
+        QCOMPARE(map.pointById(2)->mapPosition, position);
+        QCOMPARE(map.pointById(2)->theta, yaw);
+        QCOMPARE(map.pointById(1)->mapPosition, QPointF(9, 8));
+        pose.stop();
+    }
+    void stoppingPoseCaptureUnlocksEditing_data() {
+        QTest::addColumn<bool>("reconfigure");
+        QTest::newRow("stop") << false;
+        QTest::newRow("reconfigure") << true;
+    }
+    void stoppingPoseCaptureUnlocksEditing() {
+        QFETCH(bool, reconfigure);
+        MapCaptureFixture server;
+        QMainWindow window; Ui::MainWindow ui; ui.setupUi(&window); Map map(&ui);
+        TrackingClient tracking; PoseClient pose; ControlSessionCoordinator coordinator(&tracking, &pose);
+        pose.configure(server.url(), {}, 3000);
+        map.m_binding = testBinding(); map.setControlCoordinator(&coordinator);
+        MapCaptureFixture::seed(pose);
+        map.updateVehiclePose(.1, -.2, .3);
+        map.handleLocateCurrentPosition();
+        QTRY_COMPARE(server.requests, 1);
+        QVERIFY(!map.canEditRowWorkPlan());
+        if (reconfigure) pose.configure(QUrl("http://127.0.0.1:1/api/v1"), {}, 3000);
+        else pose.stop();
+        QVERIFY(map.canEditRowWorkPlan());
+        QVERIFY(map.m_pointDwellSpin->isEnabled());
+        QCOMPARE(map.m_rowWorkPendingCaptureTarget, Map::RowWorkPendingCaptureTarget::None);
+        QCOMPARE(map.m_points.size(), 0);
+        QVERIFY(map.m_routeStatusLabel->text().contains(QStringLiteral("采样已取消")));
+        pose.stop();
+    }
+    void delayedMapPointCaptureNeverEditsChangedMap() {
+        QFETCH(QString, change);
+        MapCaptureFixture server;
+        QMainWindow window; Ui::MainWindow ui; ui.setupUi(&window); Map map(&ui);
+        TrackingClient tracking; PoseClient pose; ControlSessionCoordinator coordinator(&tracking, &pose);
+        pose.configure(server.url(), {}, 3000);
+        map.m_binding = testBinding(); map.setControlCoordinator(&coordinator);
+        MapCaptureFixture::seed(pose);
+        map.updateVehiclePose(.1, -.2, .3);
+        map.handleLocateCurrentPosition();
+        QTRY_COMPARE(server.requests, 1);
+        if (change == "edit-off") map.handleEditModeToggled(false);
+        if (change == "edit-off-on") {
+            map.handleEditModeToggled(false);
+            map.handleEditModeToggled(true);
+        }
+        if (change == "transform") map.m_binding.enuYawOffsetRad = .7;
+        if (change == "new-map") map.resetToBlankMap();
+        if (change == "load-map") QVERIFY(map.deserializeMap(map.serializeMap()));
+        if (change == "task") {
+            tracking.m_running = true; tracking.m_statusUsable = true; tracking.m_statusAge.start();
+            tracking.m_status.state = "Tracking";
+        }
+        const auto before = map.buildComparableMapState();
+        QSignalSpy completed(&pose, &PoseClient::captureFinished);
+        QSignalSpy errors(&pose, &PoseClient::errorOccurred);
+        server.reply(change == "failed" ? "failed" : change == "missing-id" ? "running" : "succeeded",
+                     change == "boot" ? "other-boot" : "fusion");
+        QTRY_VERIFY(completed.count() + errors.count() > 0);
+        QCOMPARE(map.buildComparableMapState(), before);
+        QCOMPARE(map.m_points.size(), 0);
+        QVERIFY(map.m_rowWorkPendingCaptureTarget == Map::RowWorkPendingCaptureTarget::None);
+        pose.m_running = false; tracking.m_running = false;
     }
     void locatingVehiclePreservesMapWhenEditingIsLockedAndRejectsStalePose() {
         QMainWindow window; Ui::MainWindow ui; ui.setupUi(&window); Map map(&ui);
@@ -640,15 +931,119 @@ private slots:
         QVERIFY(firstMap.open(QIODevice::ReadOnly));
         QCOMPARE(firstMap.readAll(), QByteArray("existing map"));
     }
-    void poseStreamErrorUsesPlainChineseOnTheActualMapNotice() {
+    void poseStreamNoticeClearsOnlyWhenMonitoringRecovers_data() {
+        QTest::addColumn<QString>("failure");
+        QTest::newRow("disconnect") << QStringLiteral("disconnect");
+        QTest::newRow("timeout") << QStringLiteral("timeout");
+        QTest::newRow("invalid-json") << QStringLiteral("json");
+        QTest::newRow("invalid-fields-without-error-prefix") << QStringLiteral("fields");
+        QTest::newRow("http-404-without-error-prefix") << QStringLiteral("404");
+    }
+    void poseStreamNoticeClearsOnlyWhenMonitoringRecovers() {
+        QFETCH(QString, failure);
+        MapPoseStreamFixture server;
         QMainWindow window; Ui::MainWindow ui; ui.setupUi(&window); Map map(&ui);
         TrackingClient tracking; PoseClient pose; ControlSessionCoordinator coordinator(&tracking, &pose);
+        map.m_binding = testBinding();
         map.setControlCoordinator(&coordinator);
-        emit pose.errorOccurred(QStringLiteral("pose_stream_disconnected"));
         auto *notice = ui.mapPage->findChild<QLabel *>("mapTaskNoticeLabel");
         QVERIFY(notice);
-        QCOMPARE(notice->text(), QStringLiteral("定位连接已断开，正在重连"));
+        QSignalSpy errors(&pose, &PoseClient::streamErrorOccurred);
+        QSignalSpy genericErrors(&pose, &PoseClient::errorOccurred);
+        if (failure == "404") server.nextStreamStatus = 404;
+        pose.configure(server.url(), {}, 3000);
+        pose.start();
+        QTRY_COMPARE(server.streams, 1);
+        if (failure == "disconnect") server.disconnectStream();
+        if (failure == "json") server.writeLine("invalid json\n");
+        if (failure == "fields") server.writeLine("{\"apiVersion\":1}\n");
+        QTRY_COMPARE(errors.count(), 1);
+        QCOMPARE(genericErrors.count(), 1); // Existing observers still receive every failure.
+        QVERIFY(!pose.isReportingStreamError());
+        const auto error = errors.front().front().toString();
+        QCOMPARE(notice->text(), TrackingJson::reasonText(error));
+        if (failure == "disconnect")
+            QCOMPARE(notice->text(), QStringLiteral("定位连接已断开，正在重连"));
         QVERIFY(!notice->text().contains(QStringLiteral("pose_stream")));
+        QVERIFY(notice->styleSheet().contains("#b42318"));
+        emit pose.monitoringAvailabilityChanged(false, "waiting");
+        QCOMPARE(notice->text(), TrackingJson::reasonText(error));
+        QTRY_COMPARE(server.streams, 2);
+        QCOMPARE(notice->text(), TrackingJson::reasonText(error)); // Headers alone are insufficient.
+        server.publish(false); // Communication can recover while the estimate is still invalid.
+        QTRY_VERIFY(notice->text().isEmpty());
+        QVERIFY(notice->toolTip().isEmpty());
+        QVERIFY(notice->styleSheet().contains("#647a6c"));
+        QVERIFY(!pose.fresh());
+        QVERIFY(!map.m_hasVehiclePose);
+        pose.stop();
+    }
+    void monitoringRecoveryPreservesNewerBusinessOrCaptureErrors_data() {
+        QTest::addColumn<bool>("captureError");
+        QTest::newRow("business-warning") << false;
+        QTest::newRow("capture-error") << true;
+    }
+    void monitoringRecoveryPreservesNewerBusinessOrCaptureErrors() {
+        QFETCH(bool, captureError);
+        MapPoseStreamFixture server;
+        QMainWindow window; Ui::MainWindow ui; ui.setupUi(&window); Map map(&ui);
+        TrackingClient tracking; PoseClient pose; ControlSessionCoordinator coordinator(&tracking, &pose);
+        map.m_binding = testBinding(); map.setControlCoordinator(&coordinator);
+        QSignalSpy errors(&pose, &PoseClient::streamErrorOccurred);
+        pose.configure(server.url(), {}, 3000); pose.start();
+        QTRY_COMPARE(server.streams, 1);
+        server.disconnectStream();
+        QTRY_COMPARE(errors.count(), 1);
+        if (captureError) emit pose.errorOccurred(QStringLiteral("capture_timeout"));
+        else map.setRouteStatusText(QStringLiteral("地图坐标版本不匹配，请重新绑定"), true);
+        const auto warning = map.m_routeStatusLabel->text();
+        const auto tooltip = map.m_routeStatusLabel->toolTip();
+        QTRY_COMPARE(server.streams, 2);
+        server.publish();
+        QTRY_VERIFY(pose.m_monitorOnline);
+        QCOMPARE(map.m_routeStatusLabel->text(), warning);
+        QCOMPARE(map.m_routeStatusLabel->toolTip(), tooltip);
+        QVERIFY(map.m_routeStatusLabel->styleSheet().contains("#b42318"));
+        pose.stop();
+    }
+    void disconnectedCaptureStaysCancelledAfterMonitoringRecovers() {
+        MapPoseStreamFixture server;
+        QMainWindow window; Ui::MainWindow ui; ui.setupUi(&window); Map map(&ui);
+        TrackingClient tracking; PoseClient pose; ControlSessionCoordinator coordinator(&tracking, &pose);
+        map.m_binding = testBinding(); map.setControlCoordinator(&coordinator);
+        pose.configure(server.url(), {}, 3000); pose.start();
+        QTRY_COMPARE(server.streams, 1);
+        server.publish();
+        QTRY_VERIFY(pose.fresh());
+        map.handleLocateCurrentPosition();
+        QTRY_COMPARE(server.captures, 1);
+        QVERIFY(!map.canEditRowWorkPlan());
+        QSignalSpy errors(&pose, &PoseClient::streamErrorOccurred);
+        server.disconnectStream();
+        QTRY_COMPARE(errors.count(), 1);
+        QCOMPARE(map.m_rowWorkPendingCaptureTarget, Map::RowWorkPendingCaptureTarget::None);
+        QVERIFY(map.canEditRowWorkPlan());
+        const auto cancelled = map.m_routeStatusLabel->text();
+        QVERIFY(cancelled.contains(QStringLiteral("采样已取消")));
+        QTRY_COMPARE(server.streams, 2);
+        server.publish();
+        QTRY_VERIFY(pose.m_monitorOnline);
+        QCOMPARE(map.m_routeStatusLabel->text(), cancelled);
+        QSignalSpy captures(&pose, &PoseClient::captureFinished);
+        const auto payload = QJsonDocument(QJsonObject{
+            {"apiVersion", 1}, {"fusionBootId", "fusion"}, {"state", "succeeded"},
+            {"originRevision", "origin"}, {"calibrationId", "cal"},
+            {"sampleCount", 12}, {"positionScatterMeters", .004},
+            {"pose", QJsonObject{{"x", 1}, {"y", 2}, {"yaw", 0}}}
+        }).toJson(QJsonDocument::Compact);
+        QVERIFY(server.capture);
+        server.capture->write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: " +
+            QByteArray::number(payload.size()) + "\r\n\r\n" + payload);
+        server.capture->disconnectFromHost();
+        QTRY_COMPARE(captures.count(), 1);
+        QVERIFY(map.m_points.isEmpty());
+        QCOMPARE(map.m_routeStatusLabel->text(), cancelled);
+        pose.stop();
     }
     void liveVehiclePoseDoesNotReplaceChosenRouteStart() {
         QMainWindow window; Ui::MainWindow ui; ui.setupUi(&window); Map map(&ui);

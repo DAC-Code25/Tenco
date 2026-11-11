@@ -14,6 +14,7 @@ struct MapDocumentPoint
     double x = 0.0;
     double y = 0.0;
     double theta = 0.0;
+    int dwellMs = 0;
 };
 
 enum class MapDocumentPathType
@@ -52,7 +53,7 @@ struct MapDocument
 namespace MapDocumentCodec
 {
 QJsonObject toJson(const MapDocument &doc);
-bool fromJson(const QJsonObject &json, MapDocument *outDoc, QString *errorMessage = nullptr, int maxSupportedSchemaVersion = 3);
+bool fromJson(const QJsonObject &json, MapDocument *outDoc, QString *errorMessage = nullptr, int maxSupportedSchemaVersion = 4);
 } // namespace MapDocumentCodec
 
 #endif // MAPDOCUMENT_H

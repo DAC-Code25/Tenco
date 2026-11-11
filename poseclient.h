@@ -14,6 +14,7 @@ class PoseClient : public QObject {
     void stop();
     bool isConfigured() const { return m_http.configured(); }
     bool fresh() const;
+    bool isReportingStreamError() const { return m_reportingStreamError; }
     void setStateTimeoutMs(int timeoutMs);
     ControlPoseSnapshot snapshot() const;
     bool capture(const MapFrameBinding &binding, int durationMs = 1000);
@@ -24,6 +25,7 @@ class PoseClient : public QObject {
     void frameChanged();
     void captureFinished(const QJsonObject &capture);
     void errorOccurred(const QString &reason);
+    void streamErrorOccurred(const QString &reason);
 
   private:
     void openStream();
@@ -45,6 +47,7 @@ class PoseClient : public QObject {
     ControlPoseSnapshot m_pose;
     QString m_captureId, m_captureBoot;
     bool m_running = false, m_online = false, m_monitorOnline = false;
+    bool m_reportingStreamError = false;
     double m_transportAgeMs = 1e12;
     int m_failures = 0;
     int m_stateTimeoutMs = 350;

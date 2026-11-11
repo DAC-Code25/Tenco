@@ -5,6 +5,7 @@
 
 #include "ui_mainwindow.h"
 
+#include <QAction>
 #include <QComboBox>
 #include <QCheckBox>
 #include <QCoreApplication>
@@ -41,6 +42,7 @@
 #include <cmath>
 #include <limits>
 #include <memory>
+#include <utility>
 
 class MapMonitorFixture : public QTcpServer
 {
@@ -435,6 +437,19 @@ private slots:
     void endpointFirstDraftCanBeReopenedAndCompleted();
     void startFirstCheckpointsSurviveDraftSaveAndFinishOnTheFinalLine();
     void draftEndpointAndStartChangesCannotSilentlyMoveCheckpoints();
+    void autoConnectsNewInputClickAndBatchPointsInOneDirection();
+    void autoConnectionDoesNotBackfillLoadOrMakeZeroLengthPaths();
+    void routePointDwellEditingPreservesPrecisionAndMapRoundTrip();
+    void clickingNearRecordedPointOnlyChangesItsDwell();
+    void switchingCurrentSelectedPointRefreshesItsEditors();
+    void loadingMapAndReusingPointIdDoNotReuseOldSelection();
+    void exhaustedMapIdsRejectNewObjectsWithoutChangingMap();
+    void autoConnectionRejectsExhaustedPathIdsWithoutChangingMap();
+    void invalidMapLoadPreservesCurrentMapAndEditors_data();
+    void invalidMapLoadPreservesCurrentMapAndEditors();
+    void routeSectionsIncludeIntermediateAndStartDwellOnce();
+    void rightClickMenuRechecksTaskLockAfterNestedEvents_data();
+    void rightClickMenuRechecksTaskLockAfterNestedEvents();
 };
 
 void MapRouteIntegrationTest::showsTaskTabsForRouteAndRowWork()
@@ -1070,6 +1085,8 @@ void MapRouteIntegrationTest::activeTaskDisablesPlanningAndDuplicateExecution()
     auto *table = requireChild<QTableWidget>(ui.mapPage, "mapRowWorkCheckpointTable");
     table->setCurrentCell(0, 0);
     const auto before = RowWorkJson::planToJson(map.m_rowWorkPlan);
+    auto *autoConnect = requireChild<QCheckBox>(ui.mapPage, "mapAutoConnectPointsCheck");
+    auto *pointDwell = requireChild<QSpinBox>(ui.mapPage, "mapPointDwellSpin");
     auto *loop = requireChild<QCheckBox>(ui.mapPage, "mapRowWorkLoopCheck");
     const QStringList disabledButtons{"mapRowWorkAddCheckpointFromMapButton", "mapRowWorkDeleteCheckpointButton",
         "mapRowWorkClearCheckpointsButton", "mapRowWorkClearLineButton", "mapRowWorkStartButton",
@@ -1082,6 +1099,8 @@ void MapRouteIntegrationTest::activeTaskDisablesPlanningAndDuplicateExecution()
         QVERIFY(!loop->isEnabled());
         QVERIFY(!routeLoop->isEnabled());
         QVERIFY(!routeInterval->isEnabled());
+        QVERIFY(!autoConnect->isEnabled());
+        QVERIFY(!pointDwell->isEnabled());
         QVERIFY(!requireChild<QComboBox>(ui.mapPage, "mapRouteStartCombo")->isEnabled());
         QVERIFY(!requireChild<QComboBox>(ui.mapPage, "mapRouteEndCombo")->isEnabled());
         loop->click();
@@ -1099,6 +1118,10 @@ void MapRouteIntegrationTest::activeTaskDisablesPlanningAndDuplicateExecution()
         map.handleRouteClear(); // A late queued slot also cannot edit the active plan.
         map.handleRouteRemove();
         map.handleRouteAdd();
+        const auto pointCount = map.m_points.size();
+        map.handleAddPointFromInput();
+        map.handleBatchGeneratePoints();
+        QCOMPARE(map.m_points.size(), pointCount);
         QCOMPARE(map.m_routeQueue.size(), 1);
         QCOMPARE(server.writes, 0);
     }
@@ -1494,6 +1517,498 @@ void MapRouteIntegrationTest::separatesPointPathAndMapEditors()
 }
 
 
+
+void MapRouteIntegrationTest::autoConnectsNewInputClickAndBatchPointsInOneDirection()
+{
+    QMainWindow window; Ui::MainWindow ui; ui.setupUi(&window); Map map(&ui);
+    auto *automatic = requireChild<QCheckBox>(ui.mapPage, "mapAutoConnectPointsCheck");
+    QCOMPARE(map.m_pointDwellSpin->value(), 2000);
+    QVERIFY(!automatic->isChecked());
+    automatic->setChecked(true);
+    addPoint(ui.mapPage, 0, 0);
+    QCOMPARE(map.m_points.size(), 1);
+    QVERIFY(map.m_paths.isEmpty());
+
+    requireChild<QPushButton>(ui.mapPage, "mapAddPointFromClickButton")->click();
+    map.handleSceneClick(map.mapToScene({1, 0}), Qt::LeftButton, Qt::NoModifier);
+    QCOMPARE(map.m_points.size(), 2);
+    QCOMPARE(map.m_paths.size(), 1);
+    QVERIFY(map.findPathId(1, 2) > 0);
+    QVERIFY(map.findRoutePathIds(2, 1).isEmpty());
+
+    setComboToPointId(map.m_batchBasePointCombo, 2);
+    map.m_batchDirectionCombo->setCurrentIndex(0);
+    map.m_batchSpacingSpin->setValue(1);
+    map.m_batchCountSpin->setValue(2);
+    map.handleBatchGeneratePoints();
+    QCOMPARE(map.m_points.size(), 4);
+    QCOMPARE(map.m_paths.size(), 3);
+    for (const auto &point : std::as_const(map.m_points)) QCOMPARE(point.dwellMs, 2000);
+    for (int id = 1; id < 4; ++id) {
+        const auto *path = map.pathById(map.findPathId(id, id + 1));
+        QVERIFY(path);
+        QVERIFY(!path->bidirectional);
+        QVERIFY(path->type == Map::PathType::Line);
+    }
+    QCOMPARE(map.findRoutePathIds(1, 4).size(), 3);
+    QVERIFY(map.findRoutePathIds(4, 1).isEmpty());
+    automatic->setChecked(false);
+    addPoint(ui.mapPage, 4, 0);
+    QCOMPARE(map.m_paths.size(), 3);
+}
+
+void MapRouteIntegrationTest::autoConnectionDoesNotBackfillLoadOrMakeZeroLengthPaths()
+{
+    QMainWindow window; Ui::MainWindow ui; ui.setupUi(&window); Map map(&ui);
+    addPoint(ui.mapPage, 0, 0);
+    addPoint(ui.mapPage, 1, 0);
+    auto *automatic = requireChild<QCheckBox>(ui.mapPage, "mapAutoConnectPointsCheck");
+    automatic->setChecked(true);
+    QVERIFY(map.m_paths.isEmpty());
+    addPoint(ui.mapPage, 2, 0);
+    QCOMPARE(map.m_paths.size(), 1);
+    QVERIFY(map.findPathId(1, 2) == -1);
+    QVERIFY(map.findPathId(2, 3) > 0);
+    auto saved = map.serializeMap();
+    saved["paths"] = QJsonArray{};
+    QVERIFY(map.deserializeMap(saved));
+    QVERIFY(map.m_paths.isEmpty()); // Reading with the switch on does not synthesize edges.
+    QVERIFY(map.addPointInternal(7, 0, 0, 7));
+    QVERIFY(map.m_paths.isEmpty());
+    addPoint(ui.mapPage, 8, 0);
+    QVERIFY(map.findPathId(7, 8) > 0); // Gaps in old numbering use the existing predecessor.
+    QCOMPARE(map.m_paths.size(), 1);
+    const auto beforeRejectedPoint = map.buildComparableMapState();
+    const int nextPointId = map.m_nextPointId;
+    map.handleAddPointFromClickRequested();
+    map.handleSceneClick(map.mapToScene({8, 0}), Qt::LeftButton, Qt::NoModifier);
+    QCOMPARE(map.buildComparableMapState(), beforeRejectedPoint);
+    QCOMPARE(map.m_nextPointId, nextPointId);
+    QVERIFY(map.m_routeStatusLabel->text().contains(QStringLiteral("重合")));
+    QVERIFY(map.m_waitingForClickPlacement); // A valid replacement click can complete this addition.
+    map.handleSceneClick(map.mapToScene({9, 0}), Qt::LeftButton, Qt::NoModifier);
+    QCOMPARE(map.m_points.size(), 6);
+    QCOMPARE(map.m_paths.size(), 2);
+    QVERIFY(map.pointById(nextPointId));
+    QVERIFY(map.findPathId(8, nextPointId) > 0);
+    QVERIFY(!map.m_waitingForClickPlacement);
+}
+
+void MapRouteIntegrationTest::routePointDwellEditingPreservesPrecisionAndMapRoundTrip()
+{
+    QMainWindow window; Ui::MainWindow ui; ui.setupUi(&window); Map map(&ui);
+    const QPointF precise(1.234567891234, 2.345678912345);
+    const double yaw = .123456789123;
+    QVERIFY(map.addPointInternal(0, 0, 0, 1, 2));
+    QVERIFY(map.addPointInternal(precise.x(), precise.y(), yaw, 2, 1750));
+    QVERIFY(map.addLinePath(1, 2));
+    map.refreshPointUi();
+    map.refreshSelectors();
+    auto *table = requireChild<QTableWidget>(ui.mapPage, "mapPointTable");
+    auto *dwell = requireChild<QSpinBox>(ui.mapPage, "mapPointDwellSpin");
+    QCOMPARE(table->columnCount(), 5);
+    QCOMPARE(dwell->minimum(), 0);
+    QCOMPARE(dwell->maximum(), 3600000);
+    map.m_pendingPointSelection = 2;
+    map.refreshPointUi(); // A dwell value matching point ID 2 must not select point 1.
+    QCOMPARE(table->currentRow(), 1);
+    map.handlePointSelectionChanged();
+    QCOMPARE(dwell->value(), 1750);
+    map.refreshPlanningRevision();
+    const auto revision = map.m_binding.context.mapRevision;
+    dwell->setValue(3600000);
+    map.handleUpdatePoint();
+    QCOMPARE(map.pointById(2)->mapPosition, precise);
+    QCOMPARE(map.pointById(2)->theta, yaw);
+    QCOMPARE(map.pointById(2)->dwellMs, 3600000);
+    QCOMPARE(map.m_binding.context.mapRevision, revision + 1);
+    QCOMPARE(table->item(1, 4)->text(), "3600000");
+    const auto saved = map.serializeMap();
+    QCOMPARE(saved["schemaVersion"].toInt(), 4);
+    map.m_autoConnectPointsCheck->setChecked(true);
+    QVERIFY(map.deserializeMap(saved));
+    QCOMPARE(map.m_paths.size(), 1);
+    QCOMPARE(map.pointById(2)->mapPosition, precise);
+    QCOMPARE(map.pointById(2)->theta, yaw);
+    QCOMPARE(map.pointById(2)->dwellMs, 3600000);
+
+    auto legacy = saved;
+    auto points = legacy["points"].toArray();
+    for (qsizetype i = 0; i < points.size(); ++i) {
+        auto point = points[i].toObject();
+        point.remove("dwellMs");
+        points[i] = point;
+    }
+    legacy["points"] = points;
+    legacy["schemaVersion"] = 3;
+    QVERIFY(map.deserializeMap(legacy));
+    QCOMPARE(map.pointById(1)->dwellMs, 0);
+    QCOMPARE(map.pointById(2)->dwellMs, 0);
+    QCOMPARE(map.serializeMap()["schemaVersion"].toInt(), 3);
+    QCOMPARE(dwell->value(), 2000); // Loading old points does not change the new-point default.
+    table->setCurrentCell(0, 0);
+    QCOMPARE(dwell->value(), 0); // Selecting an old point still shows its saved value.
+    map.resetToBlankMap();
+    QCOMPARE(dwell->value(), 2000);
+}
+
+void MapRouteIntegrationTest::clickingNearRecordedPointOnlyChangesItsDwell()
+{
+    QMainWindow window; Ui::MainWindow ui; ui.setupUi(&window); Map map(&ui);
+    prepareStartFirstDraft(map);
+    const RowWorkPose sampled{1.234567891234, 2.345678912345, .123456789123};
+    map.m_pendingMapPointDwellMs = 2000;
+    applyTaughtPose(map, Map::RowWorkPendingCaptureTarget::MapPoint, sampled);
+    QCOMPARE(map.m_points.size(), 1);
+    const auto position = map.pointById(1)->mapPosition;
+    const auto yaw = map.pointById(1)->theta;
+    map.handleSceneClick(map.mapToScene(position + QPointF(.12, -.08)), Qt::LeftButton, Qt::NoModifier);
+    QCOMPARE(map.m_pendingPointSelection.value(), 1);
+    map.m_pointDwellSpin->setValue(3000);
+    map.handleUpdatePoint();
+    QCOMPARE(map.pointById(1)->mapPosition, position);
+    QCOMPARE(map.pointById(1)->theta, yaw);
+    QCOMPARE(map.pointById(1)->dwellMs, 3000);
+}
+
+void MapRouteIntegrationTest::switchingCurrentSelectedPointRefreshesItsEditors()
+{
+    QMainWindow window; Ui::MainWindow ui; ui.setupUi(&window); Map map(&ui);
+    const QPointF first(1.234567891234, 2.345678912345);
+    const QPointF second(4.567891234567, 5.678912345678);
+    QVERIFY(map.addPointInternal(first.x(), first.y(), .123456789123, 1, 1000));
+    QVERIFY(map.addPointInternal(second.x(), second.y(), .456789123456, 2, 3000));
+    map.refreshPointUi();
+    auto *table = map.m_pointTable;
+    table->setCurrentCell(0, 0, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+    table->setCurrentCell(1, 0, QItemSelectionModel::Select | QItemSelectionModel::Rows);
+    QCOMPARE(table->selectionModel()->selectedRows().size(), 2);
+    QCOMPARE(map.m_pointDwellSpin->value(), 3000);
+    QSignalSpy selectionChanges(table, &QTableWidget::itemSelectionChanged);
+    table->setCurrentCell(0, 0, QItemSelectionModel::NoUpdate);
+    QCOMPARE(selectionChanges.size(), 0); // Current movement is distinct from a selection change.
+    QCOMPARE(map.m_pendingPointSelection.value(), 1);
+    QCOMPARE(map.m_pointDwellSpin->value(), 1000);
+    map.m_pointDwellSpin->setValue(2500);
+    map.handleUpdatePoint();
+    QCOMPARE(map.pointById(1)->dwellMs, 2500);
+    QCOMPARE(map.pointById(2)->dwellMs, 3000);
+    QCOMPARE(map.pointById(1)->mapPosition, first);
+    QCOMPARE(map.pointById(2)->mapPosition, second);
+    QCOMPARE(map.pointById(1)->theta, .123456789123);
+    QCOMPARE(map.pointById(2)->theta, .456789123456);
+}
+
+void MapRouteIntegrationTest::loadingMapAndReusingPointIdDoNotReuseOldSelection()
+{
+    QMainWindow window; Ui::MainWindow ui; ui.setupUi(&window); Map map(&ui);
+    QVERIFY(map.addPointInternal(1.123456789, 2.234567891, .123456789123, 1, 1000));
+    map.refreshPointUi();
+    auto *table = map.m_pointTable;
+    table->setCurrentCell(0, 0);
+    QCOMPARE(map.m_pendingPointSelection.value(), 1);
+    QCOMPARE(map.m_pointDwellSpin->value(), 1000);
+
+    const QPointF replacement(20.345678912345, 30.456789123456);
+    const double replacementYaw = .734567891234;
+    auto replacementMap = map.serializeMap();
+    auto points = replacementMap["points"].toArray();
+    auto point = points[0].toObject();
+    point["x"] = replacement.x();
+    point["y"] = replacement.y();
+    point["theta"] = replacementYaw;
+    point["dwellMs"] = 4500;
+    points[0] = point;
+    replacementMap["points"] = points;
+    QVERIFY(map.deserializeMap(replacementMap));
+    QVERIFY(!map.m_pendingPointSelection.has_value());
+    QCOMPARE(table->currentRow(), -1);
+    QVERIFY(table->selectedItems().isEmpty());
+    QCOMPARE(map.m_pointDwellSpin->value(), 2000);
+    QCOMPARE(map.pointById(1)->mapPosition, replacement);
+    QCOMPARE(map.pointById(1)->theta, replacementYaw);
+    table->setCurrentCell(0, 0);
+    QCOMPARE(map.m_pointDwellSpin->value(), 4500);
+    map.m_pointDwellSpin->setValue(2500);
+    map.handleUpdatePoint();
+    QCOMPARE(map.pointById(1)->mapPosition, replacement);
+    QCOMPARE(map.pointById(1)->theta, replacementYaw);
+    QCOMPARE(map.pointById(1)->dwellMs, 2500);
+
+    map.removePointInternal(1);
+    QVERIFY(!map.m_pendingPointSelection.has_value());
+    QCOMPARE(table->currentRow(), -1);
+    QVERIFY(table->selectedItems().isEmpty());
+    const QPointF reused(-7.567891234567, -8.678912345678);
+    QVERIFY(map.addPointInternal(reused.x(), reused.y(), -.345678912345, 1, 6000));
+    map.refreshPointUi();
+    QVERIFY(!map.m_pendingPointSelection.has_value());
+    QCOMPARE(table->currentRow(), -1);
+    QVERIFY(table->selectedItems().isEmpty());
+    table->setCurrentCell(0, 0);
+    QCOMPARE(map.m_pointDwellSpin->value(), 6000);
+    map.m_pointDwellSpin->setValue(1500);
+    map.handleUpdatePoint();
+    QCOMPARE(map.pointById(1)->mapPosition, reused);
+    QCOMPARE(map.pointById(1)->theta, -.345678912345);
+    QCOMPARE(map.pointById(1)->dwellMs, 1500);
+}
+
+void MapRouteIntegrationTest::exhaustedMapIdsRejectNewObjectsWithoutChangingMap()
+{
+    QMainWindow window; Ui::MainWindow ui; ui.setupUi(&window); Map map(&ui);
+    QVERIFY(map.addPointInternal(0, 0, 0, 1, 2000));
+    QVERIFY(map.addPointInternal(2, 0, 0, 2, 2000));
+    QVERIFY(map.addLinePath(1, 2));
+    auto document = map.serializeMap();
+    const int highest = std::numeric_limits<int>::max() - 1;
+    auto points = document["points"].toArray();
+    bool replaced = false;
+    for (qsizetype i = 0; i < points.size(); ++i) {
+        auto point = points[i].toObject();
+        if (point["id"].toInt() != 2) continue;
+        point["id"] = highest;
+        points[i] = point;
+        replaced = true;
+    }
+    QVERIFY(replaced);
+    document["points"] = points;
+    auto paths = document["paths"].toArray();
+    auto path = paths[0].toObject();
+    path["id"] = highest;
+    path["end"] = highest;
+    paths[0] = path;
+    document["paths"] = paths;
+    QVERIFY(map.deserializeMap(document));
+    const auto before = map.serializeMap();
+    const auto beforeComparable = map.buildComparableMapState();
+    QCOMPARE(map.m_nextPointId, std::numeric_limits<int>::max());
+    QCOMPARE(map.m_nextPathId, std::numeric_limits<int>::max());
+    QVERIFY(!map.addPointInternal(4, 0, 0));
+    QVERIFY(!map.addPointInternal(4, 0, 0, std::numeric_limits<int>::max()));
+    QVERIFY(!map.addLinePath(highest, 1));
+    QVERIFY(!map.addLinePath(highest, 1, std::numeric_limits<int>::max()));
+    QCOMPARE(map.m_nextPointId, std::numeric_limits<int>::max());
+    QCOMPARE(map.m_nextPathId, std::numeric_limits<int>::max());
+    QCOMPARE(map.serializeMap(), before);
+    QCOMPARE(map.buildComparableMapState(), beforeComparable);
+}
+
+void MapRouteIntegrationTest::autoConnectionRejectsExhaustedPathIdsWithoutChangingMap()
+{
+    QMainWindow window; Ui::MainWindow ui; ui.setupUi(&window); Map map(&ui);
+    QVERIFY(map.addPointInternal(0, 0, 0, 1, 2000));
+    QVERIFY(map.addPointInternal(2, 0, 0, 2, 3500));
+    QVERIFY(map.addLinePath(1, 2));
+    auto document = map.serializeMap();
+    auto paths = document["paths"].toArray();
+    auto path = paths.first().toObject();
+    path["id"] = std::numeric_limits<int>::max() - 1;
+    paths[0] = path;
+    document["paths"] = paths;
+    QVERIFY(map.deserializeMap(document));
+    map.m_autoConnectPointsCheck->setChecked(true);
+    map.m_pointTable->setCurrentCell(1, 0);
+    const auto before = map.serializeMap();
+    const auto beforeComparable = map.buildComparableMapState();
+    const auto revision = map.m_binding.context.mapRevision;
+    const auto selected = map.m_pendingPointSelection;
+    const int currentRow = map.m_pointTable->currentRow();
+    QCOMPARE(map.m_nextPointId, 3);
+    QCOMPARE(map.m_nextPathId, std::numeric_limits<int>::max());
+
+    QVERIFY(!map.addPointInternal(4, 0, 0));
+    QCOMPARE(map.serializeMap(), before);
+    QCOMPARE(map.buildComparableMapState(), beforeComparable);
+    QCOMPARE(map.m_binding.context.mapRevision, revision);
+    QCOMPARE(map.m_nextPointId, 3);
+    QCOMPARE(map.m_nextPathId, std::numeric_limits<int>::max());
+    QCOMPARE(map.m_pendingPointSelection.value(), selected.value());
+    QCOMPARE(map.m_pointTable->currentRow(), currentRow);
+    QCOMPARE(map.m_pointDwellSpin->value(), 3500);
+    QVERIFY(map.m_routeStatusLabel->text().contains(QStringLiteral("路径编号")));
+
+    map.handleAddPointFromClickRequested();
+    map.handleSceneClick(map.mapToScene({4, 0}), Qt::LeftButton, Qt::NoModifier);
+    QVERIFY(map.m_waitingForClickPlacement);
+    QCOMPARE(map.serializeMap(), before);
+    QCOMPARE(map.buildComparableMapState(), beforeComparable);
+    QCOMPARE(map.m_nextPointId, 3);
+    QVERIFY(map.m_routeStatusLabel->text().contains(QStringLiteral("路径编号")));
+
+    map.m_autoConnectPointsCheck->setChecked(false);
+    QVERIFY(map.addPointInternal(4, 0, 0));
+    QCOMPARE(map.m_nextPointId, 4);
+    QCOMPARE(map.m_paths.size(), 1);
+    QVERIFY(map.pointById(3));
+}
+
+void MapRouteIntegrationTest::invalidMapLoadPreservesCurrentMapAndEditors_data()
+{
+    QTest::addColumn<QString>("invalid");
+    for (const auto *invalid : {"duplicate-point-id", "duplicate-path-id", "dangling-path", "self-loop"})
+        QTest::newRow(invalid) << QString::fromLatin1(invalid);
+}
+
+void MapRouteIntegrationTest::invalidMapLoadPreservesCurrentMapAndEditors()
+{
+    QFETCH(QString, invalid);
+    QMainWindow window; Ui::MainWindow ui; ui.setupUi(&window); Map map(&ui);
+    QVERIFY(map.addPointInternal(0, 0, .1, 1, 2000));
+    QVERIFY(map.addPointInternal(2.123456789, 0, .2, 2, 3500));
+    QVERIFY(map.addLinePath(1, 2));
+    map.refreshPointUi(); map.refreshSelectors();
+    addRoute(ui.mapPage, 1, 2);
+    map.m_pointTable->setCurrentCell(1, 0);
+    QCOMPARE(map.m_pointDwellSpin->value(), 3500);
+    const auto before = map.serializeMap();
+    const auto beforeComparable = map.buildComparableMapState();
+    const auto selected = map.m_pendingPointSelection;
+    const int currentRow = map.m_pointTable->currentRow();
+    const int queuedRoutes = map.m_routeQueue.size();
+    auto corrupt = before;
+    if (invalid == "duplicate-point-id") {
+        auto points = corrupt["points"].toArray();
+        auto duplicate = points.first().toObject();
+        duplicate["dwellMs"] = 9000;
+        points.append(duplicate);
+        corrupt["points"] = points;
+    } else {
+        auto paths = corrupt["paths"].toArray();
+        auto path = paths.first().toObject();
+        if (invalid == "duplicate-path-id") paths.append(path);
+        else {
+            path["end"] = invalid == "self-loop" ? 1 : 999;
+            paths[0] = path;
+        }
+        corrupt["paths"] = paths;
+    }
+    QVERIFY(!map.deserializeMap(corrupt));
+    QCOMPARE(map.serializeMap(), before);
+    QCOMPARE(map.buildComparableMapState(), beforeComparable);
+    QCOMPARE(map.m_pendingPointSelection.value(), selected.value());
+    QCOMPARE(map.m_pointTable->currentRow(), currentRow);
+    QCOMPARE(map.m_routeQueue.size(), queuedRoutes);
+    QCOMPARE(map.m_pointDwellSpin->value(), 3500);
+}
+
+void MapRouteIntegrationTest::routeSectionsIncludeIntermediateAndStartDwellOnce()
+{
+    QMainWindow window; Ui::MainWindow ui; ui.setupUi(&window); Map map(&ui);
+    for (int id = 1; id <= 4; ++id)
+        QVERIFY(map.addPointInternal(id - 1, 0, .1 * id, id, id == 3 ? 0 : 1000 * id));
+    QVERIFY(map.addLinePath(1, 2, std::nullopt, true));
+    QVERIFY(map.addArcPath(2, 3, .1, std::nullopt, true));
+    QVERIFY(map.addLinePath(3, 4, std::nullopt, true));
+    map.refreshSelectors();
+    addRoute(ui.mapPage, 1, 4);
+    addRoute(ui.mapPage, 4, 1);
+    QString error;
+    auto sections = map.buildRouteSections(&error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QCOMPARE(sections.size(), 4);
+    QCOMPARE(sections[0].points, QList<QPointF>({{0, 0}, {1, 0}}));
+    QCOMPARE(sections[0].dwellMs, 2000);
+    QCOMPARE(sections[0].startDwellMs, 1000);
+    QCOMPARE(*sections[0].startMapYaw, .1);
+    QVERIFY(sections[1].points.size() > 3); // The intermediate non-dwell point and arc keep their geometry.
+    QVERIFY(polylineContains(sections[1].points, {2, 0}));
+    QCOMPARE(sections[1].points.back(), QPointF(3, 0));
+    QCOMPARE(sections[1].dwellMs, 4000);
+    QCOMPARE(sections[2].dwellMs, 2000);
+    QCOMPARE(sections[3].dwellMs, 1000);
+    for (qsizetype i = 1; i < sections.size(); ++i) QCOMPARE(sections[i].startDwellMs, 0);
+    QCOMPARE(*sections[1].goalMapYaw, .4);
+    QCOMPARE(*sections[2].goalMapYaw, .2);
+    map.m_routeLoopCheck->setChecked(true);
+    sections = map.buildRouteSections(&error);
+    QCOMPARE(sections[0].startDwellMs, 0);
+    QCOMPARE(sections.back().dwellMs, 1000); // A's dwell occurs only on return in each lap.
+    map.m_routeLoopCheck->setChecked(false);
+    map.pointById(1)->dwellMs = map.pointById(2)->dwellMs = map.pointById(4)->dwellMs = 0;
+    sections = map.buildRouteSections(&error);
+    QVERIFY(error.isEmpty());
+    QCOMPARE(sections.size(), 2); // Zero values retain each original queue section.
+    QCOMPARE(sections[0].points, map.composePolyline(map.m_routeQueue[0].pathIds, 1));
+}
+
+void MapRouteIntegrationTest::rightClickMenuRechecksTaskLockAfterNestedEvents_data()
+{
+    QTest::addColumn<QString>("state");
+    QTest::addColumn<bool>("createPoint");
+    for (const auto *state : {"Tracking", "Paused", "Completed"}) {
+        QTest::newRow((QByteArray(state) + "-create").constData()) << QString::fromLatin1(state) << true;
+        QTest::newRow((QByteArray(state) + "-delete").constData()) << QString::fromLatin1(state) << false;
+    }
+}
+
+void MapRouteIntegrationTest::rightClickMenuRechecksTaskLockAfterNestedEvents()
+{
+    QFETCH(QString, state);
+    QFETCH(bool, createPoint);
+    MapMonitorFixture server;
+    server.state = "Completed";
+    QVERIFY(server.isListening());
+    TrackingClient tracking; PoseClient pose; ControlSessionCoordinator coordinator(&tracking, &pose);
+    QMainWindow window; Ui::MainWindow ui; ui.setupUi(&window); Map map(&ui);
+    map.setControlCoordinator(&coordinator);
+    QVERIFY(map.addPointInternal(0, 0, 0, 1));
+    QVERIFY(map.addPointInternal(1, 0, 0, 2));
+    QVERIFY(map.addLinePath(1, 2));
+    map.refreshPointUi(); map.refreshSelectors();
+    tracking.configure(server.url(), {}, 500);
+    tracking.start();
+    QTRY_VERIFY(tracking.commandFresh());
+    QCOMPARE(tracking.snapshot().state, QString("Completed"));
+    QVERIFY(map.canEditRowWorkPlan());
+    const auto before = map.buildComparableMapState();
+    const auto pointCount = map.m_points.size();
+    bool transitionRequested = false, actionTriggered = false, timedOut = false;
+    QString chosenText;
+    QElapsedTimer elapsed;
+    elapsed.start();
+    QTimer responder;
+    connect(&responder, &QTimer::timeout, this, [&] {
+        auto *menu = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+        if (!menu) {
+            for (auto *candidate : ui.mapPage->findChildren<QMenu *>())
+                if (candidate->isVisible()) { menu = candidate; break; }
+        }
+        if (elapsed.elapsed() > 3000) {
+            timedOut = true;
+            if (menu) menu->close();
+            return;
+        }
+        if (!menu) return;
+        if (!transitionRequested) {
+            transitionRequested = true;
+            server.state = state; // Delivered while QMenu::exec runs its nested event loop.
+        }
+        if (tracking.snapshot().state != state || menu->actions().isEmpty()) return;
+        responder.stop();
+        auto *action = menu->actions().first();
+        chosenText = action->text();
+        connect(action, &QAction::triggered, this, [&] { actionTriggered = true; });
+        QTest::mouseClick(menu, Qt::LeftButton, Qt::NoModifier, menu->actionGeometry(action).center());
+    });
+    responder.start(5);
+    map.handleSceneClick(map.mapToScene(createPoint ? QPointF(3, 0) : QPointF(0, 0)),
+                         Qt::RightButton, Qt::NoModifier);
+    responder.stop();
+    QVERIFY(!timedOut);
+    QVERIFY(transitionRequested);
+    QVERIFY(actionTriggered);
+    QCOMPARE(chosenText, createPoint ? QStringLiteral("新建地图点") : QStringLiteral("删除地图点"));
+    if (state == "Completed") {
+        QCOMPARE(map.m_points.size(), pointCount + (createPoint ? 1 : -1));
+        QVERIFY(map.buildComparableMapState() != before); // The simulated menu action actually executes.
+    } else {
+        QVERIFY(!map.canEditRowWorkPlan());
+        QCOMPARE(map.buildComparableMapState(), before);
+    }
+    QCOMPARE(server.writes, 0);
+    coordinator.shutdown(); tracking.stop();
+}
 
 QTEST_MAIN(MapRouteIntegrationTest)
 #include "test_map_route_integration.moc"

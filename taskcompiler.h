@@ -25,6 +25,11 @@ struct TaskRouteSection {
     QString id;
     QList<QPointF> points;
     std::optional<double> goalMapYaw;
+    // Per-point task actions; zero preserves continuous route traversal.
+    int dwellMs = 0;
+    // First section only. A repeating body dwells on its arrival back at A.
+    int startDwellMs = 0;
+    std::optional<double> startMapYaw;
 };
 struct CompiledTask {
     QJsonObject plan;

@@ -47,6 +47,7 @@ struct TrackingSnapshot {
     bool autoResumePending = false;
     bool returningToStart = false;
     bool turnRecovering = false;
+    bool endpointRecovering = false;
     double turnOffsetMeters = 0;
     double recoveryStableMs = 0;
     int taskRevision = 0, stepIndex = 0, loopIndex = 0;

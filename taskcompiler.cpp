@@ -169,15 +169,43 @@ class Compiler {
         });
         double progress = backwards ? length : 0;
         const double finish = backwards ? 0 : length;
+        bool checkpointAligned = false;
         auto emitTo = [&](double target) {
             if (std::abs(target - progress) > 1e-7) {
                 path(mapped(RowWorkGeometry::pathBetweenProgress(row, progress, target)),
                      prefix);
+                checkpointAligned = false;
             }
             progress = target;
         };
         for (const auto &cp : selected) {
             emitTo(cp.progress);
+            if (!checkpointAligned) {
+                // Face the local departure direction before dwelling, rather
+                // than assuming the actual stopped vehicle matches lastHeading.
+                // At the end of a leg retain its arrival direction; the return
+                // turn remains after that leg's final checkpoint actions.
+                auto local = mapped(RowWorkGeometry::pathBetweenProgress(row, cp.progress, finish));
+                double target;
+                if (local.size() >= 2) {
+                    target = heading(local[0], local[1]);
+                } else {
+                    local = mapped(RowWorkGeometry::pathBetweenProgress(row,
+                        backwards ? length : 0, cp.progress));
+                    require(local.size() >= 2, "检查点路径朝向无效");
+                    target = heading(local[local.size() - 2], local.back());
+                }
+                const auto previous = steps.isEmpty() ? QJsonObject{} : steps.last().toObject();
+                // A leading wait is position-checked against the first path's
+                // planned start by the IPC. Establish that anchor before any
+                // leading turn, which otherwise anchors at the actual pose.
+                if (steps.isEmpty())
+                    wait(0, {}, prefix + "-start-position");
+                if (previous["type"] != "turn" ||
+                    std::abs(MapGeometry::normalizeAngle(previous["targetYaw"].toDouble() - target)) > 1e-10)
+                    turn(target, prefix + "-checkpoint-heading");
+                checkpointAligned = true;
+            }
             wait(cp.dwellMs, cp.name, prefix + "-checkpoint");
             if (cp.capturePhoto) {
                 require(cp.actionTimeoutMs >= 1000 && cp.actionTimeoutMs <= 3600000, "拍摄超时时间无效");
@@ -229,8 +257,39 @@ CompiledTask TaskCompiler::route(const QList<TaskRouteSection> &sections, const 
     return build([&] {
         Compiler compiler(binding, options);
         QSet<qsizetype> capturePaths;
+        bool firstSection = true;
+        const auto shortPath = [&](const QJsonObject &step) {
+            const auto points = step["points"].toArray();
+            double length = 0;
+            for (qsizetype i = 1; i < points.size(); ++i) {
+                const auto a = points[i - 1].toArray(), b = points[i].toArray();
+                length += std::hypot(b[0].toDouble() - a[0].toDouble(),
+                                     b[1].toDouble() - a[1].toDouble());
+            }
+            return length > 1e-7 && length < options.goalToleranceMeters;
+        };
         for (const auto &section : sections) {
             require(!section.goalMapYaw || std::isfinite(*section.goalMapYaw), "目标航向无效");
+            require(section.dwellMs >= 0 && section.dwellMs <= 3600000, "停留时长超出范围");
+            require(section.startDwellMs >= 0 && section.startDwellMs <= 3600000,
+                    "首点停留时长超出范围");
+            require(firstSection || section.startDwellMs == 0, "首点停留只能配置在第一段");
+            require(!section.startMapYaw || std::isfinite(*section.startMapYaw), "起点航向无效");
+            // In a closed repeat body the arrival back at the first point owns
+            // its dwell. Do not count that same stop again at the next lap.
+            if (section.startDwellMs > 0 && !options.repeatUntilStopped && options.repeatCount == 1) {
+                const auto points = compiler.mapped(section.points);
+                require(points.size() >= 2, "路径至少需要两个不同点");
+                const auto next = std::find_if(points.begin() + 1, points.end(), [&](const QPointF &point) {
+                    return QLineF(points.front(), point).length() > 1e-7;
+                });
+                require(next != points.end(), "路径长度为零");
+                const double target = section.startMapYaw ? compiler.frame.yawToEnu(*section.startMapYaw)
+                                                         : heading(points.front(), *next);
+                compiler.wait(0, {}, section.id + "-start-position");
+                compiler.turn(target, section.id + "-start-heading");
+                compiler.wait(section.startDwellMs, section.id + "-start", section.id + "-start-dwell");
+            }
             // A two-point edge shorter than the actual arrival tolerance has
             // an unreliable tangent. Preserve its independent stop path and
             // explicit endpoint heading; the IPC still checks live capture,
@@ -239,15 +298,44 @@ CompiledTask TaskCompiler::route(const QList<TaskRouteSection> &sections, const 
                 section.goalMapYaw && std::isfinite(*section.goalMapYaw) && section.points.size() == 2 &&
                 QLineF(section.points.front(), section.points.back()).length() > 1e-7 &&
                 QLineF(section.points.front(), section.points.back()).length() < options.goalToleranceMeters;
+            const auto sectionBegin = compiler.steps.size();
             compiler.path(compiler.mapped(section.points), section.id, endpointCapture);
+            if (options.shortPathEndpointCapture && options.vehicleFootprintRotation) {
+                // An internal two-point microsegment has the same capture
+                // contract as a separate tiny edge. Keep its stop and following
+                // heading; omit only its entry turn. Do not cross section bounds
+                // or change consecutive tiny paths, whose shared turn is needed
+                // to keep each path's existing endpoint-capture precondition.
+                for (qsizetype i = sectionBegin + 2; i + 2 < compiler.steps.size(); ++i) {
+                    const auto before = compiler.steps[i - 2].toObject();
+                    const auto path = compiler.steps[i].toObject();
+                    const auto after = compiler.steps[i + 2].toObject();
+                    if (before["type"] != "follow_path" || path["type"] != "follow_path" ||
+                        after["type"] != "follow_path" ||
+                        compiler.steps[i - 1].toObject()["type"] != "turn" ||
+                        compiler.steps[i + 1].toObject()["type"] != "turn" ||
+                        path["points"].toArray().size() != 2 || !shortPath(path) ||
+                        shortPath(before) || shortPath(after))
+                        continue;
+                    compiler.steps.removeAt(i - 1);
+                    // Earlier capture indices precede this removal; future
+                    // sections have not been emitted, so only this index moves.
+                    capturePaths.insert(--i);
+                }
+            }
             if (endpointCapture)
                 capturePaths.insert(compiler.steps.size() - 1);
             if (section.goalMapYaw) {
                 const double target = compiler.frame.yawToEnu(*section.goalMapYaw);
-                if (endpointCapture || std::abs(MapGeometry::normalizeAngle(target - *compiler.lastHeading)) >
+                if (section.dwellMs > 0 || endpointCapture || std::abs(MapGeometry::normalizeAngle(target - *compiler.lastHeading)) >
                     options.angleToleranceRad)
                     compiler.turn(target, section.id + "-heading");
+            } else if (section.dwellMs > 0) {
+                compiler.turn(*compiler.lastHeading, section.id + "-heading");
             }
+            if (section.dwellMs > 0)
+                compiler.wait(section.dwellMs, section.id, section.id + "-dwell");
+            firstSection = false;
         }
         // Straight, equally constrained logical sections can flow continuously.
         for (qsizetype i = 0; i + 1 < compiler.steps.size(); ++i) {

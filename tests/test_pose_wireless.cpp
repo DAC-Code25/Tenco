@@ -226,21 +226,51 @@ class PoseWirelessTest : public QObject {
         PoseClient client;
         client.configure(server.url(), {}, 5000);
         QSignalSpy poses(&client, &PoseClient::poseChanged);
+        QSignalSpy monitors(&client, &PoseClient::monitoringAvailabilityChanged);
+        QSignalSpy streamErrors(&client, &PoseClient::streamErrorOccurred);
         client.start();
         QTRY_VERIFY(client.fresh());
+        QTRY_VERIFY(!monitors.isEmpty() && monitors.last().at(0).toBool());
         QTest::qWait(450);
         server.current->abort();
+        QTRY_COMPARE(streamErrors.size(), 1);
+        QCOMPARE(streamErrors.first().first().toString(), QString("pose_stream_disconnected"));
         QTRY_COMPARE_WITH_TIMEOUT(server.requests, 2, 1500);
         QTest::qWait(60);
         QCOMPARE(poses.size(), 1);
         QVERIFY(!client.fresh());
+        QVERIFY(!monitors.last().at(0).toBool());
+        QVERIFY(client.snapshot().monitorDelayed);
+        const auto outageMonitoringCount = monitors.size();
         server.send(server.pose(2, .02));
         QTRY_COMPARE(client.snapshot().seq, quint64(2));
         QVERIFY2(client.snapshot().stateAgeMs > 600, "Reconnect must retain the same producer's age baseline");
         QVERIFY(!client.fresh());
-        server.send(server.pose(3));
+        QTest::qWait(60); // Give the availability timer a chance to reject the queued frame.
+        QCOMPARE(monitors.size(), outageMonitoringCount);
+        QVERIFY(!monitors.last().at(0).toBool());
+        QVERIFY(client.snapshot().monitorDelayed);
+
+        // Current diagnostic frames restore monitoring even while fusion is
+        // initializing. They must not claim a usable control pose.
+        auto initializing = server.pose(3);
+        initializing["validForControl"] = false;
+        initializing["stateAgeMs"] = 10000;
+        initializing["reasonCodes"] = QJsonArray{"initializing"};
+        server.send(initializing);
+        QTRY_COMPARE(client.snapshot().seq, quint64(3));
+        QTRY_VERIFY(monitors.last().at(0).toBool());
+        QCOMPARE(monitors.size(), outageMonitoringCount + 1);
+        QVERIFY(monitors.last().at(1).toString().isEmpty());
+        QVERIFY(!client.snapshot().monitorDelayed);
+        QVERIFY(!client.fresh());
+        QVERIFY(client.snapshot().reasons.contains("initializing"));
+
+        server.send(server.pose(4));
         QTRY_VERIFY(client.fresh());
-        QCOMPARE(client.snapshot().seq, quint64(3));
+        QCOMPARE(client.snapshot().seq, quint64(4));
+        QCOMPARE(monitors.size(), outageMonitoringCount + 1);
+        QCOMPARE(streamErrors.size(), 1);
         client.stop();
     }
 
