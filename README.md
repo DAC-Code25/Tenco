@@ -18,7 +18,19 @@ cmake --build --preset default
 ctest --preset default
 ```
 
-发布打包在用户明确要求时使用 release 预设及 `scripts/package_windows.ps1`。本地修改默认不提交、不推送、不创建或合并 PR，不要求 CI。
+发布打包使用 `scripts/package_windows.ps1`，按固定 Kit 配置独立 Release 缓存和运行目录，完整构建并串行执行 CTest，输出包含 Qt DLL、插件、QML、MinGW 运行库、关于页模型、说明及第三方许可的 ZIP。脚本可从任意目录调用，原生命令失败即停止，不写当前工作空间 `bin/`；已有发布包不覆盖。示例：
+
+```powershell
+& 'D:/codex/study_catkin/catkin_ws/Tenco/scripts/package_windows.ps1' `
+  -BuildDir 'D:/codex/study_catkin/catkin_ws/Tenco/build/release-share' `
+  -OutputDir 'D:/codex/study_catkin/catkin_ws/tmp/release-share/windows'
+```
+
+`-QtPrefix`、`-CompilerDir`、`-CMakeExe`、`-NinjaExe` 可显式指定匹配的 Kit；默认使用本机 Qt 6.5.3/MinGW 11.2。`-SkipTests` 仅供明确跳过验证的打包，清单会如实标记，不能作为完整验证交付。ZIP 旁提供 SHA256，包内 `release-manifest.json` 记录来源提交、未提交文件和逐文件摘要。解压到可写目录后直接运行 `Tenco.exe`，无需安装 Qt/MinGW 或配置开发 PATH，保留全部子目录。
+
+分享配置由源码模板生成：端点改为回环，令牌及数据库凭据清空，关闭视频、PLC、位姿、导航和底盘自动重连；不复制本机 `bin` 的配置、地图、数据库、日志或媒体。接收方通过维护页配置自己的设备连接；本机现场配置仍留在原 `bin`。帮助页使用随包 README 与 CHANGELOG。
+
+许可原文和模块归属说明在包内 `licenses/`。本机 OpenSource Qt 6.5.3 的 Qt Quick3D 为商业许可或 GPLv3，不能仅按 LGPL 理解；附带许可文本不替代适用的源码提供义务，也不替项目所有者选择 Tenco 或模型/图片的授权。对外分发须具备实际使用和再分发授权。本地修改默认不提交、不推送、不创建或合并 PR，不要求 CI。
 
 启动可显式指定配置：
 
