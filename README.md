@@ -23,10 +23,18 @@ ctest --preset default
 ```powershell
 & 'D:/codex/study_catkin/catkin_ws/Tenco/scripts/package_windows.ps1' `
   -BuildDir 'D:/codex/study_catkin/catkin_ws/Tenco/build/release-share' `
-  -OutputDir 'D:/codex/study_catkin/catkin_ws/tmp/release-share/windows'
+  -OutputDir 'D:/codex/study_catkin/catkin_ws/tmp/release-share/windows' `
+  -PostgreSqlArchive '<官方 EDB Windows x64 binaries.zip>' `
+  -PostgreSqlArchiveSha256 '<对应官方下载的 SHA256>' `
+  -PostgreSqlSourceUrl 'https://get.enterprisedb.com/postgresql/<对应文件名>' `
+  -MsvcRuntimeDir '<已验证微软签名、含 provenance.json 的 x64 CRT 目录>'
 ```
 
-`-QtPrefix`、`-CompilerDir`、`-CMakeExe`、`-NinjaExe` 可显式指定匹配的 Kit；默认使用本机 Qt 6.5.3/MinGW 11.2。`-SkipTests` 仅供明确跳过验证的打包，清单会如实标记，不能作为完整验证交付。ZIP 旁提供 SHA256，包内 `release-manifest.json` 记录来源提交、未提交文件和逐文件摘要。解压到可写目录后直接运行 `Tenco.exe`，无需安装 Qt/MinGW 或配置开发 PATH，保留全部子目录。
+`-QtPrefix`、`-CompilerDir`、`-CMakeExe`、`-NinjaExe` 可显式指定匹配的 Kit；默认使用本机 Qt 6.5.3/MinGW 11.2。打包还需要 Python 3（可通过 `-PythonExe` 指定）和 PowerShell 7，运行发布包不需要。PostgreSQL 客户端使用 [PostgreSQL 官方 Windows 入口](https://www.postgresql.org/download/windows/)所链接的 [EDB 二进制分发](https://www.enterprisedb.com/download-postgresql-binaries)，校验该分发官方 `.sha256` 后显式传入归档、摘要和 URL。脚本只从该归档的 `pgsql/bin` 提取 QPSQL 依赖链，带上 PostgreSQL 与客户端第三方许可，不复制 PostgreSQL 服务端或 pgAdmin。
+
+需要的 Visual C++ DLL 从微软官方签名的 x64 Redistributable 提取到受控目录；其中 `provenance.json` 包含 `sourceUrl/archiveName/archiveSha256/signatureStatus/signerSubject`，以及逐项 `files[{path,sha256,kind}]`（`kind` 为 `runtime` 或 `license`）。目录同时保留原 Redistributable、DLL 和许可；打包时重新校验原包 SHA256、Authenticode 和各文件摘要。普通导入、延迟导入均检查；MSVC、OpenSSL、libpq 等不因开发机 System32/PATH 中存在而被当作系统依赖放行。名称冲突、非 x64 或缺少递归依赖时停止打包。来源和逐 DLL 摘要记录在包内 `postgresql-runtime.json`。
+
+`-SkipTests` 仅供明确跳过验证的打包，清单会如实标记，不能作为完整验证交付。ZIP 旁提供 SHA256，包内 `release-manifest.json` 记录来源提交、未提交文件和逐文件摘要。解压到可写目录后直接运行 `Tenco.exe`，无需安装 Qt/MinGW、PostgreSQL 客户端或配置开发 PATH，保留全部子目录。
 
 分享配置由源码模板生成：端点改为回环，令牌及数据库凭据清空，关闭视频、PLC、位姿、导航和底盘自动重连；不复制本机 `bin` 的配置、地图、数据库、日志或媒体。接收方通过维护页配置自己的设备连接；本机现场配置仍留在原 `bin`。帮助页使用随包 README 与 CHANGELOG。
 

@@ -6,6 +6,11 @@ param(
     [string]$CompilerDir = 'D:/Qt/Tools/mingw1120_64',
     [string]$CMakeExe = 'D:/Qt/Tools/CMake_64/bin/cmake.exe',
     [string]$NinjaExe = 'D:/Qt/Tools/Ninja/ninja.exe',
+    [string]$PythonExe = 'python',
+    [string]$PostgreSqlArchive = '',
+    [string]$PostgreSqlArchiveSha256 = '',
+    [string]$PostgreSqlSourceUrl = '',
+    [string]$MsvcRuntimeDir = '',
     [int]$Parallel = 4,
     [switch]$SkipTests
 )
@@ -26,6 +31,7 @@ $qtRoot = [IO.Path]::GetFullPath((Join-Path $QtPrefix '../..'))
 $qtVersion = Split-Path (Split-Path $QtPrefix -Parent) -Leaf
 $qtDocs = Join-Path $qtRoot ('Docs/Qt-' + $qtVersion)
 $originalPath = $env:PATH
+$dependencyCollector = Join-Path $PSScriptRoot 'windows_runtime_dependencies.py'
 
 function Invoke-Checked([string]$Tool, [string[]]$Arguments, [string]$LogName) {
     & $Tool @Arguments 2>&1 | Tee-Object -FilePath (Join-Path $OutputDir $LogName)
@@ -37,10 +43,20 @@ function Copy-Required([string]$Source, [string]$Destination) {
     Copy-Item -LiteralPath $Source -Destination $Destination -Recurse
 }
 
-foreach ($required in @($CMakeExe, $NinjaExe, (Join-Path $QtPrefix 'bin/windeployqt.exe'),
+if (-not $PostgreSqlArchive -or $PostgreSqlArchiveSha256 -notmatch '^[0-9a-fA-F]{64}$' -or -not $PostgreSqlSourceUrl) {
+    throw 'A verified official PostgreSQL Windows x64 archive, SHA256 and source URL are required for the QPSQL driver.'
+}
+$PostgreSqlArchive = [IO.Path]::GetFullPath($PostgreSqlArchive)
+if (-not (Get-Command $PythonExe -ErrorAction SilentlyContinue)) { throw 'Python 3 is required by the PE dependency collector.' }
+if (-not (Get-Command 'pwsh.exe' -ErrorAction SilentlyContinue)) { throw 'PowerShell 7 is required to verify Microsoft runtime Authenticode signatures.' }
+foreach ($required in @($CMakeExe, $NinjaExe, $dependencyCollector, $PostgreSqlArchive, (Join-Path $QtPrefix 'bin/windeployqt.exe'),
         (Join-Path $CompilerDir 'bin/g++.exe'), (Join-Path $qtDocs 'qtdoc/gpl.html'))) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "Required tool or license is missing: $required" }
 }
+if ((Get-FileHash -LiteralPath $PostgreSqlArchive -Algorithm SHA256).Hash -ne $PostgreSqlArchiveSha256) {
+    throw 'The PostgreSQL archive does not match the provided official SHA256.'
+}
+if ($MsvcRuntimeDir) { $MsvcRuntimeDir = [IO.Path]::GetFullPath($MsvcRuntimeDir) }
 if ($Parallel -lt 1) { throw 'Parallel must be positive.' }
 foreach ($reserved in @($stageDir, $archive, (Join-Path $OutputDir 'release-manifest.json'))) {
     if (Test-Path -LiteralPath $reserved) { throw "Refusing to overwrite an existing package: $reserved" }
@@ -169,6 +185,11 @@ See README.md for operation and licenses/README.txt for redistribution notices.
             'libgcc_s_seh-1.dll', 'libstdc++-6.dll', 'libwinpthread-1.dll')) {
         if (-not (Test-Path -LiteralPath (Join-Path $stageDir $required) -PathType Leaf)) { throw "Missing dependency: $required" }
     }
+    $dependencyArguments = @('-B', $dependencyCollector, '--stage', $stageDir,
+        '--postgresql-archive', $PostgreSqlArchive, '--postgresql-sha256', $PostgreSqlArchiveSha256,
+        '--postgresql-url', $PostgreSqlSourceUrl)
+    if ($MsvcRuntimeDir) { $dependencyArguments += @('--msvc-runtime-dir', $MsvcRuntimeDir) }
+    Invoke-Checked $PythonExe $dependencyArguments 'deploy-postgresql.log'
     Write-Host '[5/6] Write provenance and per-file SHA256 inventory'
     $files = @(Get-ChildItem -LiteralPath $stageDir -File -Recurse | Sort-Object FullName | ForEach-Object {
         [ordered]@{ path = $_.FullName.Substring($stageDir.Length + 1).Replace('\', '/'); bytes = $_.Length;
@@ -181,7 +202,8 @@ See README.md for operation and licenses/README.txt for redistribution notices.
     $manifest = [ordered]@{ format = 1; package = $packageName; createdUtc = [DateTime]::UtcNow.ToString('o');
         sourceCommit = $sourceCommit; sourceModifiedFiles = $sourceChanges; buildType = 'Release';
         architecture = 'x86_64'; qtVersion = $qtVersion; testsSkipped = [bool]$SkipTests;
-        safeOfflineConfiguration = $true; redistributionLicenseReviewRequired = $true; files = $files }
+        safeOfflineConfiguration = $true; redistributionLicenseReviewRequired = $true;
+        postgresRuntime = 'postgresql-runtime.json'; files = $files }
     $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $stageDir 'release-manifest.json') -Encoding UTF8
     Write-Host '[6/6] Create ZIP without logs, tests or field data'
     Add-Type -AssemblyName System.IO.Compression.FileSystem
